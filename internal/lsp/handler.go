@@ -11,6 +11,7 @@ import (
 	"github.com/fwrq41251/decaf/internal/bsp"
 	"github.com/fwrq41251/decaf/internal/index"
 	"github.com/fwrq41251/decaf/internal/jsonrpc"
+	"github.com/fwrq41251/decaf/internal/setup"
 )
 
 // Handler holds the LSP handler state and methods.
@@ -88,17 +89,27 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 	sourceRoot := strings.TrimPrefix(h.rootURI, "file://")
 	h.idx = index.NewIndex(h.logger, sourceRoot)
 
-	// Connect to Bloop in the background.
+	// Full setup + compile in background.
 	go func() {
+		// Step 1: Auto-setup (detect Maven, bloopInstall, download & inject semanticdb-javac).
+		s := setup.NewSetup(h.logger, sourceRoot)
+		if err := s.Run(ctx); err != nil {
+			h.logger.Printf("auto-setup failed: %v", err)
+			// Continue anyway — maybe .bloop/ was already set up manually.
+		}
+
+		// Step 2: Connect to Bloop.
 		if err := h.bspClient.Start(ctx, h.rootURI); err != nil {
 			h.logger.Printf("failed to start bloop: %v", err)
 			return
 		}
-		// Trigger initial compilation.
+
+		// Step 3: Initial compilation → generates .semanticdb files.
 		if err := h.bspClient.Compile(ctx); err != nil {
 			h.logger.Printf("initial compile failed: %v", err)
 		}
-		// Load SemanticDB index after compilation.
+
+		// Step 4: Load SemanticDB index.
 		h.reindex()
 	}()
 
