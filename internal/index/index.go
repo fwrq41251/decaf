@@ -2,6 +2,8 @@ package index
 
 import (
 	"archive/zip"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -35,6 +37,8 @@ type Index struct {
 	jdkSourceRoot string
 	// list of third-party source JARs (file paths)
 	dependencySources []string
+	// cache for external symbol resolutions (relPath -> extractedPath)
+	externalCache sync.Map
 }
 
 // NewIndex creates a new empty index.
@@ -56,13 +60,20 @@ func (idx *Index) SetDependencySources(paths []string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	idx.dependencySources = paths
+	idx.clearExternalCache()
 }
 
 // AddDependencySource adds a single third-party library source JAR.
 func (idx *Index) AddDependencySource(path string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	idx.logger.Printf("Adding dependency source: %s", path)
 	idx.dependencySources = append(idx.dependencySources, path)
+	idx.clearExternalCache()
+}
+
+func (idx *Index) clearExternalCache() {
+	idx.externalCache = sync.Map{}
 }
 
 // SetJdkSourceRoot sets the path to the JDK source files.
@@ -70,6 +81,7 @@ func (idx *Index) SetJdkSourceRoot(path string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	idx.jdkSourceRoot = path
+	idx.clearExternalCache()
 }
 
 func (idx *Index) HasFiles() bool {
@@ -91,6 +103,7 @@ func (idx *Index) Load() error {
 	idx.fileOccurrences = make(map[string][]Occurrence)
 	idx.fileSymbols = make(map[string][]Symbol)
 	idx.implementors = make(map[string][]string)
+	idx.clearExternalCache()
 
 	var files []string
 	err := filepath.Walk(idx.sourceRoot, func(path string, info os.FileInfo, err error) error {
@@ -240,15 +253,24 @@ func (idx *Index) Definition(uri string, line, character int) []Symbol {
 }
 
 func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
+	idx.logger.Printf("Resolving external symbol: %s", sym)
 	// Simple mapping for JDK/Dependency symbols.
 	// Format: "java/lang/String#" -> "java/lang/String.java"
 	// Format: "org/springframework/util/StringUtils#hasText()." -> "org/springframework/util/StringUtils.java"
 
 	parts := strings.Split(sym, "#")
 	if len(parts) == 0 {
+		idx.logger.Printf("Invalid symbol format (no #): %s", sym)
 		return nil
 	}
 	relPath := parts[0] + ".java"
+	idx.logger.Printf("Calculated relPath: %s", relPath)
+
+	// Check cache first.
+	if cachedPath, ok := idx.externalCache.Load(relPath); ok {
+		idx.logger.Printf("Found %s in cache: %s", relPath, cachedPath.(string))
+		return idx.createExternalSymbol(sym, cachedPath.(string))
+	}
 
 	// 1. Search in JDK source if available.
 	if idx.jdkSourceRoot != "" {
@@ -258,29 +280,40 @@ func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 				// Already extracted or manually set directory.
 				foundPath := filepath.Join(idx.jdkSourceRoot, relPath)
 				if _, err := os.Stat(foundPath); err == nil {
+					idx.logger.Printf("Found in JDK directory: %s", foundPath)
+					idx.externalCache.Store(relPath, foundPath)
 					return idx.createExternalSymbol(sym, foundPath)
 				}
 			} else if strings.HasSuffix(idx.jdkSourceRoot, ".zip") || strings.HasSuffix(idx.jdkSourceRoot, ".jar") {
 				// It's a zip file (like src.zip). Extract on demand.
 				if foundPath := idx.findAndExtractFromJar(idx.jdkSourceRoot, relPath); foundPath != "" {
+					idx.logger.Printf("Found and extracted from JDK zip: %s", foundPath)
+					idx.externalCache.Store(relPath, foundPath)
 					return idx.createExternalSymbol(sym, foundPath)
 				}
 			}
+		} else {
+			idx.logger.Printf("JDK source root error: %v", err)
 		}
 	}
 
 	// 2. Search in third-party dependency JARs.
 	// Caller (Definition) already holds the RLock, so we access dependencySources directly.
+	idx.logger.Printf("Searching in %d dependency sources", len(idx.dependencySources))
 	for _, jar := range idx.dependencySources {
 		if foundPath := idx.findAndExtractFromJar(jar, relPath); foundPath != "" {
+			idx.logger.Printf("Found and extracted from dependency JAR %s: %s", jar, foundPath)
+			idx.externalCache.Store(relPath, foundPath)
 			return idx.createExternalSymbol(sym, foundPath)
 		}
 	}
 
+	idx.logger.Printf("Symbol %s not found in external sources", sym)
 	return nil
 }
 
 func (idx *Index) createExternalSymbol(sym, path string) *Symbol {
+	idx.logger.Printf("Creating external symbol for %s at %s", sym, path)
 	uri := "file://" + path
 
 	line, col := FindSymbolLocation(path, sym)
@@ -297,6 +330,8 @@ func (idx *Index) createExternalSymbol(sym, path string) *Symbol {
 			EndLine:        int32(line),
 			EndCharacter:   int32(col + len(extractShortName(sym))),
 		}
+	} else {
+		idx.logger.Printf("Tree-sitter could not find symbol %s in %s", sym, path)
 	}
 
 	return s
@@ -306,13 +341,16 @@ func (idx *Index) findAndExtractFromJar(jarPath, relPath string) string {
 	// 1. Check if the JAR contains the file.
 	r, err := zip.OpenReader(jarPath)
 	if err != nil {
+		idx.logger.Printf("Failed to open JAR %s: %v", jarPath, err)
 		return ""
 	}
 	defer r.Close()
 
 	var targetFile *zip.File
 	for _, f := range r.File {
-		if strings.HasSuffix(filepath.ToSlash(f.Name), relPath) {
+		// Use filepath.ToSlash for consistency in ZIP names
+		zipName := filepath.ToSlash(f.Name)
+		if strings.HasSuffix(zipName, relPath) {
 			targetFile = f
 			break
 		}
@@ -321,10 +359,16 @@ func (idx *Index) findAndExtractFromJar(jarPath, relPath string) string {
 	if targetFile == nil {
 		return ""
 	}
+	idx.logger.Printf("Found %s in %s (internal path: %s)", relPath, jarPath, targetFile.Name)
+
 
 	// 2. Extract the file to cache.
 	home, _ := os.UserHomeDir()
-	sanitizedJar := strings.ReplaceAll(strings.TrimPrefix(jarPath, "/"), "/", "_")
+
+	// Use a hash of the jarPath for a safe, cross-platform, fixed-length directory name.
+	h := sha1.Sum([]byte(jarPath))
+	sanitizedJar := hex.EncodeToString(h[:])
+
 	destDir := filepath.Join(home, ".cache", "decaf", "lib-src", sanitizedJar)
 	destPath := filepath.Join(destDir, targetFile.Name)
 

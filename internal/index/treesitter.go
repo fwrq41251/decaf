@@ -35,9 +35,9 @@ func FindSymbolLocation(filePath, sym string) (int, int) {
 		return -1, -1
 	}
 
+	isConstructor := strings.Contains(sym, "#`<init>`(")
+
 	// Extract the short name from the symbol.
-	// "java/lang/String#" -> "String"
-	// "java/lang/String#length()." -> "length"
 	name := extractShortName(sym)
 	if name == "" {
 		return -1, -1
@@ -46,41 +46,59 @@ func FindSymbolLocation(filePath, sym string) (int, int) {
 	rootNode := tree.RootNode()
 	
 	// We use a simple recursive search for a node that looks like a declaration of 'name'.
-	return findNode(rootNode, name, content)
+	return findNode(rootNode, name, content, isConstructor)
 }
 
 func extractShortName(sym string) string {
-	// Remove trailing dots/parens: "length()." -> "length"
-	sym = strings.TrimRight(sym, "().")
-	
-	// Split by # or / and take the last part.
+	// 1. Remove trailing SemanticDB markers.
+	sym = strings.TrimRight(sym, "#.:().")
+
+	// 2. Handle method overloads and special names like <init> (constructor).
+	if idx := strings.Index(sym, "("); idx != -1 {
+		sym = sym[:idx]
+	}
+
+	// 3. Take the last part.
 	idx := strings.LastIndexAny(sym, "#/")
 	if idx == -1 {
 		return sym
 	}
-	return sym[idx+1:]
+	name := sym[idx+1:]
+
+	// Handle constructor: com/example/Test#`<init>`() -> Test
+	if name == "`<init>`" {
+		// Look at the part before #.
+		parentPart := sym[:idx]
+		if lastSlash := strings.LastIndexAny(parentPart, "#/"); lastSlash != -1 {
+			return parentPart[lastSlash+1:]
+		}
+		return parentPart
+	}
+
+	return name
 }
 
-func findNode(n *slog.Node, name string, content []byte) (int, int) {
+func findNode(n *slog.Node, name string, content []byte, isConstructor bool) (int, int) {
 	// Check if this node is a declaration of 'name'.
-	switch n.Type() {
-	case "class_declaration", "interface_declaration", "enum_declaration", "method_declaration", "constructor_declaration", "field_declaration", "variable_declarator":
-		// Find the 'identifier' child.
+	nodeType := n.Type()
+	
+	// If we are looking for a constructor, only match constructor_declaration.
+	// If not, avoid constructor_declaration to prevent class vs constructor confusion.
+	match := false
+	if isConstructor {
+		match = nodeType == "constructor_declaration"
+	} else {
+		match = nodeType == "class_declaration" || nodeType == "interface_declaration" || 
+		        nodeType == "enum_declaration" || nodeType == "method_declaration" || 
+				nodeType == "field_declaration" || nodeType == "variable_declarator"
+	}
+
+	if match {
 		for i := 0; i < int(n.NamedChildCount()); i++ {
 			child := n.NamedChild(i)
-			if child.Type() == "identifier" || child.Type() == "variable_declarator" {
-				idNode := child
-				if child.Type() == "variable_declarator" {
-					for j := 0; j < int(child.NamedChildCount()); j++ {
-						if gc := child.NamedChild(j); gc.Type() == "identifier" {
-							idNode = gc
-							break
-						}
-					}
-				}
-
-				if idNode.Content(content) == name {
-					start := idNode.StartPoint()
+			if child.Type() == "identifier" {
+				if child.Content(content) == name {
+					start := child.StartPoint()
 					return int(start.Row), int(start.Column)
 				}
 			}
@@ -89,7 +107,7 @@ func findNode(n *slog.Node, name string, content []byte) (int, int) {
 
 	// Recurse.
 	for i := 0; i < int(n.NamedChildCount()); i++ {
-		row, col := findNode(n.NamedChild(i), name, content)
+		row, col := findNode(n.NamedChild(i), name, content, isConstructor)
 		if row != -1 {
 			return row, col
 		}

@@ -1,2 +1,6 @@
 .alma-snapshots
 decaf
+
+.gemini/
+.github/
+gha-creds-*.json
