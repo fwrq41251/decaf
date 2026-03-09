@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/fwrq41251/decaf/internal/jsonrpc"
 )
@@ -17,14 +22,15 @@ type DiagnosticsHandler func(params PublishDiagnosticsParams)
 
 // Client manages the connection to a BSP build server (Bloop).
 type Client struct {
-	logger     *log.Logger
-	transport  *jsonrpc.Transport
-	cmd        *exec.Cmd
-	nextID     atomic.Int64
-	pending    map[int64]chan *jsonrpc.Response
-	pendingMu  sync.Mutex
+	logger        *log.Logger
+	transport     *jsonrpc.Transport
+	cmd           *exec.Cmd
+	nextID        atomic.Int64
+	pending       map[int64]chan *jsonrpc.Response
+	pendingMu     sync.Mutex
 	onDiagnostics DiagnosticsHandler
-	targets    []BuildTarget
+	targets       []BuildTarget
+	socketDir     string // temp directory containing the unix socket
 }
 
 // NewClient creates a new BSP client.
@@ -38,22 +44,50 @@ func NewClient(logger *log.Logger, onDiagnostics DiagnosticsHandler) *Client {
 
 // Start launches the Bloop BSP server and performs the initialize handshake.
 func (c *Client) Start(ctx context.Context, rootURI string) error {
-	c.cmd = exec.CommandContext(ctx, "bloop", "bsp")
-	stdin, err := c.cmd.StdinPipe()
+	sourceRoot := strings.TrimPrefix(rootURI, "file://")
+
+	bloopExe, err := exec.LookPath("bloop")
 	if err != nil {
-		return fmt.Errorf("creating stdin pipe: %w", err)
-	}
-	stdout, err := c.cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("creating stdout pipe: %w", err)
+		return fmt.Errorf("bloop not found in PATH: %w", err)
 	}
 
+	// Create a private temp directory for the socket to restrict permissions.
+	socketDir, err := os.MkdirTemp("", "decaf-bloop-*")
+	if err != nil {
+		return fmt.Errorf("creating socket directory: %w", err)
+	}
+	socketPath := filepath.Join(socketDir, "bsp.socket")
+	c.socketDir = socketDir
+
+	c.logger.Printf("starting bloop bsp using socket: %s", socketPath)
+	
+	// Start bloop bsp process.
+	c.cmd = exec.CommandContext(ctx, bloopExe, "bsp", "--protocol", "local", "--socket", socketPath)
+	c.cmd.Dir = sourceRoot
+	c.cmd.Env = os.Environ()
+	
 	if err := c.cmd.Start(); err != nil {
-		return fmt.Errorf("starting bloop: %w", err)
+		return fmt.Errorf("starting bloop process: %w", err)
 	}
-	c.logger.Println("bloop bsp process started")
 
-	c.transport = jsonrpc.NewTransport(stdout, stdin)
+	// Wait for socket to be created (with timeout).
+	start := time.Now()
+	var conn net.Conn
+	var dialErr error
+	for time.Since(start) < 5*time.Second {
+		conn, dialErr = net.Dial("unix", socketPath)
+		if dialErr == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if dialErr != nil {
+		return fmt.Errorf("failed to connect to bloop socket %s after 5s: %w", socketPath, dialErr)
+	}
+
+	c.logger.Println("connected to bloop bsp socket")
+	c.transport = jsonrpc.NewTransport(conn, conn)
 
 	// Start reading responses/notifications from Bloop.
 	go c.readLoop()
@@ -88,10 +122,6 @@ func (c *Client) Start(ctx context.Context, rootURI string) error {
 	}
 	c.targets = targetsResult.Targets
 	c.logger.Printf("found %d build targets", len(c.targets))
-	for _, t := range c.targets {
-		c.logger.Printf("  target: %s (%s)", t.DisplayName, t.ID.URI)
-	}
-
 	return nil
 }
 
@@ -119,6 +149,9 @@ func (c *Client) Compile(ctx context.Context) error {
 
 // Shutdown sends build/shutdown and build/exit to Bloop.
 func (c *Client) Shutdown(ctx context.Context) error {
+	if c.socketDir != "" {
+		defer os.RemoveAll(c.socketDir)
+	}
 	if c.transport == nil {
 		return nil
 	}
@@ -185,6 +218,9 @@ func (c *Client) notify(method string) error {
 	req := &jsonrpc.Request{
 		JSONRPC: "2.0",
 		Method:  method,
+	}
+	if c.transport == nil {
+		return nil
 	}
 	return c.transport.WriteRequest(req)
 }

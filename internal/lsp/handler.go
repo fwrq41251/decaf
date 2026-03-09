@@ -106,6 +106,9 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 	sourceRoot := strings.TrimPrefix(h.rootURI, "file://")
 	h.idx = index.NewIndex(h.logger, sourceRoot)
 
+	// Initial scan of existing .semanticdb files.
+	h.reindex()
+
 	// Full setup + compile in background.
 	go func() {
 		// Step 1: Auto-setup.
@@ -128,7 +131,7 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 			h.showMessage(MessageTypeWarning, fmt.Sprintf("decaf: compilation failed: %v", err))
 		}
 
-		// Step 4: Index.
+		// Step 4: Index (picks up fresh .semanticdb from compilation).
 		h.reindex()
 		h.showMessage(MessageTypeInfo, "decaf: ready")
 	}()
@@ -214,6 +217,11 @@ func (h *Handler) handleDefinition(_ context.Context, params json.RawMessage) (a
 
 	h.logger.Printf("definition at %s:%d:%d -> %d results",
 		p.TextDocument.URI, p.Position.Line, p.Position.Character, len(locations))
+	for i, loc := range locations {
+		h.logger.Printf("  result[%d]: %s:%d:%d-%d:%d", i, loc.URI, 
+			loc.Range.Start.Line, loc.Range.Start.Character, 
+			loc.Range.End.Line, loc.Range.End.Character)
+	}
 	return locations, nil
 }
 
@@ -228,22 +236,54 @@ func (h *Handler) handleReferences(_ context.Context, params json.RawMessage) (a
 	}
 
 	refs := h.idx.References(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	
+	// If includeDeclaration is true, add the definition to the results.
+	if p.Context.IncludeDeclaration {
+		defs := h.idx.Definition(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+		for _, d := range defs {
+			if d.Range == nil {
+				continue
+			}
+			// Convert Symbol to Occurrence-like structure for the loop below.
+			refs = append(refs, index.Occurrence{
+				URI:   d.URI,
+				Range: d.Range,
+			})
+		}
+		// Re-deduplicate since definition might already be in references or multiple files.
+		// Note: We'd need to expose deduplicateOccurrences if we wanted to call it here, 
+		// but the loop below already converts to LSPLocation, so we can just let the client 
+		// handle it or deduplicate the final locations array.
+	}
+
 	locations := make([]LSPLocation, 0, len(refs))
+	seen := make(map[string]bool)
 	for _, r := range refs {
 		if r.Range == nil {
 			continue
 		}
-		locations = append(locations, LSPLocation{
+		loc := LSPLocation{
 			URI: h.toFileURI(r.URI),
 			Range: Range{
 				Start: Position{Line: int(r.Range.StartLine), Character: int(r.Range.StartCharacter)},
 				End:   Position{Line: int(r.Range.EndLine), Character: int(r.Range.EndCharacter)},
 			},
-		})
+		}
+		// Final deduplication of LSP locations
+		key := fmt.Sprintf("%s:%d:%d-%d:%d", loc.URI, loc.Range.Start.Line, loc.Range.Start.Character, loc.Range.End.Line, loc.Range.End.Character)
+		if !seen[key] {
+			seen[key] = true
+			locations = append(locations, loc)
+		}
 	}
 
 	h.logger.Printf("references at %s:%d:%d -> %d results",
 		p.TextDocument.URI, p.Position.Line, p.Position.Character, len(locations))
+	for i, loc := range locations {
+		h.logger.Printf("  result[%d]: %s:%d:%d-%d:%d", i, loc.URI, 
+			loc.Range.Start.Line, loc.Range.Start.Character, 
+			loc.Range.End.Line, loc.Range.End.Character)
+	}
 	return locations, nil
 }
 

@@ -101,23 +101,63 @@ func (s *Setup) injectIntoConfig(configPath, jarPath string) error {
 		json.Unmarshal(optsRaw, &options)
 	}
 
-	// Check if already injected.
-	for _, opt := range options {
-		if strings.HasPrefix(opt, semanticdbPluginPrefix) {
-			s.logger.Printf("semanticdb already configured in %s, skipping", filepath.Base(configPath))
-			return nil
+	// Check if already injected and clean up old format.
+	newOptions := make([]string, 0, len(options))
+	alreadyInjected := false
+	needsFix := false
+	skipNext := false
+	for i, opt := range options {
+		if skipNext {
+			skipNext = false
+			continue
 		}
+
+		// Identify any semanticdb-related flags.
+		isProcessorPath := (opt == "-processorpath" || opt == "-p") && i+1 < len(options) && strings.Contains(options[i+1], "semanticdb-javac")
+		isOldProcessorPath := strings.HasPrefix(opt, "-processorpath:") && strings.Contains(opt, "semanticdb-javac")
+		isSourceTargetRoot := strings.HasPrefix(opt, "-sourceroot:") || strings.HasPrefix(opt, "-targetroot:") ||
+			strings.HasPrefix(opt, "--sourceroot:") || strings.HasPrefix(opt, "--targetroot:")
+		isPlugin := strings.HasPrefix(opt, semanticdbPluginPrefix)
+
+		if isProcessorPath {
+			skipNext = true
+			needsFix = true
+			continue
+		}
+		if isOldProcessorPath || isSourceTargetRoot {
+			needsFix = true
+			continue
+		}
+		if isPlugin {
+			if strings.Contains(opt, "-sourceroot:") {
+				alreadyInjected = true
+			} else {
+				needsFix = true
+			}
+			continue
+		}
+
+		newOptions = append(newOptions, opt)
+	}
+
+	if alreadyInjected && !needsFix {
+		s.logger.Printf("semanticdb already configured in %s, skipping", filepath.Base(configPath))
+		return nil
+	}
+	options = newOptions
+	if needsFix {
+		s.logger.Printf("fixing semanticdb configuration in %s", filepath.Base(configPath))
 	}
 
 	// Add semanticdb-javac options.
-	// -processorpath: tells javac where to find the annotation processor
-	// -Xplugin:semanticdb: activates the javac plugin
-	// -sourceroot: workspace root for relativizing URIs
-	// -targetroot: where to write .semanticdb files
+	// The plugin name and its arguments must be a single string.
+	// Format: -Xplugin:semanticdb -sourceroot:PATH -targetroot:PATH
+	pluginArg := fmt.Sprintf("%s -sourceroot:%s -targetroot:%s",
+		semanticdbPluginPrefix, s.workspaceDir, classesDir)
+
 	options = append(options,
-		fmt.Sprintf("-processorpath:%s", jarPath),
-		fmt.Sprintf("%s -sourceroot:%s -targetroot:%s",
-			semanticdbPluginPrefix, s.workspaceDir, classesDir),
+		"-processorpath", jarPath,
+		pluginArg,
 	)
 
 	optsJSON, _ := json.Marshal(options)

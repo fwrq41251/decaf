@@ -65,23 +65,23 @@ func TestInjectSemanticDB(t *testing.T) {
 		t.Fatalf("original options lost: %v", options)
 	}
 
-	// Should contain processorpath.
+	// Should contain processorpath and combined plugin options.
 	foundProcessor := false
 	foundPlugin := false
-	for _, opt := range options {
-		if strings.Contains(opt, "-processorpath:") && strings.Contains(opt, jarPath) {
+	for i, opt := range options {
+		if opt == "-processorpath" && i+1 < len(options) && strings.Contains(options[i+1], jarPath) {
 			foundProcessor = true
 		}
-		if strings.HasPrefix(opt, "-Xplugin:semanticdb") {
+		if strings.HasPrefix(opt, "-Xplugin:semanticdb") && strings.Contains(opt, "-sourceroot:") {
 			foundPlugin = true
 		}
 	}
 
 	if !foundProcessor {
-		t.Fatalf("missing -processorpath in options: %v", options)
+		t.Fatalf("missing -processorpath and jar path in options: %v", options)
 	}
 	if !foundPlugin {
-		t.Fatalf("missing -Xplugin:semanticdb in options: %v", options)
+		t.Fatalf("missing combined -Xplugin:semanticdb in options: %v", options)
 	}
 
 	// Running again should be idempotent.

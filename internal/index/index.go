@@ -49,6 +49,8 @@ func (idx *Index) Load() error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
+	idx.logger.Printf("Indexing workspace: %s", idx.sourceRoot)
+
 	// Clear existing data.
 	idx.definitions = make(map[string][]Symbol)
 	idx.references = make(map[string][]Occurrence)
@@ -61,7 +63,17 @@ func (idx *Index) Load() error {
 		if err != nil {
 			return err
 		}
-		if !info.IsDir() && strings.HasSuffix(path, ".semanticdb") {
+		if info.IsDir() {
+			name := info.Name()
+			// Skip internal build tool and cache directories.
+			if name == ".bloop" || name == ".metals" || name == ".git" || 
+			   strings.Contains(path, "bloop-internal-classes") || 
+			   strings.Contains(path, "bloop-bsp-clients-classes") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(path, ".semanticdb") {
 			files = append(files, path)
 		}
 		return nil
@@ -70,11 +82,13 @@ func (idx *Index) Load() error {
 		return fmt.Errorf("walking source root: %w", err)
 	}
 
-	idx.logger.Printf("found %d .semanticdb files", len(files))
+	idx.logger.Printf("Found %d .semanticdb files in %s", len(files), idx.sourceRoot)
 
 	for _, f := range files {
 		if err := idx.indexFile(f); err != nil {
 			idx.logger.Printf("warning: failed to index %s: %v", f, err)
+		} else {
+			idx.logger.Printf("Indexed file: %s", f)
 		}
 	}
 
@@ -86,7 +100,7 @@ func (idx *Index) Load() error {
 	for _, refs := range idx.references {
 		totalRefs += len(refs)
 	}
-	idx.logger.Printf("indexed %d definitions, %d references", totalDefs, totalRefs)
+	idx.logger.Printf("Indexed %d definitions, %d references across %d files", totalDefs, totalRefs, len(files))
 
 	return nil
 }
@@ -104,6 +118,10 @@ func (idx *Index) indexFile(path string) error {
 
 	for _, doc := range docs.Documents {
 		uri := doc.Uri
+		if uri == "" {
+			idx.logger.Printf("warning: empty URI in %s", path)
+			continue
+		}
 		idx.indexDocument(uri, doc)
 	}
 
@@ -111,6 +129,7 @@ func (idx *Index) indexFile(path string) error {
 }
 
 func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
+	uri = filepath.ToSlash(uri)
 	// Index symbol definitions.
 	for _, sym := range doc.Symbols {
 		s := Symbol{
@@ -171,11 +190,13 @@ func (idx *Index) Definition(uri string, line, character int) []Symbol {
 	// Find the symbol at the given position.
 	relURI := idx.toRelativeURI(uri)
 	sym := idx.symbolAt(relURI, line, character)
+	idx.logger.Printf("Definition request: uri=%s, relURI=%s, symbolAt=%s", uri, relURI, sym)
 	if sym == "" {
 		return nil
 	}
 
-	return idx.definitions[sym]
+	defs := idx.definitions[sym]
+	return deduplicateSymbols(defs)
 }
 
 // References returns all reference locations for a symbol at the given position.
@@ -185,11 +206,54 @@ func (idx *Index) References(uri string, line, character int) []Occurrence {
 
 	relURI := idx.toRelativeURI(uri)
 	sym := idx.symbolAt(relURI, line, character)
+	idx.logger.Printf("References request: uri=%s, relURI=%s, symbolAt=%s", uri, relURI, sym)
 	if sym == "" {
 		return nil
 	}
 
-	return idx.references[sym]
+	refs := idx.references[sym]
+	idx.logger.Printf("Found %d references for symbol %s", len(refs), sym)
+	return deduplicateOccurrences(refs)
+}
+
+func deduplicateSymbols(symbols []Symbol) []Symbol {
+	if len(symbols) <= 1 {
+		return symbols
+	}
+	// Use a map to keep only one definition per URI.
+	// In case of multiple definitions in the same file (unlikely for Java),
+	// this will pick the first one encountered.
+	seen := make(map[string]bool)
+	var result []Symbol
+	for _, s := range symbols {
+		if s.Range == nil {
+			continue
+		}
+		if !seen[s.URI] {
+			seen[s.URI] = true
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+func deduplicateOccurrences(occs []Occurrence) []Occurrence {
+	if len(occs) <= 1 {
+		return occs
+	}
+	seen := make(map[string]bool)
+	var result []Occurrence
+	for _, o := range occs {
+		if o.Range == nil {
+			continue
+		}
+		key := fmt.Sprintf("%s:%d:%d-%d:%d", o.URI, o.Range.StartLine, o.Range.StartCharacter, o.Range.EndLine, o.Range.EndCharacter)
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, o)
+		}
+	}
+	return result
 }
 
 // Hover returns the symbol information at the given position (for hover).
@@ -221,7 +285,17 @@ func (idx *Index) FileSymbols(uri string) []Symbol {
 
 // SymbolAt returns the SemanticDB symbol string at the given position.
 func (idx *Index) symbolAt(uri string, line, character int) string {
-	occs := idx.fileOccurrences[uri]
+	uri = filepath.ToSlash(uri)
+	occs, ok := idx.fileOccurrences[uri]
+	if !ok {
+		idx.logger.Printf("No occurrences found for file URI: %q", uri)
+		// Print ALL keys for debugging
+		idx.logger.Printf("Available keys in fileOccurrences:")
+		for k := range idx.fileOccurrences {
+			idx.logger.Printf("  %q", k)
+		}
+		return ""
+	}
 	for _, occ := range occs {
 		r := occ.Range
 		if r == nil {
@@ -246,14 +320,17 @@ func (idx *Index) AllSymbols() []Symbol {
 	return result
 }
 
-// toRelativeURI converts a file:// URI to a relative path matching SemanticDB URIs.
+// toRelativeURI converts a file:// URI or an absolute path to a relative path matching SemanticDB URIs.
 func (idx *Index) toRelativeURI(uri string) string {
 	path := strings.TrimPrefix(uri, "file://")
+	if !filepath.IsAbs(path) {
+		return filepath.ToSlash(path)
+	}
 	rel, err := filepath.Rel(idx.sourceRoot, path)
 	if err != nil {
-		return uri
+		return filepath.ToSlash(path)
 	}
-	return rel
+	return filepath.ToSlash(rel)
 }
 
 // SourceRoot returns the workspace source root path.
