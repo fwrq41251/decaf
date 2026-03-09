@@ -98,6 +98,29 @@ func sdbKindToLSP(kind sdb.SymbolInformation_Kind) int {
 	}
 }
 
+func sdbKindToCompletionKind(kind sdb.SymbolInformation_Kind) int {
+	switch kind {
+	case sdb.SymbolInformation_CLASS:
+		return CompletionKindClass
+	case sdb.SymbolInformation_INTERFACE:
+		return CompletionKindInterface
+	case sdb.SymbolInformation_METHOD:
+		return CompletionKindMethod
+	case sdb.SymbolInformation_CONSTRUCTOR:
+		return CompletionKindConstructor
+	case sdb.SymbolInformation_FIELD:
+		return CompletionKindField
+	case sdb.SymbolInformation_PARAMETER:
+		return CompletionKindVariable
+	case sdb.SymbolInformation_PACKAGE:
+		return CompletionKindModule
+	case sdb.SymbolInformation_OBJECT:
+		return CompletionKindClass
+	default:
+		return CompletionKindText
+	}
+}
+
 func sdbRangeToLSP(r *sdb.Range) Range {
 	return Range{
 		Start: Position{Line: int(r.StartLine), Character: int(r.StartCharacter)},

@@ -158,6 +158,35 @@ func formatType(t *sdb.Type) string {
 	}
 }
 
+// formatSignatureHelp produces a SignatureInformation for signatureHelp.
+func formatSignatureHelp(sym *index.Symbol) *SignatureInformation {
+	if sym.Signature == nil {
+		return nil
+	}
+	ms, ok := sym.Signature.SealedValue.(*sdb.Signature_MethodSignature)
+	if !ok {
+		return nil
+	}
+
+	label := formatMethodSig(sym.Name, ms.MethodSignature)
+	var params []ParameterInformation
+	for _, paramList := range ms.MethodSignature.ParameterLists {
+		for _, param := range paramList.Hardlinks {
+			paramType := ""
+			if vs, ok := param.Signature.SealedValue.(*sdb.Signature_ValueSignature); ok {
+				paramType = formatType(vs.ValueSignature.Tpe)
+			}
+			paramLabel := paramType + " " + param.DisplayName
+			params = append(params, ParameterInformation{Label: paramLabel})
+		}
+	}
+
+	return &SignatureInformation{
+		Label:      label,
+		Parameters: params,
+	}
+}
+
 // simplifySymbol turns "java/lang/String#" into "String".
 func simplifySymbol(sym string) string {
 	sym = strings.TrimSuffix(sym, "#")

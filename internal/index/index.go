@@ -278,6 +278,84 @@ func (idx *Index) SearchSymbols(query string) []Symbol {
 	return result
 }
 
+// CompletionSymbols returns symbols matching the given prefix for completion.
+// Results from the same file are prioritized.
+func (idx *Index) CompletionSymbols(uri string, prefix string) []Symbol {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	prefix = strings.ToLower(prefix)
+	relURI := idx.toRelativeURI(uri)
+
+	var sameFile []Symbol
+	var otherFile []Symbol
+	for _, defs := range idx.definitions {
+		for _, d := range defs {
+			if !strings.HasPrefix(strings.ToLower(d.Name), prefix) {
+				continue
+			}
+			if d.URI == relURI {
+				sameFile = append(sameFile, d)
+			} else {
+				otherFile = append(otherFile, d)
+			}
+		}
+	}
+
+	result := make([]Symbol, 0, len(sameFile)+len(otherFile))
+	result = append(result, sameFile...)
+	result = append(result, otherFile...)
+
+	// Cap at 100 results.
+	if len(result) > 100 {
+		result = result[:100]
+	}
+	return result
+}
+
+// SymbolSignature returns the method signature for the symbol at the given position.
+func (idx *Index) SymbolSignature(uri string, line, character int) *Symbol {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	relURI := idx.toRelativeURI(uri)
+	sym := idx.symbolAt(relURI, line, character)
+	if sym == "" {
+		return nil
+	}
+
+	defs := idx.definitions[sym]
+	if len(defs) == 0 {
+		return nil
+	}
+	return &defs[0]
+}
+
+// RenameOccurrences returns all occurrences (definitions + references) for rename.
+func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []Occurrence) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	relURI := idx.toRelativeURI(uri)
+	sym := idx.symbolAt(relURI, line, character)
+	if sym == "" {
+		return "", nil
+	}
+
+	var result []Occurrence
+
+	// Collect all definition occurrences.
+	for _, fileOccs := range idx.fileOccurrences {
+		for _, occ := range fileOccs {
+			if occ.Symbol == sym {
+				result = append(result, occ)
+			}
+		}
+	}
+
+	return sym, result
+}
+
 // FileOccurrencesOf returns all occurrences of a symbol in a specific file.
 func (idx *Index) FileOccurrencesOf(uri string, line, character int) []Occurrence {
 	idx.mu.RLock()

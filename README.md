@@ -24,6 +24,14 @@ Editor (Neovim/Zed)
 - **Diagnostics**: Compilation errors/warnings forwarded from Bloop in real-time
 - **Goto Definition**: Jump to symbol definitions via SemanticDB index
 - **Find References**: Find all usages of a symbol via SemanticDB index
+- **Hover**: Display type signatures and symbol information
+- **Completion**: Code completion suggestions from indexed symbols
+- **Signature Help**: Method signature display with parameter tracking
+- **Rename**: Project-wide symbol renaming via SemanticDB references
+- **Document Symbol**: Outline view with class/method hierarchy
+- **Document Highlight**: Highlight all occurrences of a symbol in the current file
+- **Implementation**: Find classes implementing an interface or extending a class
+- **Workspace Symbol**: Fuzzy search across all indexed symbols
 - **Compile on Save**: Automatic incremental compilation when files are saved
 
 ## Prerequisites

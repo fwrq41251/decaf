@@ -33,14 +33,29 @@ type ServerInfo struct {
 
 // ServerCapabilities declares what the server can do.
 type ServerCapabilities struct {
-	TextDocumentSync       *TextDocumentSyncOptions `json:"textDocumentSync,omitempty"`
-	DefinitionProvider     bool                     `json:"definitionProvider,omitempty"`
-	ReferencesProvider     bool                     `json:"referencesProvider,omitempty"`
-	HoverProvider          bool                     `json:"hoverProvider,omitempty"`
-	DocumentSymbolProvider     bool                     `json:"documentSymbolProvider,omitempty"`
-	DocumentHighlightProvider  bool                     `json:"documentHighlightProvider,omitempty"`
-	ImplementationProvider     bool                     `json:"implementationProvider,omitempty"`
-	WorkspaceSymbolProvider    bool                     `json:"workspaceSymbolProvider,omitempty"`
+	TextDocumentSync          *TextDocumentSyncOptions `json:"textDocumentSync,omitempty"`
+	DefinitionProvider        bool                     `json:"definitionProvider,omitempty"`
+	ReferencesProvider        bool                     `json:"referencesProvider,omitempty"`
+	HoverProvider             bool                     `json:"hoverProvider,omitempty"`
+	CompletionProvider        *CompletionOptions       `json:"completionProvider,omitempty"`
+	SignatureHelpProvider     *SignatureHelpOptions    `json:"signatureHelpProvider,omitempty"`
+	RenameProvider            *RenameOptions           `json:"renameProvider,omitempty"`
+	DocumentSymbolProvider    bool                     `json:"documentSymbolProvider,omitempty"`
+	DocumentHighlightProvider bool                     `json:"documentHighlightProvider,omitempty"`
+	ImplementationProvider    bool                     `json:"implementationProvider,omitempty"`
+	WorkspaceSymbolProvider   bool                     `json:"workspaceSymbolProvider,omitempty"`
+}
+
+type CompletionOptions struct {
+	TriggerCharacters []string `json:"triggerCharacters,omitempty"`
+}
+
+type SignatureHelpOptions struct {
+	TriggerCharacters []string `json:"triggerCharacters,omitempty"`
+}
+
+type RenameOptions struct {
+	PrepareProvider bool `json:"prepareProvider,omitempty"`
 }
 
 type TextDocumentSyncOptions struct {
@@ -208,4 +223,90 @@ type SymbolInformation struct {
 	Name       string      `json:"name"`
 	Kind       int         `json:"kind"`
 	Location   LSPLocation `json:"location"`
+}
+
+// CompletionParams is sent for textDocument/completion.
+type CompletionParams struct {
+	TextDocumentPositionParams
+	Context *CompletionContext `json:"context,omitempty"`
+}
+
+type CompletionContext struct {
+	TriggerKind      int    `json:"triggerKind"`
+	TriggerCharacter string `json:"triggerCharacter,omitempty"`
+}
+
+// CompletionList is returned by textDocument/completion.
+type CompletionList struct {
+	IsIncomplete bool             `json:"isIncomplete"`
+	Items        []CompletionItem `json:"items"`
+}
+
+type CompletionItem struct {
+	Label         string         `json:"label"`
+	Kind          int            `json:"kind,omitempty"`
+	Detail        string         `json:"detail,omitempty"`
+	Documentation *MarkupContent `json:"documentation,omitempty"`
+	InsertText    string         `json:"insertText,omitempty"`
+}
+
+// CompletionItemKind constants.
+const (
+	CompletionKindText          = 1
+	CompletionKindMethod        = 2
+	CompletionKindFunction      = 3
+	CompletionKindConstructor   = 4
+	CompletionKindField         = 5
+	CompletionKindVariable      = 6
+	CompletionKindClass         = 7
+	CompletionKindInterface     = 8
+	CompletionKindModule        = 9
+	CompletionKindProperty      = 10
+	CompletionKindEnum          = 13
+	CompletionKindConstant      = 21
+)
+
+// SignatureHelpParams is sent for textDocument/signatureHelp.
+type SignatureHelpParams struct {
+	TextDocumentPositionParams
+}
+
+// SignatureHelp is returned by textDocument/signatureHelp.
+type SignatureHelp struct {
+	Signatures      []SignatureInformation `json:"signatures"`
+	ActiveSignature int                    `json:"activeSignature,omitempty"`
+	ActiveParameter int                    `json:"activeParameter,omitempty"`
+}
+
+type SignatureInformation struct {
+	Label         string                 `json:"label"`
+	Documentation *MarkupContent         `json:"documentation,omitempty"`
+	Parameters    []ParameterInformation `json:"parameters,omitempty"`
+}
+
+type ParameterInformation struct {
+	Label string `json:"label"`
+}
+
+// RenameParams is sent for textDocument/rename.
+type RenameParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+	NewName      string                 `json:"newName"`
+}
+
+// WorkspaceEdit is returned by textDocument/rename.
+type WorkspaceEdit struct {
+	Changes map[string][]TextEdit `json:"changes,omitempty"`
+}
+
+// TextEdit represents a text edit in a document.
+type TextEdit struct {
+	Range   Range  `json:"range"`
+	NewText string `json:"newText"`
+}
+
+// PrepareRenameParams is sent for textDocument/prepareRename.
+type PrepareRenameParams struct {
+	TextDocumentPositionParams
 }

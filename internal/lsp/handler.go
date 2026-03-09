@@ -58,6 +58,10 @@ func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
 	d.Register("textDocument/documentHighlight", h.handleDocumentHighlight)
 	d.Register("textDocument/implementation", h.handleImplementation)
 	d.Register("workspace/symbol", h.handleWorkspaceSymbol)
+	d.Register("textDocument/completion", h.handleCompletion)
+	d.Register("textDocument/signatureHelp", h.handleSignatureHelp)
+	d.Register("textDocument/rename", h.handleRename)
+	d.Register("textDocument/prepareRename", h.handlePrepareRename)
 }
 
 func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (any, error) {
@@ -76,9 +80,12 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 				Change:    SyncFull,
 				Save:      &SaveOptions{IncludeText: false},
 			},
-			DefinitionProvider:     true,
-			ReferencesProvider:     true,
+			DefinitionProvider:        true,
+			ReferencesProvider:        true,
 			HoverProvider:             true,
+			CompletionProvider:        &CompletionOptions{TriggerCharacters: []string{"."}},
+			SignatureHelpProvider:     &SignatureHelpOptions{TriggerCharacters: []string{"(", ","}},
+			RenameProvider:            &RenameOptions{PrepareProvider: true},
 			DocumentSymbolProvider:    true,
 			DocumentHighlightProvider: true,
 			ImplementationProvider:    true,
@@ -360,6 +367,122 @@ func (h *Handler) handleWorkspaceSymbol(_ context.Context, params json.RawMessag
 	}
 
 	return result, nil
+}
+
+func (h *Handler) handleCompletion(_ context.Context, params json.RawMessage) (any, error) {
+	var p CompletionParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+
+	if h.idx == nil {
+		return CompletionList{}, nil
+	}
+
+	// Extract the word prefix at the cursor position from the symbol index.
+	// We use a simple approach: find the symbol at cursor, or search by empty prefix.
+	prefix := ""
+	if p.Context != nil && p.Context.TriggerCharacter == "." {
+		prefix = ""
+	}
+
+	symbols := h.idx.CompletionSymbols(p.TextDocument.URI, prefix)
+	items := make([]CompletionItem, 0, len(symbols))
+	for _, s := range symbols {
+		item := CompletionItem{
+			Label:      s.Name,
+			Kind:       sdbKindToCompletionKind(s.Kind),
+			InsertText: s.Name,
+		}
+		if s.Signature != nil {
+			item.Detail = formatSignature(s.Name, s.Signature)
+		}
+		items = append(items, item)
+	}
+
+	h.logger.Printf("completion at %s:%d:%d -> %d items",
+		p.TextDocument.URI, p.Position.Line, p.Position.Character, len(items))
+	return CompletionList{IsIncomplete: true, Items: items}, nil
+}
+
+func (h *Handler) handleSignatureHelp(_ context.Context, params json.RawMessage) (any, error) {
+	var p SignatureHelpParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+
+	if h.idx == nil {
+		return nil, nil
+	}
+
+	sym := h.idx.SymbolSignature(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	if sym == nil || sym.Signature == nil {
+		return nil, nil
+	}
+
+	sigInfo := formatSignatureHelp(sym)
+	if sigInfo == nil {
+		return nil, nil
+	}
+
+	return SignatureHelp{
+		Signatures:      []SignatureInformation{*sigInfo},
+		ActiveSignature: 0,
+		ActiveParameter: 0,
+	}, nil
+}
+
+func (h *Handler) handleRename(_ context.Context, params json.RawMessage) (any, error) {
+	var p RenameParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+
+	if h.idx == nil {
+		return nil, nil
+	}
+
+	_, occs := h.idx.RenameOccurrences(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	if len(occs) == 0 {
+		return nil, nil
+	}
+
+	changes := make(map[string][]TextEdit)
+	for _, occ := range occs {
+		if occ.Range == nil {
+			continue
+		}
+		uri := h.toFileURI(occ.URI)
+		changes[uri] = append(changes[uri], TextEdit{
+			Range:   sdbRangeToLSP(occ.Range),
+			NewText: p.NewName,
+		})
+	}
+
+	h.logger.Printf("rename at %s:%d:%d -> %d files affected",
+		p.TextDocument.URI, p.Position.Line, p.Position.Character, len(changes))
+	return WorkspaceEdit{Changes: changes}, nil
+}
+
+func (h *Handler) handlePrepareRename(_ context.Context, params json.RawMessage) (any, error) {
+	var p PrepareRenameParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+
+	if h.idx == nil {
+		return nil, nil
+	}
+
+	sym := h.idx.Hover(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	if sym == nil || sym.Range == nil {
+		return nil, nil
+	}
+
+	return map[string]any{
+		"range":       sdbRangeToLSP(sym.Range),
+		"placeholder": sym.Name,
+	}, nil
 }
 
 // showMessage sends a window/showMessage notification to the editor.

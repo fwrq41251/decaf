@@ -10,16 +10,17 @@ import (
 )
 
 const (
-	semanticdbJavacVersion = "0.10.0"
+	semanticdbJavacVersion  = "0.11.2"
+	semanticdbJavacGroup    = "com/sourcegraph"
 	semanticdbJavacArtifact = "semanticdb-javac"
-	mavenCentralBase       = "https://repo1.maven.org/maven2"
+	mavenCentralBase        = "https://repo1.maven.org/maven2"
 )
 
 // semanticdbJavacJarURL returns the Maven Central URL for the jar.
 func semanticdbJavacJarURL() string {
-	return fmt.Sprintf("%s/org/scalameta/%s/%s/%s-%s.jar",
-		mavenCentralBase, semanticdbJavacArtifact, semanticdbJavacVersion,
-		semanticdbJavacArtifact, semanticdbJavacVersion)
+	return fmt.Sprintf("%s/%s/%s/%s/%s-%s.jar",
+		mavenCentralBase, semanticdbJavacGroup, semanticdbJavacArtifact,
+		semanticdbJavacVersion, semanticdbJavacArtifact, semanticdbJavacVersion)
 }
 
 // cacheDir returns the decaf cache directory (~/.cache/decaf/).
