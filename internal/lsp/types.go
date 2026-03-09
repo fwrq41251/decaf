@@ -37,7 +37,10 @@ type ServerCapabilities struct {
 	DefinitionProvider     bool                     `json:"definitionProvider,omitempty"`
 	ReferencesProvider     bool                     `json:"referencesProvider,omitempty"`
 	HoverProvider          bool                     `json:"hoverProvider,omitempty"`
-	DocumentSymbolProvider bool                     `json:"documentSymbolProvider,omitempty"`
+	DocumentSymbolProvider     bool                     `json:"documentSymbolProvider,omitempty"`
+	DocumentHighlightProvider  bool                     `json:"documentHighlightProvider,omitempty"`
+	ImplementationProvider     bool                     `json:"implementationProvider,omitempty"`
+	WorkspaceSymbolProvider    bool                     `json:"workspaceSymbolProvider,omitempty"`
 }
 
 type TextDocumentSyncOptions struct {
@@ -181,3 +184,28 @@ const (
 	MessageTypeInfo    = 3
 	MessageTypeLog     = 4
 )
+
+// DocumentHighlight represents a document highlight.
+type DocumentHighlight struct {
+	Range Range `json:"range"`
+	Kind  int   `json:"kind,omitempty"`
+}
+
+// DocumentHighlight kinds.
+const (
+	HighlightText  = 1
+	HighlightRead  = 2
+	HighlightWrite = 3
+)
+
+// WorkspaceSymbolParams is sent for workspace/symbol.
+type WorkspaceSymbolParams struct {
+	Query string `json:"query"`
+}
+
+// SymbolInformation is returned by workspace/symbol.
+type SymbolInformation struct {
+	Name       string      `json:"name"`
+	Kind       int         `json:"kind"`
+	Location   LSPLocation `json:"location"`
+}

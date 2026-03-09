@@ -55,6 +55,9 @@ func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
 	d.Register("textDocument/references", h.handleReferences)
 	d.Register("textDocument/hover", h.handleHover)
 	d.Register("textDocument/documentSymbol", h.handleDocumentSymbol)
+	d.Register("textDocument/documentHighlight", h.handleDocumentHighlight)
+	d.Register("textDocument/implementation", h.handleImplementation)
+	d.Register("workspace/symbol", h.handleWorkspaceSymbol)
 }
 
 func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (any, error) {
@@ -75,8 +78,11 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 			},
 			DefinitionProvider:     true,
 			ReferencesProvider:     true,
-			HoverProvider:          true,
-			DocumentSymbolProvider: true,
+			HoverProvider:             true,
+			DocumentSymbolProvider:    true,
+			DocumentHighlightProvider: true,
+			ImplementationProvider:    true,
+			WorkspaceSymbolProvider:   true,
 		},
 		ServerInfo: &ServerInfo{
 			Name:    "decaf",
@@ -274,6 +280,85 @@ func (h *Handler) handleDocumentSymbol(_ context.Context, params json.RawMessage
 
 	symbols := h.idx.FileSymbols(p.TextDocument.URI)
 	result := buildDocumentSymbols(symbols)
+	return result, nil
+}
+
+func (h *Handler) handleDocumentHighlight(_ context.Context, params json.RawMessage) (any, error) {
+	var p TextDocumentPositionParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+
+	if h.idx == nil {
+		return []DocumentHighlight{}, nil
+	}
+
+	occs := h.idx.FileOccurrencesOf(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	highlights := make([]DocumentHighlight, 0, len(occs))
+	for _, occ := range occs {
+		if occ.Range == nil {
+			continue
+		}
+		highlights = append(highlights, DocumentHighlight{
+			Range: sdbRangeToLSP(occ.Range),
+			Kind:  HighlightText,
+		})
+	}
+
+	return highlights, nil
+}
+
+func (h *Handler) handleImplementation(_ context.Context, params json.RawMessage) (any, error) {
+	var p TextDocumentPositionParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+
+	if h.idx == nil {
+		return []LSPLocation{}, nil
+	}
+
+	impls := h.idx.Implementations(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	locations := make([]LSPLocation, 0, len(impls))
+	for _, d := range impls {
+		if d.Range == nil {
+			continue
+		}
+		locations = append(locations, LSPLocation{
+			URI:   h.toFileURI(d.URI),
+			Range: sdbRangeToLSP(d.Range),
+		})
+	}
+
+	return locations, nil
+}
+
+func (h *Handler) handleWorkspaceSymbol(_ context.Context, params json.RawMessage) (any, error) {
+	var p WorkspaceSymbolParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+
+	if h.idx == nil || p.Query == "" {
+		return []SymbolInformation{}, nil
+	}
+
+	symbols := h.idx.SearchSymbols(p.Query)
+	result := make([]SymbolInformation, 0, len(symbols))
+	for _, s := range symbols {
+		if s.Range == nil {
+			continue
+		}
+		result = append(result, SymbolInformation{
+			Name: s.Name,
+			Kind: sdbKindToLSP(s.Kind),
+			Location: LSPLocation{
+				URI:   h.toFileURI(s.URI),
+				Range: sdbRangeToLSP(s.Range),
+			},
+		})
+	}
+
 	return result, nil
 }
 

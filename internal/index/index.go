@@ -27,6 +27,8 @@ type Index struct {
 	fileOccurrences map[string][]Occurrence
 	// uri -> all symbol infos in that file
 	fileSymbols map[string][]Symbol
+	// parent symbol -> list of child symbols that extend/implement it
+	implementors map[string][]string
 }
 
 // NewIndex creates a new empty index.
@@ -38,6 +40,7 @@ func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 		references:      make(map[string][]Occurrence),
 		fileOccurrences: make(map[string][]Occurrence),
 		fileSymbols:     make(map[string][]Symbol),
+		implementors:    make(map[string][]string),
 	}
 }
 
@@ -51,6 +54,7 @@ func (idx *Index) Load() error {
 	idx.references = make(map[string][]Occurrence)
 	idx.fileOccurrences = make(map[string][]Occurrence)
 	idx.fileSymbols = make(map[string][]Symbol)
+	idx.implementors = make(map[string][]string)
 
 	var files []string
 	err := filepath.Walk(idx.sourceRoot, func(path string, info os.FileInfo, err error) error {
@@ -118,6 +122,19 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 		}
 		idx.definitions[sym.Symbol] = append(idx.definitions[sym.Symbol], s)
 		idx.fileSymbols[uri] = append(idx.fileSymbols[uri], s)
+	}
+
+	// Build implementors index from class signatures.
+	for _, sym := range doc.Symbols {
+		if sig := sym.Signature; sig != nil {
+			if cs, ok := sig.SealedValue.(*sdb.Signature_ClassSignature); ok {
+				for _, parent := range cs.ClassSignature.Parents {
+					if tr, ok := parent.SealedValue.(*sdb.Type_TypeRef); ok {
+						idx.implementors[tr.TypeRef.Symbol] = append(idx.implementors[tr.TypeRef.Symbol], sym.Symbol)
+					}
+				}
+			}
+		}
 	}
 
 	// Index occurrences (both definitions and references with ranges).
@@ -242,6 +259,64 @@ func (idx *Index) toRelativeURI(uri string) string {
 // SourceRoot returns the workspace source root path.
 func (idx *Index) SourceRoot() string {
 	return idx.sourceRoot
+}
+
+// SearchSymbols returns symbols matching the query string (case-insensitive substring match).
+func (idx *Index) SearchSymbols(query string) []Symbol {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	query = strings.ToLower(query)
+	var result []Symbol
+	for _, defs := range idx.definitions {
+		for _, d := range defs {
+			if strings.Contains(strings.ToLower(d.Name), query) {
+				result = append(result, d)
+			}
+		}
+	}
+	return result
+}
+
+// FileOccurrencesOf returns all occurrences of a symbol in a specific file.
+func (idx *Index) FileOccurrencesOf(uri string, line, character int) []Occurrence {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	relURI := idx.toRelativeURI(uri)
+	sym := idx.symbolAt(relURI, line, character)
+	if sym == "" {
+		return nil
+	}
+
+	var result []Occurrence
+	for _, occ := range idx.fileOccurrences[relURI] {
+		if occ.Symbol == sym {
+			result = append(result, occ)
+		}
+	}
+	return result
+}
+
+// Implementations returns definitions of types that implement/extend the symbol at the given position.
+func (idx *Index) Implementations(uri string, line, character int) []Symbol {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	relURI := idx.toRelativeURI(uri)
+	sym := idx.symbolAt(relURI, line, character)
+	if sym == "" {
+		return nil
+	}
+
+	implSymbols := idx.implementors[sym]
+	var result []Symbol
+	for _, implSym := range implSymbols {
+		if defs, ok := idx.definitions[implSym]; ok {
+			result = append(result, defs...)
+		}
+	}
+	return result
 }
 
 func containsPosition(r *sdb.Range, line, character int) bool {
