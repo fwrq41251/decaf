@@ -243,8 +243,8 @@ func (idx *Index) Definition(uri string, line, character int) []Symbol {
 	}
 
 	defs := idx.definitions[sym]
-	if len(defs) == 0 && idx.jdkSourceRoot != "" {
-		// Fallback for external symbols (JDK).
+	if len(defs) == 0 && (idx.jdkSourceRoot != "" || len(idx.dependencySources) > 0) {
+		// Fallback for external symbols (JDK/Dependencies).
 		if ext := idx.resolveExternalSymbol(sym); ext != nil {
 			return []Symbol{*ext}
 		}
@@ -260,15 +260,12 @@ func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 
 	parts := strings.Split(sym, "#")
 	if len(parts) == 0 {
-		idx.logger.Printf("Invalid symbol format (no #): %s", sym)
 		return nil
 	}
 	relPath := parts[0] + ".java"
-	idx.logger.Printf("Calculated relPath: %s", relPath)
 
 	// Check cache first.
 	if cachedPath, ok := idx.externalCache.Load(relPath); ok {
-		idx.logger.Printf("Found %s in cache: %s", relPath, cachedPath.(string))
 		return idx.createExternalSymbol(sym, cachedPath.(string))
 	}
 
@@ -280,40 +277,32 @@ func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 				// Already extracted or manually set directory.
 				foundPath := filepath.Join(idx.jdkSourceRoot, relPath)
 				if _, err := os.Stat(foundPath); err == nil {
-					idx.logger.Printf("Found in JDK directory: %s", foundPath)
 					idx.externalCache.Store(relPath, foundPath)
 					return idx.createExternalSymbol(sym, foundPath)
 				}
 			} else if strings.HasSuffix(idx.jdkSourceRoot, ".zip") || strings.HasSuffix(idx.jdkSourceRoot, ".jar") {
 				// It's a zip file (like src.zip). Extract on demand.
 				if foundPath := idx.findAndExtractFromJar(idx.jdkSourceRoot, relPath); foundPath != "" {
-					idx.logger.Printf("Found and extracted from JDK zip: %s", foundPath)
 					idx.externalCache.Store(relPath, foundPath)
 					return idx.createExternalSymbol(sym, foundPath)
 				}
 			}
-		} else {
-			idx.logger.Printf("JDK source root error: %v", err)
 		}
 	}
 
 	// 2. Search in third-party dependency JARs.
 	// Caller (Definition) already holds the RLock, so we access dependencySources directly.
-	idx.logger.Printf("Searching in %d dependency sources", len(idx.dependencySources))
 	for _, jar := range idx.dependencySources {
 		if foundPath := idx.findAndExtractFromJar(jar, relPath); foundPath != "" {
-			idx.logger.Printf("Found and extracted from dependency JAR %s: %s", jar, foundPath)
 			idx.externalCache.Store(relPath, foundPath)
 			return idx.createExternalSymbol(sym, foundPath)
 		}
 	}
 
-	idx.logger.Printf("Symbol %s not found in external sources", sym)
 	return nil
 }
 
 func (idx *Index) createExternalSymbol(sym, path string) *Symbol {
-	idx.logger.Printf("Creating external symbol for %s at %s", sym, path)
 	uri := "file://" + path
 
 	line, col := FindSymbolLocation(path, sym)
@@ -330,8 +319,6 @@ func (idx *Index) createExternalSymbol(sym, path string) *Symbol {
 			EndLine:        int32(line),
 			EndCharacter:   int32(col + len(extractShortName(sym))),
 		}
-	} else {
-		idx.logger.Printf("Tree-sitter could not find symbol %s in %s", sym, path)
 	}
 
 	return s
@@ -359,8 +346,6 @@ func (idx *Index) findAndExtractFromJar(jarPath, relPath string) string {
 	if targetFile == nil {
 		return ""
 	}
-	idx.logger.Printf("Found %s in %s (internal path: %s)", relPath, jarPath, targetFile.Name)
-
 
 	// 2. Extract the file to cache.
 	home, _ := os.UserHomeDir()
@@ -416,13 +401,11 @@ func (idx *Index) References(uri string, line, character int) []Occurrence {
 
 	relURI := idx.toRelativeURI(uri)
 	sym := idx.symbolAt(relURI, line, character)
-	idx.logger.Printf("References request: uri=%s, relURI=%s, symbolAt=%s", uri, relURI, sym)
 	if sym == "" {
 		return nil
 	}
 
 	refs := idx.references[sym]
-	idx.logger.Printf("Found %d references for symbol %s", len(refs), sym)
 	return deduplicateOccurrences(refs)
 }
 
@@ -498,12 +481,6 @@ func (idx *Index) symbolAt(uri string, line, character int) string {
 	uri = filepath.ToSlash(uri)
 	occs, ok := idx.fileOccurrences[uri]
 	if !ok {
-		idx.logger.Printf("No occurrences found for file URI: %q", uri)
-		// Print ALL keys for debugging
-		idx.logger.Printf("Available keys in fileOccurrences:")
-		for k := range idx.fileOccurrences {
-			idx.logger.Printf("  %q", k)
-		}
 		return ""
 	}
 	for _, occ := range occs {

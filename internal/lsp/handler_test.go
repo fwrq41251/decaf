@@ -1,14 +1,21 @@
 package lsp
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/fwrq41251/decaf/internal/index"
 	"github.com/fwrq41251/decaf/internal/jsonrpc"
+	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
+	"google.golang.org/protobuf/proto"
 )
 
 // buildMessage creates a Content-Length framed JSON-RPC message.
@@ -89,5 +96,120 @@ func TestLifecycle(t *testing.T) {
 	}
 	if resp2.Error != nil {
 		t.Fatalf("shutdown returned error: %s", resp2.Error.Message)
+	}
+}
+
+func TestDefinition(t *testing.T) {
+	tmpDir := t.TempDir()
+	
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	transport := jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	h := NewHandler(logger, transport)
+	
+	// Mock Index with one workspace definition and one external symbol.
+	idx := index.NewIndex(logger, tmpDir)
+	
+	// 1. Workspace symbol
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{
+			{
+				Uri: "src/Main.java",
+				Symbols: []*sdb.SymbolInformation{
+					{
+						Symbol:      "com/example/Main#",
+						DisplayName: "Main",
+						Kind:        sdb.SymbolInformation_CLASS,
+					},
+				},
+				Occurrences: []*sdb.SymbolOccurrence{
+					{
+						Symbol: "com/example/Main#",
+						Role:   sdb.SymbolOccurrence_DEFINITION,
+						Range:  &sdb.Range{StartLine: 2, StartCharacter: 13, EndLine: 2, EndCharacter: 17},
+					},
+					{
+						Symbol: "com/example/Main#",
+						Role:   sdb.SymbolOccurrence_REFERENCE,
+						Range:  &sdb.Range{StartLine: 10, StartCharacter: 8, EndLine: 10, EndCharacter: 12},
+					},
+				},
+			},
+		},
+	}
+	// We need to use internal methods or just call indexDocument directly if exported.
+	// Since indexDocument is private, we simulate a load or use Load() on a file.
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "Main.java.semanticdb"), data, 0644)
+	idx.Load()
+	
+	// 2. External symbol setup (mock JAR)
+	jarPath := filepath.Join(tmpDir, "lib.jar")
+	f, _ := os.Create(jarPath)
+	w := zip.NewWriter(f)
+	zf, _ := w.Create("com/example/Lib.java")
+	io.WriteString(zf, "package com.example;\npublic class Lib {}")
+	w.Close()
+	f.Close()
+	idx.AddDependencySource(jarPath)
+
+	h.idx = idx
+
+	// Test case: Workspace definition
+	params := TextDocumentPositionParams{
+		TextDocument: TextDocumentIdentifier{URI: "file://" + tmpDir + "/src/Main.java"},
+		Position:     Position{Line: 10, Character: 9},
+	}
+	rawParams, _ := json.Marshal(params)
+	
+	got, err := h.handleDefinition(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleDefinition failed: %v", err)
+	}
+	locs := got.([]LSPLocation)
+	if len(locs) != 1 {
+		t.Fatalf("expected 1 location, got %d", len(locs))
+	}
+	if locs[0].Range.Start.Line != 2 {
+		t.Errorf("got line %d, want 2", locs[0].Range.Start.Line)
+	}
+
+	// Test case: External definition (using a reference to com/example/Lib# in Main.java)
+	// Add an occurrence for the external symbol in the index.
+	docsExt := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{
+			{
+				Uri: "src/Main.java",
+				Occurrences: []*sdb.SymbolOccurrence{
+					{
+						Symbol: "com/example/Lib#",
+						Role:   sdb.SymbolOccurrence_REFERENCE,
+						Range:  &sdb.Range{StartLine: 15, StartCharacter: 5, EndLine: 15, EndCharacter: 8},
+					},
+				},
+			},
+		},
+	}
+	dataExt, _ := proto.Marshal(docsExt)
+	os.WriteFile(filepath.Join(sdbDir, "External.java.semanticdb"), dataExt, 0644)
+	idx.Load() // Re-load to get the new occurrence.
+
+	paramsExt := TextDocumentPositionParams{
+		TextDocument: TextDocumentIdentifier{URI: "file://" + tmpDir + "/src/Main.java"},
+		Position:     Position{Line: 15, Character: 6},
+	}
+	rawParamsExt, _ := json.Marshal(paramsExt)
+	
+	gotExt, err := h.handleDefinition(context.Background(), rawParamsExt)
+	if err != nil {
+		t.Fatalf("handleDefinition failed for external symbol: %v", err)
+	}
+	locsExt := gotExt.([]LSPLocation)
+	if len(locsExt) != 1 {
+		t.Fatalf("expected 1 external location, got %d", len(locsExt))
+	}
+	if !strings.Contains(locsExt[0].URI, "Lib.java") {
+		t.Errorf("got URI %q, want it to contain Lib.java", locsExt[0].URI)
 	}
 }
