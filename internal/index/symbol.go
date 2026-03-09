@@ -9,8 +9,9 @@ type Symbol struct {
 	Name   string
 	Symbol string // SemanticDB symbol string, e.g. "com/example/Foo#"
 	Kind   sdb.SymbolInformation_Kind
-	URI    string // relative URI from SemanticDB
-	Range  *sdb.Range
+	URI       string // relative URI from SemanticDB
+	Range     *sdb.Range
+	Signature *sdb.Signature
 }
 
 // Occurrence represents a symbol occurrence (reference or definition).

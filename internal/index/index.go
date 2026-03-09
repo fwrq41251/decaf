@@ -110,10 +110,11 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 	// Index symbol definitions.
 	for _, sym := range doc.Symbols {
 		s := Symbol{
-			Name:   sym.DisplayName,
-			Symbol: sym.Symbol,
-			Kind:   sym.Kind,
-			URI:    uri,
+			Name:      sym.DisplayName,
+			Symbol:    sym.Symbol,
+			Kind:      sym.Kind,
+			URI:       uri,
+			Signature: sym.Signature,
 		}
 		idx.definitions[sym.Symbol] = append(idx.definitions[sym.Symbol], s)
 		idx.fileSymbols[uri] = append(idx.fileSymbols[uri], s)
@@ -172,6 +173,33 @@ func (idx *Index) References(uri string, line, character int) []Occurrence {
 	}
 
 	return idx.references[sym]
+}
+
+// Hover returns the symbol information at the given position (for hover).
+func (idx *Index) Hover(uri string, line, character int) *Symbol {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	relURI := idx.toRelativeURI(uri)
+	sym := idx.symbolAt(relURI, line, character)
+	if sym == "" {
+		return nil
+	}
+
+	defs := idx.definitions[sym]
+	if len(defs) == 0 {
+		return nil
+	}
+	return &defs[0]
+}
+
+// FileSymbols returns all symbol definitions in the given file (for documentSymbol).
+func (idx *Index) FileSymbols(uri string) []Symbol {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	relURI := idx.toRelativeURI(uri)
+	return idx.fileSymbols[relURI]
 }
 
 // SymbolAt returns the SemanticDB symbol string at the given position.

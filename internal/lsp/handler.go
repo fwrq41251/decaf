@@ -3,8 +3,8 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
-
 	"path/filepath"
 	"strings"
 
@@ -53,6 +53,8 @@ func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
 	d.Register("textDocument/didClose", h.handleDidClose)
 	d.Register("textDocument/definition", h.handleDefinition)
 	d.Register("textDocument/references", h.handleReferences)
+	d.Register("textDocument/hover", h.handleHover)
+	d.Register("textDocument/documentSymbol", h.handleDocumentSymbol)
 }
 
 func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (any, error) {
@@ -71,8 +73,10 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 				Change:    SyncFull,
 				Save:      &SaveOptions{IncludeText: false},
 			},
-			DefinitionProvider: true,
-			ReferencesProvider: true,
+			DefinitionProvider:     true,
+			ReferencesProvider:     true,
+			HoverProvider:          true,
+			DocumentSymbolProvider: true,
 		},
 		ServerInfo: &ServerInfo{
 			Name:    "decaf",
@@ -91,26 +95,29 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 
 	// Full setup + compile in background.
 	go func() {
-		// Step 1: Auto-setup (detect Maven, bloopInstall, download & inject semanticdb-javac).
+		// Step 1: Auto-setup.
+		h.showMessage(MessageTypeInfo, "decaf: setting up project...")
 		s := setup.NewSetup(h.logger, sourceRoot)
 		if err := s.Run(ctx); err != nil {
 			h.logger.Printf("auto-setup failed: %v", err)
-			// Continue anyway — maybe .bloop/ was already set up manually.
 		}
 
 		// Step 2: Connect to Bloop.
+		h.showMessage(MessageTypeInfo, "decaf: connecting to Bloop...")
 		if err := h.bspClient.Start(ctx, h.rootURI); err != nil {
-			h.logger.Printf("failed to start bloop: %v", err)
+			h.showMessage(MessageTypeError, fmt.Sprintf("decaf: failed to start Bloop: %v", err))
 			return
 		}
 
-		// Step 3: Initial compilation → generates .semanticdb files.
+		// Step 3: Compile.
+		h.showMessage(MessageTypeInfo, "decaf: compiling...")
 		if err := h.bspClient.Compile(ctx); err != nil {
-			h.logger.Printf("initial compile failed: %v", err)
+			h.showMessage(MessageTypeWarning, fmt.Sprintf("decaf: compilation failed: %v", err))
 		}
 
-		// Step 4: Load SemanticDB index.
+		// Step 4: Index.
 		h.reindex()
+		h.showMessage(MessageTypeInfo, "decaf: ready")
 	}()
 
 	return nil, nil
@@ -225,6 +232,64 @@ func (h *Handler) handleReferences(_ context.Context, params json.RawMessage) (a
 	h.logger.Printf("references at %s:%d:%d -> %d results",
 		p.TextDocument.URI, p.Position.Line, p.Position.Character, len(locations))
 	return locations, nil
+}
+
+func (h *Handler) handleHover(_ context.Context, params json.RawMessage) (any, error) {
+	var p TextDocumentPositionParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+
+	if h.idx == nil {
+		return nil, nil
+	}
+
+	sym := h.idx.Hover(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	if sym == nil {
+		return nil, nil
+	}
+
+	content := formatHover(sym)
+	result := HoverResult{
+		Contents: MarkupContent{
+			Kind:  "markdown",
+			Value: content,
+		},
+	}
+
+	return result, nil
+}
+
+func (h *Handler) handleDocumentSymbol(_ context.Context, params json.RawMessage) (any, error) {
+	var p struct {
+		TextDocument TextDocumentIdentifier `json:"textDocument"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+
+	if h.idx == nil {
+		return []DocumentSymbol{}, nil
+	}
+
+	symbols := h.idx.FileSymbols(p.TextDocument.URI)
+	result := buildDocumentSymbols(symbols)
+	return result, nil
+}
+
+// showMessage sends a window/showMessage notification to the editor.
+func (h *Handler) showMessage(msgType int, message string) {
+	notification, err := jsonrpc.NewNotification("window/showMessage", ShowMessageParams{
+		Type:    msgType,
+		Message: message,
+	})
+	if err != nil {
+		h.logger.Printf("failed to create showMessage notification: %v", err)
+		return
+	}
+	if err := h.transport.WriteRequest(notification); err != nil {
+		h.logger.Printf("failed to send showMessage: %v", err)
+	}
 }
 
 func (h *Handler) reindex() {

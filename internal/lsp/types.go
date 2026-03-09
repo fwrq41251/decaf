@@ -33,9 +33,11 @@ type ServerInfo struct {
 
 // ServerCapabilities declares what the server can do.
 type ServerCapabilities struct {
-	TextDocumentSync   *TextDocumentSyncOptions `json:"textDocumentSync,omitempty"`
-	DefinitionProvider bool                     `json:"definitionProvider,omitempty"`
-	ReferencesProvider bool                     `json:"referencesProvider,omitempty"`
+	TextDocumentSync       *TextDocumentSyncOptions `json:"textDocumentSync,omitempty"`
+	DefinitionProvider     bool                     `json:"definitionProvider,omitempty"`
+	ReferencesProvider     bool                     `json:"referencesProvider,omitempty"`
+	HoverProvider          bool                     `json:"hoverProvider,omitempty"`
+	DocumentSymbolProvider bool                     `json:"documentSymbolProvider,omitempty"`
 }
 
 type TextDocumentSyncOptions struct {
@@ -126,3 +128,56 @@ type TextDocumentItem struct {
 	Version    int    `json:"version"`
 	Text       string `json:"text"`
 }
+
+// HoverResult is returned by textDocument/hover.
+type HoverResult struct {
+	Contents MarkupContent `json:"contents"`
+	Range    *Range        `json:"range,omitempty"`
+}
+
+type MarkupContent struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
+// DocumentSymbol represents a symbol in a document (for outline view).
+type DocumentSymbol struct {
+	Name           string           `json:"name"`
+	Detail         string           `json:"detail,omitempty"`
+	Kind           int              `json:"kind"`
+	Range          Range            `json:"range"`
+	SelectionRange Range            `json:"selectionRange"`
+	Children       []DocumentSymbol `json:"children,omitempty"`
+}
+
+// LSP SymbolKind constants.
+const (
+	SymbolKindFile        = 1
+	SymbolKindModule      = 2
+	SymbolKindNamespace   = 3
+	SymbolKindPackage     = 4
+	SymbolKindClass       = 5
+	SymbolKindMethod      = 6
+	SymbolKindProperty    = 7
+	SymbolKindField       = 8
+	SymbolKindConstructor = 9
+	SymbolKindEnum        = 10
+	SymbolKindInterface   = 11
+	SymbolKindFunction    = 12
+	SymbolKindVariable    = 13
+	SymbolKindConstant    = 14
+)
+
+// ShowMessageParams is sent from server to client to show a message.
+type ShowMessageParams struct {
+	Type    int    `json:"type"`
+	Message string `json:"message"`
+}
+
+// MessageType constants.
+const (
+	MessageTypeError   = 1
+	MessageTypeWarning = 2
+	MessageTypeInfo    = 3
+	MessageTypeLog     = 4
+)
