@@ -147,6 +147,42 @@ func (c *Client) Compile(ctx context.Context) error {
 	return nil
 }
 
+// DependencySources returns the source JARs for all known build targets.
+func (c *Client) DependencySources(ctx context.Context) ([]DependencySourcesItem, error) {
+	if len(c.targets) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]BuildTargetIdentifier, 0, len(c.targets))
+	for _, t := range c.targets {
+		ids = append(ids, t.ID)
+	}
+
+	var result DependencySourcesResult
+	if err := c.call(ctx, "buildTarget/dependencySources", DependencySourcesParams{Targets: ids}, &result); err != nil {
+		return nil, fmt.Errorf("buildTarget/dependencySources failed: %w", err)
+	}
+	return result.Items, nil
+}
+
+// JvmRunEnvironment returns the JVM runtime environment (including javaHome) for all known build targets.
+func (c *Client) JvmRunEnvironment(ctx context.Context) ([]JvmEnvironmentItem, error) {
+	if len(c.targets) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]BuildTargetIdentifier, 0, len(c.targets))
+	for _, t := range c.targets {
+		ids = append(ids, t.ID)
+	}
+
+	var result JvmRunEnvironmentResult
+	if err := c.call(ctx, "buildTarget/jvmRunEnvironment", JvmRunEnvironmentParams{Targets: ids}, &result); err != nil {
+		return nil, fmt.Errorf("buildTarget/jvmRunEnvironment failed: %w", err)
+	}
+	return result.Items, nil
+}
+
 // Shutdown sends build/shutdown and build/exit to Bloop.
 func (c *Client) Shutdown(ctx context.Context) error {
 	if c.socketDir != "" {

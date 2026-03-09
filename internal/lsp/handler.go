@@ -106,16 +106,30 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 	sourceRoot := strings.TrimPrefix(h.rootURI, "file://")
 	h.idx = index.NewIndex(h.logger, sourceRoot)
 
+	// Discover JDK source for goto definition fallback (initial detection).
+	s := setup.NewSetup(h.logger, sourceRoot)
+	if jdkSrc := s.DiscoverJDKSource(""); jdkSrc != "" {
+		h.logger.Printf("Initially discovered JDK source: %s", jdkSrc)
+		h.idx.SetJdkSourceRoot(jdkSrc)
+	}
+
 	// Initial scan of existing .semanticdb files.
 	h.reindex()
 
-	// Full setup + compile in background.
+	// Decide if we need a full build.
+	needsFullBuild := !h.idx.HasFiles()
+
+	// Full setup + compile in background if needed.
 	go func() {
-		// Step 1: Auto-setup.
-		h.showMessage(MessageTypeInfo, "decaf: setting up project...")
-		s := setup.NewSetup(h.logger, sourceRoot)
-		if err := s.Run(ctx); err != nil {
-			h.logger.Printf("auto-setup failed: %v", err)
+		if needsFullBuild {
+			h.logger.Println("No indexed files found, starting full setup and compilation...")
+			
+			// Step 1: Auto-setup.
+			h.showMessage(MessageTypeInfo, "decaf: setting up project...")
+			s := setup.NewSetup(h.logger, sourceRoot)
+			if err := s.Run(ctx); err != nil {
+				h.logger.Printf("auto-setup failed: %v", err)
+			}
 		}
 
 		// Step 2: Connect to Bloop.
@@ -125,14 +139,42 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 			return
 		}
 
-		// Step 3: Compile.
-		h.showMessage(MessageTypeInfo, "decaf: compiling...")
-		if err := h.bspClient.Compile(ctx); err != nil {
-			h.showMessage(MessageTypeWarning, fmt.Sprintf("decaf: compilation failed: %v", err))
+		// Step 2.5: Fetch dependency sources and JVM environment.
+		if items, err := h.bspClient.DependencySources(ctx); err == nil {
+			for _, item := range items {
+				for _, src := range item.Sources {
+					if strings.HasSuffix(src, ".jar") {
+						h.idx.AddDependencySource(strings.TrimPrefix(src, "file://"))
+					}
+				}
+			}
 		}
 
-		// Step 4: Index (picks up fresh .semanticdb from compilation).
-		h.reindex()
+		if envs, err := h.bspClient.JvmRunEnvironment(ctx); err == nil && len(envs) > 0 {
+			// Use the javaHome of the first target to refine JDK source discovery.
+			for _, env := range envs {
+				if env.JavaHome != "" {
+					javaHome := strings.TrimPrefix(env.JavaHome, "file://")
+					if jdkSrc := s.DiscoverJDKSource(javaHome); jdkSrc != "" {
+						h.logger.Printf("Refined JDK source from BSP: %s", jdkSrc)
+						h.idx.SetJdkSourceRoot(jdkSrc)
+						break
+					}
+				}
+			}
+		}
+
+		if needsFullBuild {
+			// Step 3: Full Compile (picks up fresh .semanticdb).
+			h.showMessage(MessageTypeInfo, "decaf: compiling...")
+			if err := h.bspClient.Compile(ctx); err != nil {
+				h.showMessage(MessageTypeWarning, fmt.Sprintf("decaf: compilation failed: %v", err))
+			}
+			h.reindex()
+		} else {
+			h.logger.Println("Existing index found, skipping initial full compilation.")
+		}
+
 		h.showMessage(MessageTypeInfo, "decaf: ready")
 	}()
 

@@ -80,6 +80,41 @@ type BuildTargetCapabilities struct {
 	CanRun     bool `json:"canRun"`
 }
 
+// DependencySourcesParams is sent for "buildTarget/dependencySources".
+type DependencySourcesParams struct {
+	Targets []BuildTargetIdentifier `json:"targets"`
+}
+
+// DependencySourcesResult is returned by "buildTarget/dependencySources".
+type DependencySourcesResult struct {
+	Items []DependencySourcesItem `json:"items"`
+}
+
+type DependencySourcesItem struct {
+	Target  BuildTargetIdentifier `json:"target"`
+	Sources []string              `json:"sources"`
+}
+
+// JvmRunEnvironmentParams is sent for "buildTarget/jvmRunEnvironment".
+type JvmRunEnvironmentParams struct {
+	Targets []BuildTargetIdentifier `json:"targets"`
+}
+
+// JvmRunEnvironmentResult is returned by "buildTarget/jvmRunEnvironment".
+type JvmRunEnvironmentResult struct {
+	Items []JvmEnvironmentItem `json:"items"`
+}
+
+type JvmEnvironmentItem struct {
+	Target             BuildTargetIdentifier `json:"target"`
+	Classpath          []string              `json:"classpath"`
+	JvmOptions         []string              `json:"jvmOptions"`
+	WorkingDirectory   string                `json:"workingDirectory"`
+	EnvironmentVariables map[string]string     `json:"environmentVariables"`
+	JavaHome           string                `json:"javaHome,omitempty"`
+	JavaVersion        string                `json:"javaVersion,omitempty"`
+}
+
 // PublishDiagnosticsParams is sent by the build server as a notification.
 type PublishDiagnosticsParams struct {
 	TextDocument TextDocumentIdentifier `json:"textDocument"`

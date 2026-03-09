@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -57,6 +58,49 @@ func (s *Setup) detectBuildTool() string {
 	if _, err := os.Stat(filepath.Join(s.workspaceDir, "pom.xml")); err == nil {
 		return "maven"
 	}
-	// Future: detect build.gradle, build.sbt, etc.
 	return ""
+}
+
+// DiscoverJDKSource attempts to find the path to the JDK source and extracts it if it is a zip.
+// If javaHomeOverride is provided, it uses that instead of detecting from environment.
+func (s *Setup) DiscoverJDKSource(javaHomeOverride string) string {
+	javaHome := javaHomeOverride
+	if javaHome == "" {
+		javaHome = os.Getenv("JAVA_HOME")
+		if javaHome == "" {
+			// Try to find java home from path.
+			if path, err := exec.LookPath("java"); err == nil {
+				if realPath, err := filepath.EvalSymlinks(path); err == nil {
+					// java is usually in bin/java
+					javaHome = filepath.Dir(filepath.Dir(realPath))
+				}
+			}
+		}
+	}
+
+	if javaHome == "" {
+		return ""
+	}
+
+	// Common locations for src.zip in modern JDKs.
+	zipPaths := []string{
+		filepath.Join(javaHome, "lib", "src.zip"),
+		filepath.Join(javaHome, "src.zip"),
+	}
+
+	var srcZip string
+	for _, p := range zipPaths {
+		if _, err := os.Stat(p); err == nil {
+			srcZip = p
+			break
+		}
+	}
+
+	if srcZip == "" {
+		return ""
+	}
+
+	// No longer extract the entire src.zip. The indexer will extract files on demand
+	// using findAndExtractFromJar.
+	return srcZip
 }

@@ -1,7 +1,9 @@
 package index
 
 import (
+	"archive/zip"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -29,19 +31,51 @@ type Index struct {
 	fileSymbols map[string][]Symbol
 	// parent symbol -> list of child symbols that extend/implement it
 	implementors map[string][]string
+	// path to JDK source (e.g., /path/to/jdk/lib/src.zip)
+	jdkSourceRoot string
+	// list of third-party source JARs (file paths)
+	dependencySources []string
 }
 
 // NewIndex creates a new empty index.
 func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 	return &Index{
-		logger:          logger,
-		sourceRoot:      sourceRoot,
-		definitions:     make(map[string][]Symbol),
-		references:      make(map[string][]Occurrence),
-		fileOccurrences: make(map[string][]Occurrence),
-		fileSymbols:     make(map[string][]Symbol),
-		implementors:    make(map[string][]string),
+		logger:            logger,
+		sourceRoot:        sourceRoot,
+		definitions:       make(map[string][]Symbol),
+		references:        make(map[string][]Occurrence),
+		fileOccurrences:   make(map[string][]Occurrence),
+		fileSymbols:       make(map[string][]Symbol),
+		implementors:      make(map[string][]string),
+		dependencySources: []string{},
 	}
+}
+
+// SetDependencySources sets the list of third-party library source JARs.
+func (idx *Index) SetDependencySources(paths []string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.dependencySources = paths
+}
+
+// AddDependencySource adds a single third-party library source JAR.
+func (idx *Index) AddDependencySource(path string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.dependencySources = append(idx.dependencySources, path)
+}
+
+// SetJdkSourceRoot sets the path to the JDK source files.
+func (idx *Index) SetJdkSourceRoot(path string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.jdkSourceRoot = path
+}
+
+func (idx *Index) HasFiles() bool {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return len(idx.fileOccurrences) > 0
 }
 
 // Load scans the workspace for .semanticdb files and indexes them.
@@ -196,7 +230,139 @@ func (idx *Index) Definition(uri string, line, character int) []Symbol {
 	}
 
 	defs := idx.definitions[sym]
+	if len(defs) == 0 && idx.jdkSourceRoot != "" {
+		// Fallback for external symbols (JDK).
+		if ext := idx.resolveExternalSymbol(sym); ext != nil {
+			return []Symbol{*ext}
+		}
+	}
 	return deduplicateSymbols(defs)
+}
+
+func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
+	// Simple mapping for JDK/Dependency symbols.
+	// Format: "java/lang/String#" -> "java/lang/String.java"
+	// Format: "org/springframework/util/StringUtils#hasText()." -> "org/springframework/util/StringUtils.java"
+
+	parts := strings.Split(sym, "#")
+	if len(parts) == 0 {
+		return nil
+	}
+	relPath := parts[0] + ".java"
+
+	// 1. Search in JDK source if available.
+	if idx.jdkSourceRoot != "" {
+		info, err := os.Stat(idx.jdkSourceRoot)
+		if err == nil {
+			if info.IsDir() {
+				// Already extracted or manually set directory.
+				foundPath := filepath.Join(idx.jdkSourceRoot, relPath)
+				if _, err := os.Stat(foundPath); err == nil {
+					return idx.createExternalSymbol(sym, foundPath)
+				}
+			} else if strings.HasSuffix(idx.jdkSourceRoot, ".zip") || strings.HasSuffix(idx.jdkSourceRoot, ".jar") {
+				// It's a zip file (like src.zip). Extract on demand.
+				if foundPath := idx.findAndExtractFromJar(idx.jdkSourceRoot, relPath); foundPath != "" {
+					return idx.createExternalSymbol(sym, foundPath)
+				}
+			}
+		}
+	}
+
+	// 2. Search in third-party dependency JARs.
+	// Caller (Definition) already holds the RLock, so we access dependencySources directly.
+	for _, jar := range idx.dependencySources {
+		if foundPath := idx.findAndExtractFromJar(jar, relPath); foundPath != "" {
+			return idx.createExternalSymbol(sym, foundPath)
+		}
+	}
+
+	return nil
+}
+
+func (idx *Index) createExternalSymbol(sym, path string) *Symbol {
+	uri := "file://" + path
+
+	line, col := FindSymbolLocation(path, sym)
+
+	s := &Symbol{
+		Symbol: sym,
+		URI:    uri,
+	}
+
+	if line != -1 {
+		s.Range = &sdb.Range{
+			StartLine:      int32(line),
+			StartCharacter: int32(col),
+			EndLine:        int32(line),
+			EndCharacter:   int32(col + len(extractShortName(sym))),
+		}
+	}
+
+	return s
+}
+
+func (idx *Index) findAndExtractFromJar(jarPath, relPath string) string {
+	// 1. Check if the JAR contains the file.
+	r, err := zip.OpenReader(jarPath)
+	if err != nil {
+		return ""
+	}
+	defer r.Close()
+
+	var targetFile *zip.File
+	for _, f := range r.File {
+		if strings.HasSuffix(filepath.ToSlash(f.Name), relPath) {
+			targetFile = f
+			break
+		}
+	}
+
+	if targetFile == nil {
+		return ""
+	}
+
+	// 2. Extract the file to cache.
+	home, _ := os.UserHomeDir()
+	sanitizedJar := strings.ReplaceAll(strings.TrimPrefix(jarPath, "/"), "/", "_")
+	destDir := filepath.Join(home, ".cache", "decaf", "lib-src", sanitizedJar)
+	destPath := filepath.Join(destDir, targetFile.Name)
+
+	if _, err := os.Stat(destPath); err == nil {
+		return destPath
+	}
+
+	os.MkdirAll(filepath.Dir(destPath), 0755)
+	rc, err := targetFile.Open()
+	if err != nil {
+		return ""
+	}
+	defer rc.Close()
+
+	// Atomic extraction: write to a temporary file and then rename.
+	tmpPath := destPath + ".tmp"
+	out, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return ""
+	}
+
+	if _, err := io.Copy(out, rc); err != nil {
+		out.Close()
+		os.Remove(tmpPath)
+		return ""
+	}
+	out.Close()
+
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		os.Remove(tmpPath)
+		// Check again if another goroutine succeeded in the meantime.
+		if _, statErr := os.Stat(destPath); statErr == nil {
+			return destPath
+		}
+		return ""
+	}
+
+	return destPath
 }
 
 // References returns all reference locations for a symbol at the given position.
