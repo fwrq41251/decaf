@@ -259,11 +259,6 @@ func (h *Handler) handleDefinition(_ context.Context, params json.RawMessage) (a
 
 	h.logger.Printf("definition at %s:%d:%d -> %d results",
 		p.TextDocument.URI, p.Position.Line, p.Position.Character, len(locations))
-	for i, loc := range locations {
-		h.logger.Printf("  result[%d]: %s:%d:%d-%d:%d", i, loc.URI, 
-			loc.Range.Start.Line, loc.Range.Start.Character, 
-			loc.Range.End.Line, loc.Range.End.Character)
-	}
 	return locations, nil
 }
 
@@ -321,11 +316,6 @@ func (h *Handler) handleReferences(_ context.Context, params json.RawMessage) (a
 
 	h.logger.Printf("references at %s:%d:%d -> %d results",
 		p.TextDocument.URI, p.Position.Line, p.Position.Character, len(locations))
-	for i, loc := range locations {
-		h.logger.Printf("  result[%d]: %s:%d:%d-%d:%d", i, loc.URI, 
-			loc.Range.Start.Line, loc.Range.Start.Character, 
-			loc.Range.End.Line, loc.Range.End.Character)
-	}
 	return locations, nil
 }
 
