@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"path/filepath"
 	"strings"
 
 	"github.com/fwrq41251/decaf/internal/bsp"
 	"github.com/fwrq41251/decaf/internal/index"
 	"github.com/fwrq41251/decaf/internal/jsonrpc"
 	"github.com/fwrq41251/decaf/internal/setup"
+	"github.com/fwrq41251/decaf/internal/uri"
 )
 
 // Handler holds the LSP handler state and methods.
@@ -44,24 +44,31 @@ func (h *Handler) ExitCh() <-chan struct{} {
 
 // RegisterAll registers all LSP handlers on the dispatcher.
 func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
+	// Lifecycle — must run sequentially.
 	d.Register("initialize", h.handleInitialize)
 	d.Register("initialized", h.handleInitialized)
 	d.Register("shutdown", h.handleShutdown)
 	d.Register("exit", h.handleExit)
+
+	// Notifications — sequential.
 	d.Register("textDocument/didOpen", h.handleDidOpen)
 	d.Register("textDocument/didSave", h.handleDidSave)
 	d.Register("textDocument/didClose", h.handleDidClose)
-	d.Register("textDocument/definition", h.handleDefinition)
-	d.Register("textDocument/references", h.handleReferences)
-	d.Register("textDocument/hover", h.handleHover)
-	d.Register("textDocument/documentSymbol", h.handleDocumentSymbol)
-	d.Register("textDocument/documentHighlight", h.handleDocumentHighlight)
-	d.Register("textDocument/implementation", h.handleImplementation)
-	d.Register("workspace/symbol", h.handleWorkspaceSymbol)
-	d.Register("textDocument/completion", h.handleCompletion)
-	d.Register("textDocument/signatureHelp", h.handleSignatureHelp)
+
+	// Read-only requests — safe to run concurrently.
+	d.RegisterConcurrent("textDocument/definition", h.handleDefinition)
+	d.RegisterConcurrent("textDocument/references", h.handleReferences)
+	d.RegisterConcurrent("textDocument/hover", h.handleHover)
+	d.RegisterConcurrent("textDocument/documentSymbol", h.handleDocumentSymbol)
+	d.RegisterConcurrent("textDocument/documentHighlight", h.handleDocumentHighlight)
+	d.RegisterConcurrent("textDocument/implementation", h.handleImplementation)
+	d.RegisterConcurrent("workspace/symbol", h.handleWorkspaceSymbol)
+	d.RegisterConcurrent("textDocument/completion", h.handleCompletion)
+	d.RegisterConcurrent("textDocument/signatureHelp", h.handleSignatureHelp)
+	d.RegisterConcurrent("textDocument/prepareRename", h.handlePrepareRename)
+
+	// Rename mutates state — sequential.
 	d.Register("textDocument/rename", h.handleRename)
-	d.Register("textDocument/prepareRename", h.handlePrepareRename)
 }
 
 func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (any, error) {
@@ -103,7 +110,7 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 	h.logger.Println("client sent initialized notification")
 
 	// Initialize SemanticDB index.
-	sourceRoot := strings.TrimPrefix(h.rootURI, "file://")
+	sourceRoot := uri.ToPath(h.rootURI)
 	h.idx = index.NewIndex(h.logger, sourceRoot)
 
 	// Discover JDK source for goto definition fallback (initial detection).
@@ -144,7 +151,7 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 			for _, item := range items {
 				for _, src := range item.Sources {
 					if strings.HasSuffix(src, ".jar") {
-						h.idx.AddDependencySource(strings.TrimPrefix(src, "file://"))
+						h.idx.AddDependencySource(uri.ToPath(src))
 					}
 				}
 			}
@@ -154,7 +161,7 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 			// Use the javaHome of the first target to refine JDK source discovery.
 			for _, env := range envs {
 				if env.JavaHome != "" {
-					javaHome := strings.TrimPrefix(env.JavaHome, "file://")
+					javaHome := uri.ToPath(env.JavaHome)
 					if jdkSrc := s.DiscoverJDKSource(javaHome); jdkSrc != "" {
 						h.logger.Printf("Refined JDK source from BSP: %s", jdkSrc)
 						h.idx.SetJdkSourceRoot(jdkSrc)
@@ -184,6 +191,9 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 func (h *Handler) handleShutdown(ctx context.Context, _ json.RawMessage) (any, error) {
 	h.shutdown = true
 	h.logger.Println("shutdown requested")
+	if h.idx != nil {
+		h.idx.Close()
+	}
 	if err := h.bspClient.Shutdown(ctx); err != nil {
 		h.logger.Printf("bloop shutdown error: %v", err)
 	}
@@ -467,7 +477,7 @@ func (h *Handler) handleCompletion(_ context.Context, params json.RawMessage) (a
 			InsertText: s.Name,
 		}
 		if s.Signature != nil {
-			item.Detail = formatSignature(s.Name, s.Signature)
+			item.Detail = s.Signature.Label
 		}
 		items = append(items, item)
 	}
@@ -583,11 +593,10 @@ func (h *Handler) reindex() {
 
 // toFileURI converts a SemanticDB relative URI to an absolute file:// URI.
 func (h *Handler) toFileURI(relURI string) string {
-	if strings.HasPrefix(relURI, "file://") {
+	if uri.IsURI(relURI) {
 		return relURI
 	}
-	sourceRoot := strings.TrimPrefix(h.rootURI, "file://")
-	return "file://" + filepath.Join(sourceRoot, relURI)
+	return uri.Join(h.rootURI, relURI)
 }
 
 // handleBSPDiagnostics converts BSP diagnostics to LSP diagnostics and publishes them.

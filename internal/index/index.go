@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
+	"github.com/fwrq41251/decaf/internal/uri"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -24,15 +26,27 @@ type Index struct {
 	sourceRoot string // workspace root (file path, not URI)
 
 	// symbol string -> list of definition locations
-	definitions map[string][]Symbol
+	definitions map[string][]*Symbol
 	// symbol string -> list of reference occurrences
-	references map[string][]Occurrence
+	references map[string][]*Occurrence
 	// uri -> all occurrences in that file (for position-based lookups)
-	fileOccurrences map[string][]Occurrence
+	fileOccurrences map[string][]*Occurrence
 	// uri -> all symbol infos in that file
-	fileSymbols map[string][]Symbol
+	fileSymbols map[string][]*Symbol
 	// parent symbol -> list of child symbols that extend/implement it
 	implementors map[string][]string
+
+	// string intern pool to deduplicate URI and symbol strings
+	internPool map[string]string
+
+	// Incremental indexing state.
+	// .semanticdb file path -> last indexed modification time
+	modTimes map[string]time.Time
+	// .semanticdb file path -> list of document URIs it contained
+	sdbToURIs map[string][]string
+	// file system watcher (nil until first Load completes)
+	watcher *watcher
+
 	// path to JDK source (e.g., /path/to/jdk/lib/src.zip)
 	jdkSourceRoot string
 	// list of third-party source JARs (file paths)
@@ -46,11 +60,14 @@ func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 	return &Index{
 		logger:            logger,
 		sourceRoot:        sourceRoot,
-		definitions:       make(map[string][]Symbol),
-		references:        make(map[string][]Occurrence),
-		fileOccurrences:   make(map[string][]Occurrence),
-		fileSymbols:       make(map[string][]Symbol),
+		definitions:       make(map[string][]*Symbol),
+		references:        make(map[string][]*Occurrence),
+		fileOccurrences:   make(map[string][]*Occurrence),
+		fileSymbols:       make(map[string][]*Symbol),
 		implementors:      make(map[string][]string),
+		internPool:        make(map[string]string),
+		modTimes:          make(map[string]time.Time),
+		sdbToURIs:         make(map[string][]string),
 		dependencySources: []string{},
 	}
 }
@@ -90,38 +107,35 @@ func (idx *Index) HasFiles() bool {
 	return len(idx.fileOccurrences) > 0
 }
 
-// Load scans the workspace for .semanticdb files and indexes them.
+// Load indexes .semanticdb files incrementally.
+// On the first call it does a full directory walk and starts a file watcher.
+// Subsequent calls process only files reported as changed by the watcher.
 func (idx *Index) Load() error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	idx.logger.Printf("Indexing workspace: %s", idx.sourceRoot)
+	if idx.watcher != nil {
+		return idx.loadFromWatcher()
+	}
+	return idx.loadFull()
+}
 
-	// Clear existing data.
-	idx.definitions = make(map[string][]Symbol)
-	idx.references = make(map[string][]Occurrence)
-	idx.fileOccurrences = make(map[string][]Occurrence)
-	idx.fileSymbols = make(map[string][]Symbol)
-	idx.implementors = make(map[string][]string)
-	idx.clearExternalCache()
-
-	var files []string
+// loadFull walks the entire workspace, indexes all .semanticdb files,
+// and starts the file watcher for future incremental loads.
+func (idx *Index) loadFull() error {
+	current := make(map[string]os.FileInfo)
 	err := filepath.Walk(idx.sourceRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 		if info.IsDir() {
-			name := info.Name()
-			// Skip internal build tool and cache directories.
-			if name == ".bloop" || name == ".metals" || name == ".git" || 
-			   strings.Contains(path, "bloop-internal-classes") || 
-			   strings.Contains(path, "bloop-bsp-clients-classes") {
+			if isSkippedDir(info.Name(), path) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		if strings.HasSuffix(path, ".semanticdb") {
-			files = append(files, path)
+			current[path] = info
 		}
 		return nil
 	})
@@ -129,16 +143,95 @@ func (idx *Index) Load() error {
 		return fmt.Errorf("walking source root: %w", err)
 	}
 
-	idx.logger.Printf("Found %d .semanticdb files in %s", len(files), idx.sourceRoot)
-
-	for _, f := range files {
-		if err := idx.indexFile(f); err != nil {
-			idx.logger.Printf("warning: failed to index %s: %v", f, err)
-		} else {
-			idx.logger.Printf("Indexed file: %s", f)
+	var toIndex []string
+	for path, info := range current {
+		prev, ok := idx.modTimes[path]
+		if !ok || info.ModTime().After(prev) {
+			toIndex = append(toIndex, path)
 		}
 	}
 
+	var deleted []string
+	for path := range idx.modTimes {
+		if _, ok := current[path]; !ok {
+			deleted = append(deleted, path)
+		}
+	}
+
+	if len(toIndex) == 0 && len(deleted) == 0 {
+		idx.logger.Printf("index up-to-date (%d files, no changes)", len(current))
+	} else {
+		idx.logger.Printf("full scan: %d new/modified, %d deleted (of %d total)",
+			len(toIndex), len(deleted), len(current))
+
+		for _, path := range deleted {
+			idx.removeFile(path)
+		}
+		for _, path := range toIndex {
+			idx.removeFile(path)
+			if err := idx.indexFile(path); err != nil {
+				idx.logger.Printf("warning: failed to index %s: %v", path, err)
+				continue
+			}
+			idx.modTimes[path] = current[path].ModTime()
+		}
+		if len(toIndex) > 0 || len(deleted) > 0 {
+			idx.clearExternalCache()
+		}
+		idx.logStats()
+	}
+
+	// Start watcher for subsequent incremental loads.
+	w, err := newWatcher(idx)
+	if err != nil {
+		idx.logger.Printf("warning: failed to start file watcher: %v (falling back to full scan)", err)
+	} else {
+		w.watchDirs(idx.sourceRoot)
+		idx.watcher = w
+		idx.logger.Printf("file watcher started for %s", idx.sourceRoot)
+	}
+
+	return nil
+}
+
+// loadFromWatcher processes only files reported as changed by the file watcher.
+func (idx *Index) loadFromWatcher() error {
+	dirty, removed := idx.watcher.drain()
+
+	if len(dirty) == 0 && len(removed) == 0 {
+		idx.logger.Printf("index up-to-date (no watcher events)")
+		return nil
+	}
+
+	idx.logger.Printf("watcher index: %d changed, %d removed", len(dirty), len(removed))
+
+	for _, path := range removed {
+		idx.removeFile(path)
+	}
+
+	for _, path := range dirty {
+		info, err := os.Stat(path)
+		if err != nil {
+			// File was created then quickly deleted.
+			idx.removeFile(path)
+			continue
+		}
+		idx.removeFile(path)
+		if err := idx.indexFile(path); err != nil {
+			idx.logger.Printf("warning: failed to index %s: %v", path, err)
+			continue
+		}
+		idx.modTimes[path] = info.ModTime()
+	}
+
+	if len(dirty) > 0 || len(removed) > 0 {
+		idx.clearExternalCache()
+	}
+	idx.logStats()
+	return nil
+}
+
+func (idx *Index) logStats() {
 	totalDefs := 0
 	for _, defs := range idx.definitions {
 		totalDefs += len(defs)
@@ -147,9 +240,96 @@ func (idx *Index) Load() error {
 	for _, refs := range idx.references {
 		totalRefs += len(refs)
 	}
-	idx.logger.Printf("Indexed %d definitions, %d references across %d files", totalDefs, totalRefs, len(files))
+	idx.logger.Printf("index totals: %d definitions, %d references", totalDefs, totalRefs)
+}
 
-	return nil
+// Close stops the file watcher. Safe to call multiple times.
+func (idx *Index) Close() {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if idx.watcher != nil {
+		_ = idx.watcher.close()
+		idx.watcher = nil
+	}
+}
+
+// removeFile removes all index data associated with a .semanticdb file.
+func (idx *Index) removeFile(path string) {
+	uris := idx.sdbToURIs[path]
+	for _, uri := range uris {
+		idx.removeDocument(uri)
+	}
+	delete(idx.sdbToURIs, path)
+	delete(idx.modTimes, path)
+}
+
+// removeDocument removes all index entries for a given document URI.
+func (idx *Index) removeDocument(uri string) {
+	// Collect symbols defined in this document for cleanup.
+	var docSymbols []string
+	for _, s := range idx.fileSymbols[uri] {
+		docSymbols = append(docSymbols, s.Symbol)
+	}
+
+	// Remove definitions belonging to this URI.
+	for _, sym := range docSymbols {
+		if defs, ok := idx.definitions[sym]; ok {
+			filtered := defs[:0]
+			for _, d := range defs {
+				if d.URI != uri {
+					filtered = append(filtered, d)
+				}
+			}
+			if len(filtered) > 0 {
+				idx.definitions[sym] = filtered
+			} else {
+				delete(idx.definitions, sym)
+			}
+		}
+	}
+
+	// Remove references belonging to this URI.
+	for sym, refs := range idx.references {
+		filtered := refs[:0]
+		for _, r := range refs {
+			if r.URI != uri {
+				filtered = append(filtered, r)
+			}
+		}
+		if len(filtered) > 0 {
+			idx.references[sym] = filtered
+		} else {
+			delete(idx.references, sym)
+		}
+	}
+
+	// Remove implementors contributed by symbols from this URI.
+	for _, sym := range docSymbols {
+		for parent, children := range idx.implementors {
+			filtered := children[:0]
+			for _, child := range children {
+				if child != sym {
+					filtered = append(filtered, child)
+				}
+			}
+			if len(filtered) > 0 {
+				idx.implementors[parent] = filtered
+			} else {
+				delete(idx.implementors, parent)
+			}
+		}
+	}
+
+	delete(idx.fileOccurrences, uri)
+	delete(idx.fileSymbols, uri)
+
+	// Clean intern pool entries for removed symbols/URI.
+	// Only remove if no other document references them.
+	for _, sym := range docSymbols {
+		if _, ok := idx.definitions[sym]; !ok {
+			delete(idx.internPool, sym)
+		}
+	}
 }
 
 func (idx *Index) indexFile(path string) error {
@@ -163,40 +343,45 @@ func (idx *Index) indexFile(path string) error {
 		return fmt.Errorf("unmarshaling %s: %w", path, err)
 	}
 
+	var uris []string
 	for _, doc := range docs.Documents {
 		uri := doc.Uri
 		if uri == "" {
 			idx.logger.Printf("warning: empty URI in %s", path)
 			continue
 		}
+		uri = filepath.ToSlash(uri)
+		uris = append(uris, uri)
 		idx.indexDocument(uri, doc)
 	}
+	idx.sdbToURIs[path] = uris
 
 	return nil
 }
 
 func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
-	uri = filepath.ToSlash(uri)
+	uri = idx.intern(filepath.ToSlash(uri))
+
 	// Index symbol definitions.
 	for _, sym := range doc.Symbols {
-		s := Symbol{
+		symStr := idx.intern(sym.Symbol)
+		s := &Symbol{
 			Name:      sym.DisplayName,
-			Symbol:    sym.Symbol,
+			Symbol:    symStr,
 			Kind:      sym.Kind,
 			URI:       uri,
-			Signature: sym.Signature,
+			Signature: buildSignatureInfo(sym.DisplayName, sym.Signature),
 		}
-		idx.definitions[sym.Symbol] = append(idx.definitions[sym.Symbol], s)
+		idx.definitions[symStr] = append(idx.definitions[symStr], s)
 		idx.fileSymbols[uri] = append(idx.fileSymbols[uri], s)
-	}
 
-	// Build implementors index from class signatures.
-	for _, sym := range doc.Symbols {
+		// Build implementors index from class signatures.
 		if sig := sym.Signature; sig != nil {
 			if cs, ok := sig.SealedValue.(*sdb.Signature_ClassSignature); ok {
 				for _, parent := range cs.ClassSignature.Parents {
 					if tr, ok := parent.SealedValue.(*sdb.Type_TypeRef); ok {
-						idx.implementors[tr.TypeRef.Symbol] = append(idx.implementors[tr.TypeRef.Symbol], sym.Symbol)
+						parentSym := idx.intern(tr.TypeRef.Symbol)
+						idx.implementors[parentSym] = append(idx.implementors[parentSym], symStr)
 					}
 				}
 			}
@@ -205,8 +390,9 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 
 	// Index occurrences (both definitions and references with ranges).
 	for _, occ := range doc.Occurrences {
-		o := Occurrence{
-			Symbol: occ.Symbol,
+		occSym := idx.intern(occ.Symbol)
+		o := &Occurrence{
+			Symbol: occSym,
 			Role:   occ.Role,
 			URI:    uri,
 			Range:  occ.Range,
@@ -214,19 +400,28 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 
 		if occ.Role == sdb.SymbolOccurrence_DEFINITION {
 			// Update the definition's range if we have it from occurrences.
-			if defs, ok := idx.definitions[occ.Symbol]; ok {
-				for i := range defs {
-					if defs[i].URI == uri && defs[i].Range == nil {
-						defs[i].Range = occ.Range
+			if defs, ok := idx.definitions[occSym]; ok {
+				for _, d := range defs {
+					if d.URI == uri && d.Range == nil {
+						d.Range = occ.Range
 					}
 				}
 			}
 		} else {
-			idx.references[occ.Symbol] = append(idx.references[occ.Symbol], o)
+			idx.references[occSym] = append(idx.references[occSym], o)
 		}
 
 		idx.fileOccurrences[uri] = append(idx.fileOccurrences[uri], o)
 	}
+}
+
+// intern returns a canonical string, ensuring identical strings share memory.
+func (idx *Index) intern(s string) string {
+	if interned, ok := idx.internPool[s]; ok {
+		return interned
+	}
+	idx.internPool[s] = s
+	return s
 }
 
 // Definition returns the definition locations for a symbol at the given position.
@@ -249,7 +444,7 @@ func (idx *Index) Definition(uri string, line, character int) []Symbol {
 			return []Symbol{*ext}
 		}
 	}
-	return deduplicateSymbols(defs)
+	return deduplicateSymbols(copySymbols(defs))
 }
 
 func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
@@ -303,13 +498,13 @@ func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 }
 
 func (idx *Index) createExternalSymbol(sym, path string) *Symbol {
-	uri := "file://" + path
+	fileURI := uri.FromPath(path)
 
 	line, col := FindSymbolLocation(path, sym)
 
 	s := &Symbol{
 		Symbol: sym,
-		URI:    uri,
+		URI:    fileURI,
 	}
 
 	if line != -1 {
@@ -406,7 +601,31 @@ func (idx *Index) References(uri string, line, character int) []Occurrence {
 	}
 
 	refs := idx.references[sym]
-	return deduplicateOccurrences(refs)
+	return deduplicateOccurrences(copyOccurrences(refs))
+}
+
+// copySymbols dereferences a slice of pointers into a value slice.
+func copySymbols(ptrs []*Symbol) []Symbol {
+	if len(ptrs) == 0 {
+		return nil
+	}
+	out := make([]Symbol, len(ptrs))
+	for i, p := range ptrs {
+		out[i] = *p
+	}
+	return out
+}
+
+// copyOccurrences dereferences a slice of pointers into a value slice.
+func copyOccurrences(ptrs []*Occurrence) []Occurrence {
+	if len(ptrs) == 0 {
+		return nil
+	}
+	out := make([]Occurrence, len(ptrs))
+	for i, p := range ptrs {
+		out[i] = *p
+	}
+	return out
 }
 
 func deduplicateSymbols(symbols []Symbol) []Symbol {
@@ -464,7 +683,7 @@ func (idx *Index) Hover(uri string, line, character int) *Symbol {
 	if len(defs) == 0 {
 		return nil
 	}
-	return &defs[0]
+	return defs[0]
 }
 
 // FileSymbols returns all symbol definitions in the given file (for documentSymbol).
@@ -473,7 +692,7 @@ func (idx *Index) FileSymbols(uri string) []Symbol {
 	defer idx.mu.RUnlock()
 
 	relURI := idx.toRelativeURI(uri)
-	return idx.fileSymbols[relURI]
+	return copySymbols(idx.fileSymbols[relURI])
 }
 
 // SymbolAt returns the SemanticDB symbol string at the given position.
@@ -502,22 +721,19 @@ func (idx *Index) AllSymbols() []Symbol {
 
 	var result []Symbol
 	for _, defs := range idx.definitions {
-		result = append(result, defs...)
+		for _, d := range defs {
+			result = append(result, *d)
+		}
 	}
 	return result
 }
 
 // toRelativeURI converts a file:// URI or an absolute path to a relative path matching SemanticDB URIs.
-func (idx *Index) toRelativeURI(uri string) string {
-	path := strings.TrimPrefix(uri, "file://")
-	if !filepath.IsAbs(path) {
-		return filepath.ToSlash(path)
+func (idx *Index) toRelativeURI(u string) string {
+	if !uri.IsURI(u) && !filepath.IsAbs(u) {
+		return filepath.ToSlash(u)
 	}
-	rel, err := filepath.Rel(idx.sourceRoot, path)
-	if err != nil {
-		return filepath.ToSlash(path)
-	}
-	return filepath.ToSlash(rel)
+	return uri.Rel(idx.sourceRoot, u)
 }
 
 // SourceRoot returns the workspace source root path.
@@ -535,7 +751,7 @@ func (idx *Index) SearchSymbols(query string) []Symbol {
 	for _, defs := range idx.definitions {
 		for _, d := range defs {
 			if strings.Contains(strings.ToLower(d.Name), query) {
-				result = append(result, d)
+				result = append(result, *d)
 			}
 		}
 	}
@@ -559,9 +775,9 @@ func (idx *Index) CompletionSymbols(uri string, prefix string) []Symbol {
 				continue
 			}
 			if d.URI == relURI {
-				sameFile = append(sameFile, d)
+				sameFile = append(sameFile, *d)
 			} else {
-				otherFile = append(otherFile, d)
+				otherFile = append(otherFile, *d)
 			}
 		}
 	}
@@ -592,7 +808,7 @@ func (idx *Index) SymbolSignature(uri string, line, character int) *Symbol {
 	if len(defs) == 0 {
 		return nil
 	}
-	return &defs[0]
+	return defs[0]
 }
 
 // RenameOccurrences returns all occurrences (definitions + references) for rename.
@@ -608,11 +824,11 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 
 	var result []Occurrence
 
-	// Collect all definition occurrences.
+	// Collect all occurrences (definitions + references).
 	for _, fileOccs := range idx.fileOccurrences {
 		for _, occ := range fileOccs {
 			if occ.Symbol == sym {
-				result = append(result, occ)
+				result = append(result, *occ)
 			}
 		}
 	}
@@ -634,7 +850,7 @@ func (idx *Index) FileOccurrencesOf(uri string, line, character int) []Occurrenc
 	var result []Occurrence
 	for _, occ := range idx.fileOccurrences[relURI] {
 		if occ.Symbol == sym {
-			result = append(result, occ)
+			result = append(result, *occ)
 		}
 	}
 	return result
@@ -655,7 +871,9 @@ func (idx *Index) Implementations(uri string, line, character int) []Symbol {
 	var result []Symbol
 	for _, implSym := range implSymbols {
 		if defs, ok := idx.definitions[implSym]; ok {
-			result = append(result, defs...)
+			for _, d := range defs {
+				result = append(result, *d)
+			}
 		}
 	}
 	return result

@@ -10,7 +10,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/fwrq41251/decaf/internal/index"
 	"github.com/fwrq41251/decaf/internal/jsonrpc"
@@ -193,7 +195,8 @@ func TestDefinition(t *testing.T) {
 	}
 	dataExt, _ := proto.Marshal(docsExt)
 	os.WriteFile(filepath.Join(sdbDir, "External.java.semanticdb"), dataExt, 0644)
-	idx.Load() // Re-load to get the new occurrence.
+	time.Sleep(100 * time.Millisecond) // let watcher pick up the new file
+	idx.Load()                         // Re-load to get the new occurrence.
 
 	paramsExt := TextDocumentPositionParams{
 		TextDocument: TextDocumentIdentifier{URI: "file://" + tmpDir + "/src/Main.java"},

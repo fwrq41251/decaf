@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
 	"google.golang.org/protobuf/proto"
@@ -115,5 +116,128 @@ func TestIndexLoadAndQuery(t *testing.T) {
 	all := idx.AllSymbols()
 	if len(all) != 2 {
 		t.Fatalf("expected 2 symbols, got %d", len(all))
+	}
+}
+
+func writeSDB(t *testing.T, path string, docs *sdb.TextDocuments) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := proto.Marshal(docs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIncrementalIndex(t *testing.T) {
+	tmpDir := t.TempDir()
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	defer idx.Close()
+
+	// --- First load: one file with class Foo (full scan, starts watcher) ---
+	fooDocs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Schema: sdb.Schema_SEMANTICDB4, Uri: "src/Foo.java", Language: sdb.Language_JAVA,
+			Symbols: []*sdb.SymbolInformation{{
+				Symbol: "com/example/Foo#", DisplayName: "Foo", Kind: sdb.SymbolInformation_CLASS,
+			}},
+			Occurrences: []*sdb.SymbolOccurrence{{
+				Symbol: "com/example/Foo#", Role: sdb.SymbolOccurrence_DEFINITION,
+				Range: &sdb.Range{StartLine: 1, StartCharacter: 13, EndLine: 1, EndCharacter: 16},
+			}},
+		}},
+	}
+	writeSDB(t, filepath.Join(sdbDir, "Foo.java.semanticdb"), fooDocs)
+
+	if err := idx.Load(); err != nil {
+		t.Fatalf("first Load failed: %v", err)
+	}
+	if len(idx.AllSymbols()) != 1 {
+		t.Fatalf("expected 1 symbol after first load, got %d", len(idx.AllSymbols()))
+	}
+
+	// --- Second load: no changes → should be a no-op via watcher ---
+	if err := idx.Load(); err != nil {
+		t.Fatalf("second Load (no-op) failed: %v", err)
+	}
+	if len(idx.AllSymbols()) != 1 {
+		t.Fatalf("expected 1 symbol after no-op load, got %d", len(idx.AllSymbols()))
+	}
+
+	// --- Third load: add a new file Bar (watcher picks up create event) ---
+	barDocs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Schema: sdb.Schema_SEMANTICDB4, Uri: "src/Bar.java", Language: sdb.Language_JAVA,
+			Symbols: []*sdb.SymbolInformation{{
+				Symbol: "com/example/Bar#", DisplayName: "Bar", Kind: sdb.SymbolInformation_CLASS,
+			}},
+			Occurrences: []*sdb.SymbolOccurrence{{
+				Symbol: "com/example/Bar#", Role: sdb.SymbolOccurrence_DEFINITION,
+				Range: &sdb.Range{StartLine: 1, StartCharacter: 13, EndLine: 1, EndCharacter: 16},
+			}},
+		}},
+	}
+	writeSDB(t, filepath.Join(sdbDir, "Bar.java.semanticdb"), barDocs)
+	time.Sleep(100 * time.Millisecond) // let watcher process events
+
+	if err := idx.Load(); err != nil {
+		t.Fatalf("third Load (add Bar) failed: %v", err)
+	}
+	if len(idx.AllSymbols()) != 2 {
+		t.Fatalf("expected 2 symbols after adding Bar, got %d", len(idx.AllSymbols()))
+	}
+
+	// --- Fourth load: modify Foo (watcher picks up write event) ---
+	fooDocs2 := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Schema: sdb.Schema_SEMANTICDB4, Uri: "src/Foo.java", Language: sdb.Language_JAVA,
+			Symbols: []*sdb.SymbolInformation{{
+				Symbol: "com/example/FooRenamed#", DisplayName: "FooRenamed", Kind: sdb.SymbolInformation_CLASS,
+			}},
+			Occurrences: []*sdb.SymbolOccurrence{{
+				Symbol: "com/example/FooRenamed#", Role: sdb.SymbolOccurrence_DEFINITION,
+				Range: &sdb.Range{StartLine: 1, StartCharacter: 13, EndLine: 1, EndCharacter: 23},
+			}},
+		}},
+	}
+	writeSDB(t, filepath.Join(sdbDir, "Foo.java.semanticdb"), fooDocs2)
+	time.Sleep(100 * time.Millisecond)
+
+	if err := idx.Load(); err != nil {
+		t.Fatalf("fourth Load (modify Foo) failed: %v", err)
+	}
+	all := idx.AllSymbols()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 symbols after modifying Foo, got %d", len(all))
+	}
+	names := map[string]bool{}
+	for _, s := range all {
+		names[s.Name] = true
+	}
+	if names["Foo"] {
+		t.Fatal("old symbol 'Foo' should have been removed")
+	}
+	if !names["FooRenamed"] || !names["Bar"] {
+		t.Fatalf("expected FooRenamed and Bar, got %v", names)
+	}
+
+	// --- Fifth load: delete Bar (watcher picks up remove event) ---
+	os.Remove(filepath.Join(sdbDir, "Bar.java.semanticdb"))
+	time.Sleep(100 * time.Millisecond)
+
+	if err := idx.Load(); err != nil {
+		t.Fatalf("fifth Load (delete Bar) failed: %v", err)
+	}
+	if len(idx.AllSymbols()) != 1 {
+		t.Fatalf("expected 1 symbol after deleting Bar, got %d", len(idx.AllSymbols()))
+	}
+	if idx.AllSymbols()[0].Name != "FooRenamed" {
+		t.Fatalf("expected FooRenamed, got %s", idx.AllSymbols()[0].Name)
 	}
 }

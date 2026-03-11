@@ -9,12 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/fwrq41251/decaf/internal/jsonrpc"
+	"github.com/fwrq41251/decaf/internal/uri"
 )
 
 // DiagnosticsHandler is called when the build server publishes diagnostics.
@@ -44,7 +44,7 @@ func NewClient(logger *log.Logger, onDiagnostics DiagnosticsHandler) *Client {
 
 // Start launches the Bloop BSP server and performs the initialize handshake.
 func (c *Client) Start(ctx context.Context, rootURI string) error {
-	sourceRoot := strings.TrimPrefix(rootURI, "file://")
+	sourceRoot := uri.ToPath(rootURI)
 
 	bloopExe, err := exec.LookPath("bloop")
 	if err != nil {
