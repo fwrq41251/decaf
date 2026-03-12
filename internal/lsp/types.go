@@ -310,3 +310,37 @@ type TextEdit struct {
 type PrepareRenameParams struct {
 	TextDocumentPositionParams
 }
+
+// WorkDoneProgressCreateParams is sent to the client to create a progress token.
+type WorkDoneProgressCreateParams struct {
+	Token string `json:"token"`
+}
+
+// ProgressParams wraps a progress notification value.
+type ProgressParams struct {
+	Token string `json:"token"`
+	Value any    `json:"value"`
+}
+
+// WorkDoneProgressBegin is sent at the start of a progress sequence.
+type WorkDoneProgressBegin struct {
+	Kind        string `json:"kind"` // always "begin"
+	Title       string `json:"title"`
+	Message     string `json:"message,omitempty"`
+	Cancellable bool   `json:"cancellable,omitempty"`
+	Percentage  *int   `json:"percentage,omitempty"`
+}
+
+// WorkDoneProgressReport is sent during a progress sequence.
+type WorkDoneProgressReport struct {
+	Kind        string `json:"kind"` // always "report"
+	Message     string `json:"message,omitempty"`
+	Cancellable bool   `json:"cancellable,omitempty"`
+	Percentage  *int   `json:"percentage,omitempty"`
+}
+
+// WorkDoneProgressEnd is sent at the end of a progress sequence.
+type WorkDoneProgressEnd struct {
+	Kind    string `json:"kind"` // always "end"
+	Message string `json:"message,omitempty"`
+}

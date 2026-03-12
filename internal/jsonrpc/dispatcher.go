@@ -29,6 +29,11 @@ type Dispatcher struct {
 	transport *Transport
 	logger    *log.Logger
 	wg        sync.WaitGroup
+
+	// cancelMu protects inflight.
+	cancelMu sync.Mutex
+	// inflight maps numeric request IDs to their cancel functions.
+	inflight map[int64]context.CancelFunc
 }
 
 // NewDispatcher creates a new Dispatcher.
@@ -37,6 +42,7 @@ func NewDispatcher(transport *Transport, logger *log.Logger) *Dispatcher {
 		handlers:  make(map[string]handlerEntry),
 		transport: transport,
 		logger:    logger,
+		inflight:  make(map[int64]context.CancelFunc),
 	}
 }
 
@@ -74,6 +80,12 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 
 		d.logger.Printf("received: method=%s notification=%v", req.Method, req.IsNotification())
 
+		// Handle $/cancelRequest by cancelling the in-flight request.
+		if req.Method == "$/cancelRequest" {
+			d.handleCancelRequest(req.Params)
+			continue
+		}
+
 		entry, ok := d.handlers[req.Method]
 		if !ok {
 			d.logger.Printf("no handler for method %q", req.Method)
@@ -87,10 +99,14 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		}
 
 		if entry.concurrent && !req.IsNotification() {
+			reqCtx, cancel := context.WithCancel(ctx)
+			reqID := d.trackRequest(req.ID, cancel)
+
 			d.wg.Add(1)
 			go func(req *Request) {
 				defer d.wg.Done()
-				d.handleAndRespond(ctx, req, entry.handler)
+				defer d.untrackRequest(reqID)
+				d.handleAndRespond(reqCtx, req, entry.handler)
 			}(req)
 		} else {
 			// Sequential: lifecycle methods and notifications.
@@ -111,6 +127,12 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 
 func (d *Dispatcher) handleAndRespond(ctx context.Context, req *Request, handler Handler) {
 	result, herr := handler(ctx, req.Params)
+
+	// If the context was cancelled (via $/cancelRequest), respond with RequestCancelled.
+	if ctx.Err() != nil && herr == nil {
+		herr = ctx.Err()
+	}
+
 	if err := d.sendResponse(req.ID, result, herr); err != nil {
 		d.logger.Printf("failed to write response for %s: %v", req.Method, err)
 	}
@@ -119,7 +141,11 @@ func (d *Dispatcher) handleAndRespond(ctx context.Context, req *Request, handler
 func (d *Dispatcher) sendResponse(id *json.RawMessage, result any, herr error) error {
 	var resp *Response
 	if herr != nil {
-		resp = NewErrorResponse(id, CodeInternalError, herr.Error())
+		code := CodeInternalError
+		if errors.Is(herr, context.Canceled) {
+			code = CodeRequestCancelled
+		}
+		resp = NewErrorResponse(id, code, herr.Error())
 	} else {
 		var err error
 		resp, err = NewResponse(id, result)
@@ -131,4 +157,57 @@ func (d *Dispatcher) sendResponse(id *json.RawMessage, result any, herr error) e
 		return fmt.Errorf("writing response: %w", err)
 	}
 	return nil
+}
+
+// handleCancelRequest processes a $/cancelRequest notification.
+func (d *Dispatcher) handleCancelRequest(params json.RawMessage) {
+	var p struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		d.logger.Printf("malformed $/cancelRequest: %v", err)
+		return
+	}
+
+	var id int64
+	if err := json.Unmarshal(p.ID, &id); err != nil {
+		d.logger.Printf("$/cancelRequest: non-numeric id, ignoring")
+		return
+	}
+
+	d.cancelMu.Lock()
+	cancel, ok := d.inflight[id]
+	d.cancelMu.Unlock()
+
+	if ok {
+		d.logger.Printf("cancelling request %d", id)
+		cancel()
+	} else {
+		d.logger.Printf("$/cancelRequest for unknown id %d (already completed?)", id)
+	}
+}
+
+// trackRequest stores a cancel function for a request ID and returns the numeric ID.
+func (d *Dispatcher) trackRequest(rawID *json.RawMessage, cancel context.CancelFunc) int64 {
+	if rawID == nil {
+		return -1
+	}
+	var id int64
+	if err := json.Unmarshal(*rawID, &id); err != nil {
+		return -1
+	}
+	d.cancelMu.Lock()
+	d.inflight[id] = cancel
+	d.cancelMu.Unlock()
+	return id
+}
+
+// untrackRequest removes a completed request from the inflight map.
+func (d *Dispatcher) untrackRequest(id int64) {
+	if id < 0 {
+		return
+	}
+	d.cancelMu.Lock()
+	delete(d.inflight, id)
+	d.cancelMu.Unlock()
 }

@@ -42,8 +42,6 @@ func buildMessage(t *testing.T, id *int, method string, params any) string {
 	return fmt.Sprintf("Content-Length: %d\r\n\r\n%s", len(body), body)
 }
 
-func intPtr(n int) *int { return &n }
-
 func TestLifecycle(t *testing.T) {
 	// Simulate: initialize -> initialized -> shutdown -> exit
 	var input bytes.Buffer

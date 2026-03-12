@@ -128,11 +128,13 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 
 	// Full setup + compile in background if needed.
 	go func() {
+		prog := h.beginProgress("decaf", "initializing…")
+
 		if needsFullBuild {
 			h.logger.Println("No indexed files found, starting full setup and compilation...")
-			
+
 			// Step 1: Auto-setup.
-			h.showMessage(MessageTypeInfo, "decaf: setting up project...")
+			prog.report("setting up project…", intPtr(10))
 			s := setup.NewSetup(h.logger, sourceRoot)
 			if err := s.Run(ctx); err != nil {
 				h.logger.Printf("auto-setup failed: %v", err)
@@ -140,13 +142,15 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 		}
 
 		// Step 2: Connect to Bloop.
-		h.showMessage(MessageTypeInfo, "decaf: connecting to Bloop...")
+		prog.report("connecting to Bloop…", intPtr(30))
 		if err := h.bspClient.Start(ctx, h.rootURI); err != nil {
 			h.showMessage(MessageTypeError, fmt.Sprintf("decaf: failed to start Bloop: %v", err))
+			prog.end("failed to connect")
 			return
 		}
 
 		// Step 2.5: Fetch dependency sources and JVM environment.
+		prog.report("fetching dependencies…", intPtr(50))
 		if items, err := h.bspClient.DependencySources(ctx); err == nil {
 			for _, item := range items {
 				for _, src := range item.Sources {
@@ -158,7 +162,6 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 		}
 
 		if envs, err := h.bspClient.JvmRunEnvironment(ctx); err == nil && len(envs) > 0 {
-			// Use the javaHome of the first target to refine JDK source discovery.
 			for _, env := range envs {
 				if env.JavaHome != "" {
 					javaHome := uri.ToPath(env.JavaHome)
@@ -172,17 +175,18 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 		}
 
 		if needsFullBuild {
-			// Step 3: Full Compile (picks up fresh .semanticdb).
-			h.showMessage(MessageTypeInfo, "decaf: compiling...")
+			// Step 3: Full Compile.
+			prog.report("compiling…", intPtr(70))
 			if err := h.bspClient.Compile(ctx); err != nil {
 				h.showMessage(MessageTypeWarning, fmt.Sprintf("decaf: compilation failed: %v", err))
 			}
+			prog.report("indexing…", intPtr(90))
 			h.reindex()
 		} else {
 			h.logger.Println("Existing index found, skipping initial full compilation.")
 		}
 
-		h.showMessage(MessageTypeInfo, "decaf: ready")
+		prog.end("ready")
 	}()
 
 	return nil, nil
@@ -223,11 +227,15 @@ func (h *Handler) handleDidSave(ctx context.Context, params json.RawMessage) (an
 	h.logger.Printf("didSave: %s — triggering compile", p.TextDocument.URI)
 
 	go func() {
+		prog := h.beginProgress("decaf", "compiling…")
 		if err := h.bspClient.Compile(ctx); err != nil {
 			h.logger.Printf("compile on save failed: %v", err)
+			prog.end("compilation failed")
 			return
 		}
+		prog.report("indexing…", nil)
 		h.reindex()
+		prog.end("done")
 	}()
 
 	return nil, nil
@@ -581,6 +589,8 @@ func (h *Handler) showMessage(msgType int, message string) {
 		h.logger.Printf("failed to send showMessage: %v", err)
 	}
 }
+
+func intPtr(n int) *int { return &n }
 
 func (h *Handler) reindex() {
 	if h.idx == nil {

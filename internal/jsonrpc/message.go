@@ -57,6 +57,21 @@ func NewResponse(id *json.RawMessage, result any) (*Response, error) {
 	}, nil
 }
 
+// NewRequestWithID creates a JSON-RPC request with an explicit string ID.
+func NewRequestWithID(id string, method string, params any) (*Request, error) {
+	data, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	rawID := json.RawMessage(id)
+	return &Request{
+		JSONRPC: "2.0",
+		ID:      &rawID,
+		Method:  method,
+		Params:  data,
+	}, nil
+}
+
 // NewNotification creates a JSON-RPC notification (no ID).
 func NewNotification(method string, params any) (*Request, error) {
 	data, err := json.Marshal(params)
