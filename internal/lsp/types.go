@@ -44,7 +44,35 @@ type ServerCapabilities struct {
 	DocumentHighlightProvider bool                     `json:"documentHighlightProvider,omitempty"`
 	ImplementationProvider    bool                     `json:"implementationProvider,omitempty"`
 	WorkspaceSymbolProvider   bool                     `json:"workspaceSymbolProvider,omitempty"`
+	Workspace                 *ServerWorkspaceCapabilities `json:"workspace,omitempty"`
 }
+
+// ServerWorkspaceCapabilities describes workspace-related server capabilities.
+type ServerWorkspaceCapabilities struct {
+	FileOperations          *ServerFileOperations          `json:"fileOperations,omitempty"`
+	DidChangeWatchedFiles   *DidChangeWatchedFilesRegistrationOptions `json:"didChangeWatchedFiles,omitempty"`
+}
+
+// ServerFileOperations describes file operation capabilities.
+type ServerFileOperations struct{}
+
+// DidChangeWatchedFilesRegistrationOptions describes file watchers.
+type DidChangeWatchedFilesRegistrationOptions struct {
+	Watchers []FileSystemWatcher `json:"watchers"`
+}
+
+// FileSystemWatcher describes a file system watcher.
+type FileSystemWatcher struct {
+	GlobPattern string `json:"globPattern"`
+	Kind        int    `json:"kind,omitempty"`
+}
+
+// WatchKind constants.
+const (
+	WatchKindCreate = 1
+	WatchKindChange = 2
+	WatchKindDelete = 4
+)
 
 type CompletionOptions struct {
 	TriggerCharacters []string `json:"triggerCharacters,omitempty"`
@@ -310,6 +338,24 @@ type TextEdit struct {
 type PrepareRenameParams struct {
 	TextDocumentPositionParams
 }
+
+// DidChangeWatchedFilesParams is sent when watched files change.
+type DidChangeWatchedFilesParams struct {
+	Changes []FileEvent `json:"changes"`
+}
+
+// FileEvent describes a file change event.
+type FileEvent struct {
+	URI  string `json:"uri"`
+	Type int    `json:"type"`
+}
+
+// FileChangeType constants.
+const (
+	FileChangeCreated = 1
+	FileChangeChanged = 2
+	FileChangeDeleted = 3
+)
 
 // WorkDoneProgressCreateParams is sent to the client to create a progress token.
 type WorkDoneProgressCreateParams struct {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/fwrq41251/decaf/internal/bsp"
 	"github.com/fwrq41251/decaf/internal/index"
@@ -24,6 +26,12 @@ type Handler struct {
 	bspClient   *bsp.Client
 	transport   *jsonrpc.Transport
 	idx         *index.Index
+
+	// debounceMu protects debounceTimer.
+	debounceMu    sync.Mutex
+	debounceTimer *time.Timer
+	// backgroundCtx is used for background operations (compile, reindex).
+	backgroundCtx context.Context
 }
 
 // NewHandler creates a new LSP handler.
@@ -54,6 +62,7 @@ func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
 	d.Register("textDocument/didOpen", h.handleDidOpen)
 	d.Register("textDocument/didSave", h.handleDidSave)
 	d.Register("textDocument/didClose", h.handleDidClose)
+	d.Register("workspace/didChangeWatchedFiles", h.handleDidChangeWatchedFiles)
 
 	// Read-only requests — safe to run concurrently.
 	d.RegisterConcurrent("textDocument/definition", h.handleDefinition)
@@ -107,7 +116,11 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 
 func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any, error) {
 	h.initialized = true
+	h.backgroundCtx = ctx
 	h.logger.Println("client sent initialized notification")
+
+	// Register file watchers for .java files so we detect branch switches etc.
+	h.registerFileWatchers()
 
 	// Initialize SemanticDB index.
 	sourceRoot := uri.ToPath(h.rootURI)
@@ -248,6 +261,90 @@ func (h *Handler) handleDidClose(_ context.Context, params json.RawMessage) (any
 	}
 	h.logger.Printf("didClose: %s", p.TextDocument.URI)
 	return nil, nil
+}
+
+func (h *Handler) handleDidChangeWatchedFiles(_ context.Context, params json.RawMessage) (any, error) {
+	var p DidChangeWatchedFilesParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+
+	javaChanged := 0
+	for _, e := range p.Changes {
+		if strings.HasSuffix(e.URI, ".java") {
+			javaChanged++
+		}
+	}
+
+	if javaChanged == 0 {
+		return nil, nil
+	}
+
+	h.logger.Printf("watched files changed: %d java file(s)", javaChanged)
+	h.scheduleCompile()
+	return nil, nil
+}
+
+// scheduleCompile debounces compilation — waits 500ms after the last call
+// before triggering a compile + reindex cycle.
+func (h *Handler) scheduleCompile() {
+	h.debounceMu.Lock()
+	defer h.debounceMu.Unlock()
+
+	if h.debounceTimer != nil {
+		h.debounceTimer.Stop()
+	}
+
+	h.debounceTimer = time.AfterFunc(500*time.Millisecond, func() {
+		ctx := h.backgroundCtx
+		if ctx == nil {
+			return
+		}
+		prog := h.beginProgress("decaf", "compiling…")
+		if err := h.bspClient.Compile(ctx); err != nil {
+			h.logger.Printf("compile on file change failed: %v", err)
+			prog.end("compilation failed")
+			return
+		}
+		prog.report("indexing…", nil)
+		h.reindex()
+		prog.end("done")
+	})
+}
+
+// registerFileWatchers dynamically registers file watchers with the client.
+func (h *Handler) registerFileWatchers() {
+	registration := map[string]any{
+		"registrations": []map[string]any{
+			{
+				"id":     "decaf-file-watcher",
+				"method": "workspace/didChangeWatchedFiles",
+				"registerOptions": DidChangeWatchedFilesRegistrationOptions{
+					Watchers: []FileSystemWatcher{
+						{
+							GlobPattern: "**/*.java",
+							Kind:        WatchKindCreate | WatchKindChange | WatchKindDelete,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	req, err := jsonrpc.NewRequestWithID(
+		fmt.Sprintf("%d", progressSeq.Add(1)),
+		"client/registerCapability",
+		registration,
+	)
+	if err != nil {
+		h.logger.Printf("failed to create registerCapability request: %v", err)
+		return
+	}
+	if err := h.transport.WriteRequest(req); err != nil {
+		h.logger.Printf("failed to send registerCapability: %v", err)
+		return
+	}
+	h.logger.Println("registered file watcher for **/*.java")
 }
 
 func (h *Handler) handleDefinition(_ context.Context, params json.RawMessage) (any, error) {
