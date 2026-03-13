@@ -44,6 +44,7 @@ type ServerCapabilities struct {
 	DocumentHighlightProvider bool                     `json:"documentHighlightProvider,omitempty"`
 	ImplementationProvider    bool                     `json:"implementationProvider,omitempty"`
 	WorkspaceSymbolProvider   bool                     `json:"workspaceSymbolProvider,omitempty"`
+	CodeActionProvider        *CodeActionOptions       `json:"codeActionProvider,omitempty"`
 	Workspace                 *ServerWorkspaceCapabilities `json:"workspace,omitempty"`
 }
 
@@ -84,6 +85,10 @@ type SignatureHelpOptions struct {
 
 type RenameOptions struct {
 	PrepareProvider bool `json:"prepareProvider,omitempty"`
+}
+
+type CodeActionOptions struct {
+	CodeActionKinds []string `json:"codeActionKinds,omitempty"`
 }
 
 type TextDocumentSyncOptions struct {
@@ -135,6 +140,25 @@ type DidSaveTextDocumentParams struct {
 // DidOpenTextDocumentParams is sent when a file is opened.
 type DidOpenTextDocumentParams struct {
 	TextDocument TextDocumentItem `json:"textDocument"`
+}
+
+// DidChangeTextDocumentParams is sent when the document content changes.
+type DidChangeTextDocumentParams struct {
+	TextDocument   VersionedTextDocumentIdentifier  `json:"textDocument"`
+	ContentChanges []TextDocumentContentChangeEvent `json:"contentChanges"`
+}
+
+// VersionedTextDocumentIdentifier identifies a specific version of a text document.
+type VersionedTextDocumentIdentifier struct {
+	URI     string `json:"uri"`
+	Version int    `json:"version"`
+}
+
+// TextDocumentContentChangeEvent describes a content change.
+// If Range is nil the Text replaces the entire document.
+type TextDocumentContentChangeEvent struct {
+	Range *Range `json:"range,omitempty"`
+	Text  string `json:"text"`
 }
 
 // DidCloseTextDocumentParams is sent when a file is closed.
@@ -355,6 +379,33 @@ const (
 	FileChangeCreated = 1
 	FileChangeChanged = 2
 	FileChangeDeleted = 3
+)
+
+// CodeActionParams is sent for textDocument/codeAction.
+type CodeActionParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Range        Range                  `json:"range"`
+	Context      CodeActionContext      `json:"context"`
+}
+
+// CodeActionContext carries additional information about the context in which
+// a code action is requested.
+type CodeActionContext struct {
+	Diagnostics []Diagnostic `json:"diagnostics"`
+	Only        []string     `json:"only,omitempty"`
+}
+
+// CodeAction represents a change that can be performed in code.
+type CodeAction struct {
+	Title       string         `json:"title"`
+	Kind        string         `json:"kind"`
+	Diagnostics []Diagnostic   `json:"diagnostics,omitempty"`
+	Edit        *WorkspaceEdit `json:"edit,omitempty"`
+}
+
+// CodeActionKind constants.
+const (
+	CodeActionSourceOrganizeImports = "source.organizeImports"
 )
 
 // WorkDoneProgressCreateParams is sent to the client to create a progress token.

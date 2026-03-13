@@ -27,6 +27,9 @@ type Handler struct {
 	transport   *jsonrpc.Transport
 	idx         *index.Index
 
+	// docs stores in-memory overlay of open document contents.
+	docs *docStore
+
 	// debounceMu protects debounceTimer.
 	debounceMu    sync.Mutex
 	debounceTimer *time.Timer
@@ -40,6 +43,7 @@ func NewHandler(logger *log.Logger, transport *jsonrpc.Transport) *Handler {
 		logger:    logger,
 		exitCh:    make(chan struct{}),
 		transport: transport,
+		docs:      newDocStore(),
 	}
 	h.bspClient = bsp.NewClient(logger, h.handleBSPDiagnostics)
 	return h
@@ -60,6 +64,7 @@ func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
 
 	// Notifications — sequential.
 	d.Register("textDocument/didOpen", h.handleDidOpen)
+	d.Register("textDocument/didChange", h.handleDidChange)
 	d.Register("textDocument/didSave", h.handleDidSave)
 	d.Register("textDocument/didClose", h.handleDidClose)
 	d.Register("workspace/didChangeWatchedFiles", h.handleDidChangeWatchedFiles)
@@ -75,6 +80,9 @@ func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
 	d.RegisterConcurrent("textDocument/completion", h.handleCompletion)
 	d.RegisterConcurrent("textDocument/signatureHelp", h.handleSignatureHelp)
 	d.RegisterConcurrent("textDocument/prepareRename", h.handlePrepareRename)
+
+	// Code actions — concurrent (read-only analysis).
+	d.RegisterConcurrent("textDocument/codeAction", h.handleCodeAction)
 
 	// Rename mutates state — sequential.
 	d.Register("textDocument/rename", h.handleRename)
@@ -93,7 +101,7 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 		Capabilities: ServerCapabilities{
 			TextDocumentSync: &TextDocumentSyncOptions{
 				OpenClose: true,
-				Change:    SyncFull,
+				Change:    SyncIncremental,
 				Save:      &SaveOptions{IncludeText: false},
 			},
 			DefinitionProvider:        true,
@@ -106,6 +114,7 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 			DocumentHighlightProvider: true,
 			ImplementationProvider:    true,
 			WorkspaceSymbolProvider:   true,
+			CodeActionProvider:        &CodeActionOptions{CodeActionKinds: []string{CodeActionSourceOrganizeImports}},
 		},
 		ServerInfo: &ServerInfo{
 			Name:    "decaf",
@@ -228,7 +237,18 @@ func (h *Handler) handleDidOpen(_ context.Context, params json.RawMessage) (any,
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
-	h.logger.Printf("didOpen: %s", p.TextDocument.URI)
+	h.docs.Open(p.TextDocument.URI, p.TextDocument.Text)
+	h.logger.Printf("didOpen: %s (version %d, %d bytes)", p.TextDocument.URI, p.TextDocument.Version, len(p.TextDocument.Text))
+	return nil, nil
+}
+
+func (h *Handler) handleDidChange(_ context.Context, params json.RawMessage) (any, error) {
+	var p DidChangeTextDocumentParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+	h.docs.ApplyChanges(p.TextDocument.URI, p.ContentChanges)
+	h.logger.Printf("didChange: %s (version %d, %d changes)", p.TextDocument.URI, p.TextDocument.Version, len(p.ContentChanges))
 	return nil, nil
 }
 
@@ -259,6 +279,7 @@ func (h *Handler) handleDidClose(_ context.Context, params json.RawMessage) (any
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
+	h.docs.Close(p.TextDocument.URI)
 	h.logger.Printf("didClose: %s", p.TextDocument.URI)
 	return nil, nil
 }
@@ -649,6 +670,43 @@ func (h *Handler) handleRename(_ context.Context, params json.RawMessage) (any, 
 	h.logger.Printf("rename at %s:%d:%d -> %d files affected",
 		p.TextDocument.URI, p.Position.Line, p.Position.Character, len(changes))
 	return WorkspaceEdit{Changes: changes}, nil
+}
+
+func (h *Handler) handleCodeAction(_ context.Context, params json.RawMessage) (any, error) {
+	var p CodeActionParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+
+	if h.idx == nil {
+		return []CodeAction{}, nil
+	}
+
+	// Only respond when the client requests source.organizeImports (or requests all).
+	wantOrganize := len(p.Context.Only) == 0
+	for _, kind := range p.Context.Only {
+		if kind == CodeActionSourceOrganizeImports || kind == "source" {
+			wantOrganize = true
+			break
+		}
+	}
+	if !wantOrganize {
+		return []CodeAction{}, nil
+	}
+
+	overlay, _ := h.docs.Get(p.TextDocument.URI)
+	edit := organizeImports(p.TextDocument.URI, h.idx, overlay)
+	if edit == nil {
+		return []CodeAction{}, nil
+	}
+
+	return []CodeAction{
+		{
+			Title: "Organize Imports",
+			Kind:  CodeActionSourceOrganizeImports,
+			Edit:  edit,
+		},
+	}, nil
 }
 
 func (h *Handler) handlePrepareRename(_ context.Context, params json.RawMessage) (any, error) {

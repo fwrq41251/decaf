@@ -836,6 +836,29 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 	return sym, result
 }
 
+// AllFileOccurrences returns all occurrences in the given file.
+func (idx *Index) AllFileOccurrences(uri string) []Occurrence {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	relURI := idx.toRelativeURI(uri)
+	return copyOccurrences(idx.fileOccurrences[relURI])
+}
+
+// SymbolDefinition returns the definition for a SemanticDB symbol string.
+// This is useful for resolving a symbol's fully-qualified type without a position.
+func (idx *Index) SymbolDefinition(sym string) *Symbol {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	defs := idx.definitions[sym]
+	if len(defs) == 0 {
+		return nil
+	}
+	s := *defs[0]
+	return &s
+}
+
 // FileOccurrencesOf returns all occurrences of a symbol in a specific file.
 func (idx *Index) FileOccurrencesOf(uri string, line, character int) []Occurrence {
 	idx.mu.RLock()
