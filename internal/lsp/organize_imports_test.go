@@ -209,6 +209,107 @@ public class App {
 	}
 }
 
+func TestOrganizeImports_WildcardSuppressesSpecific(t *testing.T) {
+	source := `package com.example;
+
+import jp.smartcompany.saas.kintai.dao.*;
+import jp.smartcompany.saas.kintai.dto.paidholidayautogrant.*;
+
+public class App {
+    MemberDao dao;
+    ScheduleRecordDao srd;
+    CalculateType ct;
+    GrantCondition gc;
+}
+`
+	// These symbols are from packages already covered by wildcard imports.
+	occs := []*sdb.SymbolOccurrence{
+		{Symbol: "jp/smartcompany/saas/kintai/dao/MemberDao#", Role: sdb.SymbolOccurrence_REFERENCE,
+			Range: &sdb.Range{StartLine: 6, StartCharacter: 4, EndLine: 6, EndCharacter: 13}},
+		{Symbol: "jp/smartcompany/saas/kintai/dao/ScheduleRecordDao#", Role: sdb.SymbolOccurrence_REFERENCE,
+			Range: &sdb.Range{StartLine: 7, StartCharacter: 4, EndLine: 7, EndCharacter: 21}},
+		{Symbol: "jp/smartcompany/saas/kintai/dto/paidholidayautogrant/CalculateType#", Role: sdb.SymbolOccurrence_REFERENCE,
+			Range: &sdb.Range{StartLine: 8, StartCharacter: 4, EndLine: 8, EndCharacter: 17}},
+		{Symbol: "jp/smartcompany/saas/kintai/dto/paidholidayautogrant/GrantCondition#", Role: sdb.SymbolOccurrence_REFERENCE,
+			Range: &sdb.Range{StartLine: 9, StartCharacter: 4, EndLine: 9, EndCharacter: 18}},
+		{Symbol: "com/example/App#", Role: sdb.SymbolOccurrence_DEFINITION,
+			Range: &sdb.Range{StartLine: 5, StartCharacter: 13, EndLine: 5, EndCharacter: 16}},
+	}
+	syms := []*sdb.SymbolInformation{
+		{Symbol: "com/example/App#", DisplayName: "App", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "jp/smartcompany/saas/kintai/dao/MemberDao#", DisplayName: "MemberDao", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "jp/smartcompany/saas/kintai/dao/ScheduleRecordDao#", DisplayName: "ScheduleRecordDao", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "jp/smartcompany/saas/kintai/dto/paidholidayautogrant/CalculateType#", DisplayName: "CalculateType", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "jp/smartcompany/saas/kintai/dto/paidholidayautogrant/GrantCondition#", DisplayName: "GrantCondition", Kind: sdb.SymbolInformation_CLASS},
+	}
+
+	fileURI, idx := setupTestIndex(t, source, occs, syms)
+	edit := organizeImports(fileURI, idx, "")
+
+	if edit == nil {
+		t.Fatal("expected a non-nil edit")
+	}
+	edits := edit.Changes[fileURI]
+	text := edits[0].NewText
+
+	// Should keep only the two wildcard imports, no specific ones added.
+	lines := splitNonEmpty(text)
+	for _, line := range lines {
+		if line != "import jp.smartcompany.saas.kintai.dao.*;" &&
+			line != "import jp.smartcompany.saas.kintai.dto.paidholidayautogrant.*;" {
+			t.Errorf("unexpected import line: %s", line)
+		}
+	}
+	if len(lines) != 2 {
+		t.Errorf("expected 2 import lines, got %d:\n%s", len(lines), text)
+	}
+}
+
+func TestOrganizeImports_WildcardAndSpecificMixed(t *testing.T) {
+	// Wildcard for dao.*, but dto.kintaiform.KintaiForm should stay (no wildcard).
+	source := `package com.example;
+
+import jp.smartcompany.saas.kintai.dao.*;
+import jp.smartcompany.saas.kintai.dao.MemberDao;
+import jp.smartcompany.saas.kintai.dto.kintaiform.KintaiForm;
+
+public class App {
+    MemberDao dao;
+    KintaiForm form;
+}
+`
+	occs := []*sdb.SymbolOccurrence{
+		{Symbol: "jp/smartcompany/saas/kintai/dao/MemberDao#", Role: sdb.SymbolOccurrence_REFERENCE,
+			Range: &sdb.Range{StartLine: 7, StartCharacter: 4, EndLine: 7, EndCharacter: 13}},
+		{Symbol: "jp/smartcompany/saas/kintai/dto/kintaiform/KintaiForm#", Role: sdb.SymbolOccurrence_REFERENCE,
+			Range: &sdb.Range{StartLine: 8, StartCharacter: 4, EndLine: 8, EndCharacter: 14}},
+	}
+
+	fileURI, idx := setupTestIndex(t, source, occs, nil)
+	edit := organizeImports(fileURI, idx, "")
+
+	if edit == nil {
+		t.Fatal("expected a non-nil edit")
+	}
+	edits := edit.Changes[fileURI]
+	text := edits[0].NewText
+
+	lines := splitNonEmpty(text)
+	// Should keep dao.* (wildcard), drop dao.MemberDao (redundant), keep dto.kintaiform.KintaiForm.
+	if len(lines) != 2 {
+		t.Errorf("expected 2 import lines, got %d:\n%s", len(lines), text)
+	}
+	if !containsStr(text, "jp.smartcompany.saas.kintai.dao.*") {
+		t.Error("should keep wildcard import dao.*")
+	}
+	if containsStr(text, "dao.MemberDao") {
+		t.Error("should drop MemberDao — covered by dao.*")
+	}
+	if !containsStr(text, "dto.kintaiform.KintaiForm") {
+		t.Error("should keep KintaiForm — not covered by any wildcard")
+	}
+}
+
 func TestOrganizeImports_EmptyFile(t *testing.T) {
 	source := `package com.example;
 

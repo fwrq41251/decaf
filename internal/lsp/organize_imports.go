@@ -50,11 +50,28 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 		}
 	}
 
-	// Filter existing imports: keep only those whose simple name is referenced.
+	// Collect wildcard-imported packages (e.g. "java.util" from "java.util.*").
+	wildcardPkgs := make(map[string]bool)
+	for _, imp := range block.imports {
+		if simpleNameFromImport(imp) == "*" {
+			wildcardPkgs[packageFromFQN(imp)] = true
+		}
+	}
+
+	// Filter existing imports: keep wildcards and used specific imports.
+	// Drop specific imports whose package is already covered by a wildcard.
 	var kept []string
 	for _, imp := range block.imports {
 		simple := simpleNameFromImport(imp)
-		if simple == "*" || usedSimpleNames[simple] {
+		if simple == "*" {
+			kept = append(kept, imp)
+			continue
+		}
+		if wildcardPkgs[packageFromFQN(imp)] {
+			// Already covered by a wildcard import — skip.
+			continue
+		}
+		if usedSimpleNames[simple] {
 			kept = append(kept, imp)
 		}
 	}
@@ -74,6 +91,10 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 		}
 		pkg := packageFromFQN(fqn)
 		if pkg == "" || pkg == "java.lang" || pkg == filePackage {
+			continue
+		}
+		// Skip if a wildcard already covers this package.
+		if wildcardPkgs[pkg] {
 			continue
 		}
 		if !importedSet[fqn] {
