@@ -30,7 +30,7 @@ func (s *Setup) Run(ctx context.Context) error {
 	// Step 1: Detect build tool.
 	buildTool := s.detectBuildTool()
 	if buildTool == "" {
-		return fmt.Errorf("no supported build tool found in %s (looking for pom.xml)", s.workspaceDir)
+		return fmt.Errorf("no supported build tool found in %s (looking for pom.xml, build.gradle, build.gradle.kts)", s.workspaceDir)
 	}
 	s.logger.Printf("detected build tool: %s", buildTool)
 
@@ -54,9 +54,38 @@ func (s *Setup) Run(ctx context.Context) error {
 	return nil
 }
 
+// bloopInstall runs the appropriate bloop export command for the build tool.
+func (s *Setup) bloopInstall(ctx context.Context, buildTool string) error {
+	bloopDir := filepath.Join(s.workspaceDir, ".bloop")
+
+	// Skip if .bloop/ already exists and has config files.
+	if entries, err := os.ReadDir(bloopDir); err == nil {
+		for _, e := range entries {
+			if filepath.Ext(e.Name()) == ".json" {
+				s.logger.Printf(".bloop/ already contains config files, skipping bloopInstall")
+				return nil
+			}
+		}
+	}
+
+	switch buildTool {
+	case "maven":
+		return s.mavenBloopInstall(ctx)
+	case "gradle":
+		return s.gradleBloopInstall(ctx)
+	default:
+		return fmt.Errorf("unsupported build tool: %s", buildTool)
+	}
+}
+
 func (s *Setup) detectBuildTool() string {
 	if _, err := os.Stat(filepath.Join(s.workspaceDir, "pom.xml")); err == nil {
 		return "maven"
+	}
+	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
+		if _, err := os.Stat(filepath.Join(s.workspaceDir, name)); err == nil {
+			return "gradle"
+		}
 	}
 	return ""
 }

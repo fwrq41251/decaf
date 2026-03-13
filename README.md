@@ -42,6 +42,7 @@ Editor (Neovim/Zed)
   cs install bloop
   ```
 - **Maven** (for Maven projects)
+- **Gradle** (for Gradle projects) — the [Bloop Gradle plugin](https://scalacenter.github.io/bloop/docs/build-tools/gradle) must be applied to your build
 
 > **Note:** You do **not** need to manually configure `semanticdb-javac` or run `bloopInstall`. decaf handles all of this automatically on startup.
 
@@ -55,10 +56,10 @@ go build -o decaf ./cmd/decaf
 
 ## Usage
 
-Just open your Maven project in an editor configured with decaf. On first startup, decaf will automatically:
+Just open your Maven or Gradle project in an editor configured with decaf. On first startup, decaf will automatically:
 
-1. **Detect `pom.xml`** in your workspace
-2. **Run `mvn bloopInstall`** to export project config to `.bloop/`
+1. **Detect `pom.xml` or `build.gradle`/`build.gradle.kts`** in your workspace
+2. **Run `mvn bloopInstall`** (Maven) or **`gradle bloopInstall`** (Gradle) to export project config to `.bloop/`
 3. **Download `semanticdb-javac`** from Maven Central (cached in `~/.cache/decaf/`)
 4. **Inject it into `.bloop/*.json`** configs (adds `-Xplugin:semanticdb`)
 5. **Connect to Bloop**, compile, and index `.semanticdb` files

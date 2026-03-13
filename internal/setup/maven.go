@@ -5,30 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 )
-
-// bloopInstall runs the appropriate bloop export command for the build tool.
-func (s *Setup) bloopInstall(ctx context.Context, buildTool string) error {
-	bloopDir := filepath.Join(s.workspaceDir, ".bloop")
-
-	// Skip if .bloop/ already exists and has config files.
-	if entries, err := os.ReadDir(bloopDir); err == nil {
-		for _, e := range entries {
-			if filepath.Ext(e.Name()) == ".json" {
-				s.logger.Printf(".bloop/ already contains config files, skipping bloopInstall")
-				return nil
-			}
-		}
-	}
-
-	switch buildTool {
-	case "maven":
-		return s.mavenBloopInstall(ctx)
-	default:
-		return fmt.Errorf("unsupported build tool: %s", buildTool)
-	}
-}
 
 func (s *Setup) mavenBloopInstall(ctx context.Context) error {
 	s.logger.Println("running maven bloopInstall...")
