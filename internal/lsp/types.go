@@ -406,6 +406,7 @@ type CodeAction struct {
 // CodeActionKind constants.
 const (
 	CodeActionSourceOrganizeImports = "source.organizeImports"
+	CodeActionQuickFix              = "quickfix"
 )
 
 // WorkDoneProgressCreateParams is sent to the client to create a progress token.

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fwrq41251/decaf/internal/bsp"
@@ -19,8 +21,8 @@ import (
 // Handler holds the LSP handler state and methods.
 type Handler struct {
 	logger      *log.Logger
-	initialized bool
-	shutdown    bool
+	initialized atomic.Bool
+	shutdown    atomic.Bool
 	exitCh      chan struct{}
 	rootURI     string
 	bspClient   *bsp.Client
@@ -34,7 +36,8 @@ type Handler struct {
 	debounceMu    sync.Mutex
 	debounceTimer *time.Timer
 	// backgroundCtx is used for background operations (compile, reindex).
-	backgroundCtx context.Context
+	backgroundCtx    context.Context
+	backgroundCancel context.CancelFunc
 }
 
 // NewHandler creates a new LSP handler.
@@ -114,7 +117,7 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 			DocumentHighlightProvider: true,
 			ImplementationProvider:    true,
 			WorkspaceSymbolProvider:   true,
-			CodeActionProvider:        &CodeActionOptions{CodeActionKinds: []string{CodeActionSourceOrganizeImports}},
+			CodeActionProvider:        &CodeActionOptions{CodeActionKinds: []string{CodeActionSourceOrganizeImports, CodeActionQuickFix}},
 		},
 		ServerInfo: &ServerInfo{
 			Name:    "decaf",
@@ -124,8 +127,10 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 }
 
 func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any, error) {
-	h.initialized = true
+	h.initialized.Store(true)
+	ctx, cancel := context.WithCancel(ctx)
 	h.backgroundCtx = ctx
+	h.backgroundCancel = cancel
 	h.logger.Println("client sent initialized notification")
 
 	// Register file watchers for .java files so we detect branch switches etc.
@@ -136,8 +141,8 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 	h.idx = index.NewIndex(h.logger, sourceRoot)
 
 	// Discover JDK source for goto definition fallback (initial detection).
-	s := setup.NewSetup(h.logger, sourceRoot)
-	if jdkSrc := s.DiscoverJDKSource(""); jdkSrc != "" {
+	setupHelper := setup.NewSetup(h.logger, sourceRoot)
+	if jdkSrc := setupHelper.DiscoverJDKSource(""); jdkSrc != "" {
 		h.logger.Printf("Initially discovered JDK source: %s", jdkSrc)
 		h.idx.SetJdkSourceRoot(jdkSrc)
 	}
@@ -157,10 +162,15 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 
 			// Step 1: Auto-setup.
 			prog.report("setting up project…", intPtr(10))
-			s := setup.NewSetup(h.logger, sourceRoot)
-			if err := s.Run(ctx); err != nil {
+			setupHelper = setup.NewSetup(h.logger, sourceRoot)
+			if err := setupHelper.Run(ctx); err != nil {
 				h.logger.Printf("auto-setup failed: %v", err)
 			}
+		}
+
+		if ctx.Err() != nil {
+			prog.end("cancelled")
+			return
 		}
 
 		// Step 2: Connect to Bloop.
@@ -168,6 +178,11 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 		if err := h.bspClient.Start(ctx, h.rootURI); err != nil {
 			h.showMessage(MessageTypeError, fmt.Sprintf("decaf: failed to start Bloop: %v", err))
 			prog.end("failed to connect")
+			return
+		}
+
+		if ctx.Err() != nil {
+			prog.end("cancelled")
 			return
 		}
 
@@ -183,11 +198,16 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 			}
 		}
 
+		if ctx.Err() != nil {
+			prog.end("cancelled")
+			return
+		}
+
 		if envs, err := h.bspClient.JvmRunEnvironment(ctx); err == nil && len(envs) > 0 {
 			for _, env := range envs {
 				if env.JavaHome != "" {
 					javaHome := uri.ToPath(env.JavaHome)
-					if jdkSrc := s.DiscoverJDKSource(javaHome); jdkSrc != "" {
+					if jdkSrc := setupHelper.DiscoverJDKSource(javaHome); jdkSrc != "" {
 						h.logger.Printf("Refined JDK source from BSP: %s", jdkSrc)
 						h.idx.SetJdkSourceRoot(jdkSrc)
 						break
@@ -196,11 +216,20 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 			}
 		}
 
+		if ctx.Err() != nil {
+			prog.end("cancelled")
+			return
+		}
+
 		if needsFullBuild {
 			// Step 3: Full Compile.
 			prog.report("compiling…", intPtr(70))
 			if err := h.bspClient.Compile(ctx); err != nil {
 				h.showMessage(MessageTypeWarning, fmt.Sprintf("decaf: compilation failed: %v", err))
+			}
+			if ctx.Err() != nil {
+				prog.end("cancelled")
+				return
 			}
 			prog.report("indexing…", intPtr(90))
 			h.reindex()
@@ -215,8 +244,11 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 }
 
 func (h *Handler) handleShutdown(ctx context.Context, _ json.RawMessage) (any, error) {
-	h.shutdown = true
+	h.shutdown.Store(true)
 	h.logger.Println("shutdown requested")
+	if h.backgroundCancel != nil {
+		h.backgroundCancel()
+	}
 	if h.idx != nil {
 		h.idx.Close()
 	}
@@ -249,6 +281,7 @@ func (h *Handler) handleDidChange(_ context.Context, params json.RawMessage) (an
 	}
 	h.docs.ApplyChanges(p.TextDocument.URI, p.ContentChanges)
 	h.logger.Printf("didChange: %s (version %d, %d changes)", p.TextDocument.URI, p.TextDocument.Version, len(p.ContentChanges))
+	h.scheduleCompile()
 	return nil, nil
 }
 
@@ -321,6 +354,7 @@ func (h *Handler) scheduleCompile() {
 		if ctx == nil {
 			return
 		}
+		h.flushOverlays()
 		prog := h.beginProgress("decaf", "compiling…")
 		if err := h.bspClient.Compile(ctx); err != nil {
 			h.logger.Printf("compile on file change failed: %v", err)
@@ -331,6 +365,17 @@ func (h *Handler) scheduleCompile() {
 		h.reindex()
 		prog.end("done")
 	})
+}
+
+// flushOverlays writes all open document overlays to their file paths on disk
+// so that Bloop (which compiles from the filesystem) sees the latest buffer content.
+func (h *Handler) flushOverlays() {
+	for docURI, content := range h.docs.Snapshot() {
+		filePath := uri.ToPath(docURI)
+		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+			h.logger.Printf("failed to flush overlay for %s: %v", docURI, err)
+		}
+	}
 }
 
 // registerFileWatchers dynamically registers file watchers with the client.
@@ -587,11 +632,10 @@ func (h *Handler) handleCompletion(_ context.Context, params json.RawMessage) (a
 		return CompletionList{}, nil
 	}
 
-	// Extract the word prefix at the cursor position from the symbol index.
-	// We use a simple approach: find the symbol at cursor, or search by empty prefix.
+	// Extract the word prefix at the cursor position from the overlay buffer.
 	prefix := ""
-	if p.Context != nil && p.Context.TriggerCharacter == "." {
-		prefix = ""
+	if p.Context == nil || p.Context.TriggerCharacter != "." {
+		prefix = h.wordPrefixAt(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	}
 
 	symbols := h.idx.CompletionSymbols(p.TextDocument.URI, prefix)
@@ -608,8 +652,8 @@ func (h *Handler) handleCompletion(_ context.Context, params json.RawMessage) (a
 		items = append(items, item)
 	}
 
-	h.logger.Printf("completion at %s:%d:%d -> %d items",
-		p.TextDocument.URI, p.Position.Line, p.Position.Character, len(items))
+	h.logger.Printf("completion at %s:%d:%d prefix=%q -> %d items",
+		p.TextDocument.URI, p.Position.Line, p.Position.Character, prefix, len(items))
 	return CompletionList{IsIncomplete: true, Items: items}, nil
 }
 
@@ -633,10 +677,12 @@ func (h *Handler) handleSignatureHelp(_ context.Context, params json.RawMessage)
 		return nil, nil
 	}
 
+	activeParam := h.countActiveParameter(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+
 	return SignatureHelp{
 		Signatures:      []SignatureInformation{*sigInfo},
 		ActiveSignature: 0,
-		ActiveParameter: 0,
+		ActiveParameter: activeParam,
 	}, nil
 }
 
@@ -682,31 +728,93 @@ func (h *Handler) handleCodeAction(_ context.Context, params json.RawMessage) (a
 		return []CodeAction{}, nil
 	}
 
-	// Only respond when the client requests source.organizeImports (or requests all).
+	var actions []CodeAction
+
+	// Check which code action kinds are requested.
 	wantOrganize := len(p.Context.Only) == 0
+	wantQuickFix := len(p.Context.Only) == 0
 	for _, kind := range p.Context.Only {
-		if kind == CodeActionSourceOrganizeImports || kind == "source" {
+		switch kind {
+		case CodeActionSourceOrganizeImports, "source":
 			wantOrganize = true
-			break
+		case CodeActionQuickFix:
+			wantQuickFix = true
 		}
 	}
-	if !wantOrganize {
-		return []CodeAction{}, nil
+
+	// Organize imports.
+	if wantOrganize {
+		overlay, _ := h.docs.Get(p.TextDocument.URI)
+		edit := organizeImports(p.TextDocument.URI, h.idx, overlay)
+		if edit != nil {
+			actions = append(actions, CodeAction{
+				Title: "Organize Imports",
+				Kind:  CodeActionSourceOrganizeImports,
+				Edit:  edit,
+			})
+		}
 	}
 
-	overlay, _ := h.docs.Get(p.TextDocument.URI)
-	edit := organizeImports(p.TextDocument.URI, h.idx, overlay)
-	if edit == nil {
-		return []CodeAction{}, nil
+	// Quick fix: add missing import.
+	if wantQuickFix {
+		overlay, _ := h.docs.Get(p.TextDocument.URI)
+		for _, diag := range p.Context.Diagnostics {
+			name := extractMissingSymbolName(diag.Message)
+			if name == "" {
+				continue
+			}
+			candidates := h.idx.SearchSymbols(name)
+			for _, sym := range candidates {
+				if sym.Name != name {
+					continue
+				}
+				fqn := fqnFromSymbol(sym.Symbol)
+				if fqn == "" {
+					continue
+				}
+				edit := addImportEdit(p.TextDocument.URI, overlay, fqn)
+				if edit == nil {
+					continue
+				}
+				actions = append(actions, CodeAction{
+					Title:       fmt.Sprintf("Add import '%s'", fqn),
+					Kind:        CodeActionQuickFix,
+					Diagnostics: []Diagnostic{diag},
+					Edit:        edit,
+				})
+			}
+		}
 	}
 
-	return []CodeAction{
-		{
-			Title: "Organize Imports",
-			Kind:  CodeActionSourceOrganizeImports,
-			Edit:  edit,
-		},
-	}, nil
+	if len(actions) == 0 {
+		return []CodeAction{}, nil
+	}
+	return actions, nil
+}
+
+// extractMissingSymbolName extracts the class/type name from a "cannot find symbol"
+// diagnostic message. Typical format:
+//
+//	"cannot find symbol\n  symbol:   class Foo"
+//	"cannot find symbol: class Foo"
+func extractMissingSymbolName(msg string) string {
+	if !strings.Contains(msg, "cannot find symbol") {
+		return ""
+	}
+	idx := strings.Index(msg, "symbol:")
+	if idx < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(msg[idx+len("symbol:"):])
+	// Skip the kind keyword (class, interface, variable, etc.)
+	parts := strings.Fields(rest)
+	if len(parts) >= 2 {
+		return parts[1]
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return ""
 }
 
 func (h *Handler) handlePrepareRename(_ context.Context, params json.RawMessage) (any, error) {
@@ -754,6 +862,114 @@ func (h *Handler) reindex() {
 	if err := h.idx.Load(); err != nil {
 		h.logger.Printf("reindex failed: %v", err)
 	}
+}
+
+// countActiveParameter counts the number of commas between the nearest unmatched
+// opening parenthesis and the cursor position, using the overlay buffer content.
+// This determines which parameter is "active" for signature help.
+func (h *Handler) countActiveParameter(fileURI string, line, character int) int {
+	content := h.getFileContent(fileURI)
+	if content == "" {
+		return 0
+	}
+
+	// Find the target line.
+	cur := 0
+	for l := 0; l < line; l++ {
+		idx := strings.IndexByte(content[cur:], '\n')
+		if idx < 0 {
+			return 0
+		}
+		cur += idx + 1
+	}
+
+	lineEnd := strings.IndexByte(content[cur:], '\n')
+	if lineEnd < 0 {
+		lineEnd = len(content) - cur
+	}
+	lineText := content[cur : cur+lineEnd]
+
+	if character > len(lineText) {
+		character = len(lineText)
+	}
+
+	// Walk backwards from cursor to find the opening parenthesis,
+	// counting commas at the top nesting level.
+	commas := 0
+	depth := 0
+	for i := character - 1; i >= 0; i-- {
+		switch lineText[i] {
+		case ')':
+			depth++
+		case '(':
+			if depth == 0 {
+				return commas
+			}
+			depth--
+		case ',':
+			if depth == 0 {
+				commas++
+			}
+		}
+	}
+	return commas
+}
+
+// getFileContent returns the content of a file, preferring the in-memory overlay
+// from docStore over reading from disk. Returns empty string on error.
+func (h *Handler) getFileContent(fileURI string) string {
+	if content, ok := h.docs.Get(fileURI); ok {
+		return content
+	}
+	filePath := uri.ToPath(fileURI)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// wordPrefixAt extracts the Java identifier prefix ending at the given cursor
+// position from the overlay (or disk). E.g. if the line is "  ArrayLi|" with
+// cursor at position 9, it returns "ArrayLi".
+func (h *Handler) wordPrefixAt(fileURI string, line, character int) string {
+	content := h.getFileContent(fileURI)
+	if content == "" {
+		return ""
+	}
+
+	// Find the target line.
+	cur := 0
+	for l := 0; l < line; l++ {
+		idx := strings.IndexByte(content[cur:], '\n')
+		if idx < 0 {
+			return ""
+		}
+		cur += idx + 1
+	}
+
+	lineEnd := strings.IndexByte(content[cur:], '\n')
+	if lineEnd < 0 {
+		lineEnd = len(content) - cur
+	}
+	lineText := content[cur : cur+lineEnd]
+
+	if character > len(lineText) {
+		character = len(lineText)
+	}
+
+	// Walk backwards from cursor to find the start of the identifier.
+	start := character
+	for start > 0 {
+		ch := lineText[start-1]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '$' {
+			start--
+		} else {
+			break
+		}
+	}
+
+	return lineText[start:character]
 }
 
 // toFileURI converts a SemanticDB relative URI to an absolute file:// URI.
