@@ -3,11 +3,8 @@ package lsp
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"time"
-
-	"github.com/fwrq41251/decaf/internal/uri"
 )
 
 func (h *Handler) handleDidOpen(_ context.Context, params json.RawMessage) (any, error) {
@@ -27,7 +24,6 @@ func (h *Handler) handleDidChange(_ context.Context, params json.RawMessage) (an
 	}
 	h.docs.ApplyChanges(p.TextDocument.URI, p.ContentChanges)
 	h.logger.Printf("didChange: %s (version %d, %d changes)", p.TextDocument.URI, p.TextDocument.Version, len(p.ContentChanges))
-	h.scheduleCompile()
 	return nil, nil
 }
 
@@ -100,7 +96,6 @@ func (h *Handler) scheduleCompile() {
 		if ctx == nil {
 			return
 		}
-		h.flushOverlays()
 		prog := h.beginProgress("decaf", "compiling…")
 		if err := h.bspClient.Compile(ctx); err != nil {
 			h.logger.Printf("compile on file change failed: %v", err)
@@ -113,13 +108,3 @@ func (h *Handler) scheduleCompile() {
 	})
 }
 
-// flushOverlays writes all open document overlays to their file paths on disk
-// so that Bloop (which compiles from the filesystem) sees the latest buffer content.
-func (h *Handler) flushOverlays() {
-	for docURI, content := range h.docs.Snapshot() {
-		filePath := uri.ToPath(docURI)
-		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-			h.logger.Printf("failed to flush overlay for %s: %v", docURI, err)
-		}
-	}
-}

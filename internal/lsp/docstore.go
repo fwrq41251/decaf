@@ -39,17 +39,6 @@ func (ds *docStore) Get(uri string) (string, bool) {
 	return text, ok
 }
 
-// Snapshot returns a copy of all open document URIs and their contents.
-func (ds *docStore) Snapshot() map[string]string {
-	ds.mu.RLock()
-	defer ds.mu.RUnlock()
-	snapshot := make(map[string]string, len(ds.docs))
-	for k, v := range ds.docs {
-		snapshot[k] = v
-	}
-	return snapshot
-}
-
 // ApplyChanges applies a sequence of incremental content changes to a document.
 // Each change has a Range (line/character based) and new text.
 // If Range is nil the change replaces the entire document.
