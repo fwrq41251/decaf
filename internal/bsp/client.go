@@ -24,6 +24,7 @@ type DiagnosticsHandler func(params PublishDiagnosticsParams)
 type Client struct {
 	logger        *log.Logger
 	transport     *jsonrpc.Transport
+	conn          net.Conn // underlying socket connection
 	cmd           *exec.Cmd
 	nextID        atomic.Int64
 	pending       map[int64]chan *jsonrpc.Response
@@ -87,6 +88,7 @@ func (c *Client) Start(ctx context.Context, rootURI string) error {
 	}
 
 	c.logger.Println("connected to bloop bsp socket")
+	c.conn = conn
 	c.transport = jsonrpc.NewTransport(conn, conn)
 
 	// Start reading responses/notifications from Bloop.
@@ -183,7 +185,7 @@ func (c *Client) JvmRunEnvironment(ctx context.Context) ([]JvmEnvironmentItem, e
 	return result.Items, nil
 }
 
-// Shutdown sends build/shutdown and build/exit to Bloop.
+// Shutdown sends build/shutdown and build/exit to Bloop, then closes the connection.
 func (c *Client) Shutdown(ctx context.Context) error {
 	if c.socketDir != "" {
 		defer os.RemoveAll(c.socketDir)
@@ -193,6 +195,20 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	}
 	_ = c.call(ctx, "build/shutdown", nil, nil)
 	_ = c.notify("build/exit")
+
+	// Close the socket so readLoop unblocks and exits.
+	if c.conn != nil {
+		c.conn.Close()
+	}
+
+	// Drain all pending requests so callers don't block forever.
+	c.pendingMu.Lock()
+	for id, ch := range c.pending {
+		close(ch)
+		delete(c.pending, id)
+	}
+	c.pendingMu.Unlock()
+
 	if c.cmd != nil {
 		return c.cmd.Wait()
 	}
@@ -234,6 +250,9 @@ func (c *Client) call(ctx context.Context, method string, params any, result any
 
 	select {
 	case resp := <-ch:
+		if resp == nil {
+			return fmt.Errorf("BSP connection closed")
+		}
 		if resp.Error != nil {
 			return fmt.Errorf("BSP error %d: %s", resp.Error.Code, resp.Error.Message)
 		}
