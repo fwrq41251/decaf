@@ -167,6 +167,56 @@ func TestDocStore_InsertNewline(t *testing.T) {
 	}
 }
 
+func TestDocStore_UTF16(t *testing.T) {
+	ds := newDocStore()
+	ds.Open("file:///a.java", "你好 world") // "你好" is 2 UTF-16 units
+
+	// Replace "你好" with "Hello"
+	r := Range{
+		Start: Position{Line: 0, Character: 0},
+		End:   Position{Line: 0, Character: 2},
+	}
+	ds.ApplyChanges("file:///a.java", []TextDocumentContentChangeEvent{
+		{Range: &r, Text: "Hello"},
+	})
+
+	got, _ := ds.Get("file:///a.java")
+	if got != "Hello world" {
+		t.Fatalf("got %q, want %q", got, "Hello world")
+	}
+
+	// Now insert emoji 🚀 (2 UTF-16 units)
+	ds.Open("file:///emoji.java", "rocket ")
+	r2 := Range{
+		Start: Position{Line: 0, Character: 7},
+		End:   Position{Line: 0, Character: 7},
+	}
+	ds.ApplyChanges("file:///emoji.java", []TextDocumentContentChangeEvent{
+		{Range: &r2, Text: "🚀"},
+	})
+	got2, _ := ds.Get("file:///emoji.java")
+	if got2 != "rocket 🚀" {
+		t.Fatalf("got %q, want %q", got2, "rocket 🚀")
+	}
+
+	// Delete part of 🚀 (not recommended but should handle gracefully)
+	// If char=8, it's the second half of surrogate pair. 
+	// Our utf16Index returns the start of the pair if n falls in middle.
+	r3 := Range{
+		Start: Position{Line: 0, Character: 7},
+		End:   Position{Line: 0, Character: 8},
+	}
+	ds.ApplyChanges("file:///emoji.java", []TextDocumentContentChangeEvent{
+		{Range: &r3, Text: "!"},
+	})
+	got3, _ := ds.Get("file:///emoji.java")
+	// Since both 7 and 8 point to the start of 🚀, replacing 7-8 with "!"
+	// replaces the whole 🚀.
+	if got3 != "rocket !" {
+		t.Fatalf("got %q, want %q", got3, "rocket !")
+	}
+}
+
 func TestPositionToOffset(t *testing.T) {
 	tests := []struct {
 		content   string
@@ -187,7 +237,7 @@ func TestPositionToOffset(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := positionToOffset(tt.content, tt.line, tt.col)
+		got := positionToOffset(tt.content, tt.line, tt.col, false)
 		if got != tt.want {
 			t.Errorf("positionToOffset(%q, %d, %d) = %d, want %d", tt.content, tt.line, tt.col, got, tt.want)
 		}

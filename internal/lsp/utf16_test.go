@@ -51,7 +51,7 @@ func TestUTF16PositionToOffset(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := positionToOffset(content, tt.line, tt.char)
+		got := positionToOffset(content, tt.line, tt.char, false)
 		if got != tt.want {
 			t.Errorf("positionToOffset(%d, %d) = %d, want %d", tt.line, tt.char, got, tt.want)
 		}

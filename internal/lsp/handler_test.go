@@ -214,3 +214,84 @@ func TestDefinition(t *testing.T) {
 		t.Errorf("got URI %q, want it to contain Lib.java", locsExt[0].URI)
 	}
 }
+
+func TestPrepareRename(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+	
+	idx := index.NewIndex(logger, tmpDir)
+	h.idx = idx
+
+	// Define a class and a reference to it in different locations.
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{
+			{
+				Uri: "src/Main.java",
+				Occurrences: []*sdb.SymbolOccurrence{
+					{
+						Symbol: "com/example/Main#",
+						Role:   sdb.SymbolOccurrence_DEFINITION,
+						Range:  &sdb.Range{StartLine: 2, StartCharacter: 13, EndLine: 2, EndCharacter: 17},
+					},
+					{
+						Symbol: "com/example/Main#",
+						Role:   sdb.SymbolOccurrence_REFERENCE,
+						Range:  &sdb.Range{StartLine: 10, StartCharacter: 8, EndLine: 10, EndCharacter: 12},
+					},
+				},
+			},
+		},
+	}
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "Main.java.semanticdb"), data, 0644)
+	idx.Load()
+
+	// 1. Prepare rename on the reference (line 10).
+	paramsRef := PrepareRenameParams{
+		TextDocumentPositionParams: TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: "file://" + tmpDir + "/src/Main.java"},
+			Position:     Position{Line: 10, Character: 9},
+		},
+	}
+	rawParamsRef, _ := json.Marshal(paramsRef)
+	
+	gotRef, err := h.handlePrepareRename(context.Background(), rawParamsRef)
+	if err != nil {
+		t.Fatalf("handlePrepareRename failed: %v", err)
+	}
+	
+	resRef := gotRef.(map[string]any)
+	rngRef := resRef["range"].(Range)
+	
+	// Should return the range of the reference (line 10), not the definition (line 2).
+	if rngRef.Start.Line != 10 {
+		t.Errorf("expected range at line 10, got %d", rngRef.Start.Line)
+	}
+	if resRef["placeholder"] != "Main" {
+		t.Errorf("expected placeholder 'Main', got %v", resRef["placeholder"])
+	}
+
+	// 2. Prepare rename on the definition (line 2).
+	paramsDef := PrepareRenameParams{
+		TextDocumentPositionParams: TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: "file://" + tmpDir + "/src/Main.java"},
+			Position:     Position{Line: 2, Character: 15},
+		},
+	}
+	rawParamsDef, _ := json.Marshal(paramsDef)
+	
+	gotDef, err := h.handlePrepareRename(context.Background(), rawParamsDef)
+	if err != nil {
+		t.Fatalf("handlePrepareRename failed: %v", err)
+	}
+	
+	resDef := gotDef.(map[string]any)
+	rngDef := resDef["range"].(Range)
+	
+	if rngDef.Start.Line != 2 {
+		t.Errorf("expected range at line 2, got %d", rngDef.Start.Line)
+	}
+}

@@ -1,9 +1,20 @@
 package lsp
 
 // utf16Index returns the byte index of the n-th UTF-16 code unit in s.
-// If n falls in the middle of a surrogate pair, it returns the start of that pair.
+// If n falls in the middle of a multi-unit character, it returns the start of that character.
 // If n is out of range, it returns the length of s.
 func utf16Index(s string, n int) int {
+	return utf16IndexImpl(s, n, false)
+}
+
+// utf16IndexEnd returns the byte index of the n-th UTF-16 code unit in s.
+// If n falls in the middle of a multi-unit character, it returns the end of that character.
+// If n is out of range, it returns the length of s.
+func utf16IndexEnd(s string, n int) int {
+	return utf16IndexImpl(s, n, true)
+}
+
+func utf16IndexImpl(s string, n int, end bool) int {
 	if n <= 0 {
 		return 0
 	}
@@ -12,6 +23,9 @@ func utf16Index(s string, n int) int {
 	for i, r := range s {
 		l := utf16Len(r)
 		if cur16+l > n {
+			if end {
+				return i + len(string(r))
+			}
 			return i
 		}
 		cur16 += l

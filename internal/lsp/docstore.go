@@ -65,8 +65,8 @@ func (ds *docStore) ApplyChanges(uri string, changes []TextDocumentContentChange
 
 // applyEdit replaces the text between start and end positions with newText.
 func applyEdit(content string, r Range, newText string) string {
-	startOff := positionToOffset(content, r.Start.Line, r.Start.Character)
-	endOff := positionToOffset(content, r.End.Line, r.End.Character)
+	startOff := positionToOffset(content, r.Start.Line, r.Start.Character, false)
+	endOff := positionToOffset(content, r.End.Line, r.End.Character, true)
 
 	if startOff < 0 {
 		startOff = 0
@@ -87,7 +87,7 @@ func applyEdit(content string, r Range, newText string) string {
 }
 
 // positionToOffset converts a 0-based line/character position to a byte offset.
-func positionToOffset(content string, line, character int) int {
+func positionToOffset(content string, line, character int, end bool) int {
 	cur := 0
 	for l := 0; l < line; l++ {
 		idx := strings.IndexByte(content[cur:], '\n')
@@ -107,7 +107,12 @@ func positionToOffset(content string, line, character int) int {
 	}
 
 	lineText := content[lineStart:lineEnd]
-	byteOffInLine := utf16Index(lineText, character)
+	var byteOffInLine int
+	if end {
+		byteOffInLine = utf16IndexEnd(lineText, character)
+	} else {
+		byteOffInLine = utf16Index(lineText, character)
+	}
 	
 	return lineStart + byteOffInLine
 }
