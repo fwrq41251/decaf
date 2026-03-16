@@ -36,6 +36,12 @@ type Index struct {
 	// parent symbol -> list of child symbols that extend/implement it
 	implementors map[string][]string
 
+	// Reverse indexes for efficient removeDocument.
+	// uri -> set of symbols whose references appear in that file
+	uriRefSymbols map[string]map[string]struct{}
+	// child symbol -> list of parent symbols it implements/extends
+	childToParents map[string][]string
+
 	// string intern pool to deduplicate URI and symbol strings
 	internPool map[string]string
 
@@ -65,6 +71,8 @@ func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 		fileOccurrences:   make(map[string][]*Occurrence),
 		fileSymbols:       make(map[string][]*Symbol),
 		implementors:      make(map[string][]string),
+		uriRefSymbols:     make(map[string]map[string]struct{}),
+		childToParents:    make(map[string][]string),
 		internPool:        make(map[string]string),
 		modTimes:          make(map[string]time.Time),
 		sdbToURIs:         make(map[string][]string),
@@ -288,35 +296,45 @@ func (idx *Index) removeDocument(uri string) {
 		}
 	}
 
-	// Remove references belonging to this URI.
-	for sym, refs := range idx.references {
-		filtered := refs[:0]
-		for _, r := range refs {
-			if r.URI != uri {
-				filtered = append(filtered, r)
-			}
-		}
-		if len(filtered) > 0 {
-			idx.references[sym] = filtered
-		} else {
-			delete(idx.references, sym)
-		}
-	}
-
-	// Remove implementors contributed by symbols from this URI.
-	for _, sym := range docSymbols {
-		for parent, children := range idx.implementors {
-			filtered := children[:0]
-			for _, child := range children {
-				if child != sym {
-					filtered = append(filtered, child)
+	// Remove references belonging to this URI using reverse index.
+	if refSyms, ok := idx.uriRefSymbols[uri]; ok {
+		for sym := range refSyms {
+			if refs, ok := idx.references[sym]; ok {
+				filtered := refs[:0]
+				for _, r := range refs {
+					if r.URI != uri {
+						filtered = append(filtered, r)
+					}
+				}
+				if len(filtered) > 0 {
+					idx.references[sym] = filtered
+				} else {
+					delete(idx.references, sym)
 				}
 			}
-			if len(filtered) > 0 {
-				idx.implementors[parent] = filtered
-			} else {
-				delete(idx.implementors, parent)
+		}
+		delete(idx.uriRefSymbols, uri)
+	}
+
+	// Remove implementors contributed by symbols from this URI using reverse index.
+	for _, sym := range docSymbols {
+		if parents, ok := idx.childToParents[sym]; ok {
+			for _, parent := range parents {
+				if children, ok := idx.implementors[parent]; ok {
+					filtered := children[:0]
+					for _, child := range children {
+						if child != sym {
+							filtered = append(filtered, child)
+						}
+					}
+					if len(filtered) > 0 {
+						idx.implementors[parent] = filtered
+					} else {
+						delete(idx.implementors, parent)
+					}
+				}
 			}
+			delete(idx.childToParents, sym)
 		}
 	}
 
@@ -382,6 +400,7 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 					if tr, ok := parent.SealedValue.(*sdb.Type_TypeRef); ok {
 						parentSym := idx.intern(tr.TypeRef.Symbol)
 						idx.implementors[parentSym] = append(idx.implementors[parentSym], symStr)
+						idx.childToParents[symStr] = append(idx.childToParents[symStr], parentSym)
 					}
 				}
 			}
@@ -409,6 +428,10 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			}
 		} else {
 			idx.references[occSym] = append(idx.references[occSym], o)
+			if idx.uriRefSymbols[uri] == nil {
+				idx.uriRefSymbols[uri] = make(map[string]struct{})
+			}
+			idx.uriRefSymbols[uri][occSym] = struct{}{}
 		}
 
 		idx.fileOccurrences[uri] = append(idx.fileOccurrences[uri], o)

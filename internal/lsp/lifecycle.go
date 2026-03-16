@@ -39,6 +39,7 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 			ImplementationProvider:    true,
 			WorkspaceSymbolProvider:   true,
 			CodeActionProvider:        &CodeActionOptions{CodeActionKinds: []string{CodeActionSourceOrganizeImports, CodeActionQuickFix}},
+			DiagnosticProvider:        &DiagnosticOptions{Identifier: "decaf", InterFileDependencies: false, WorkspaceDiagnostics: false},
 		},
 		ServerInfo: &ServerInfo{
 			Name:    "decaf",
