@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 )
 
 // ErrExit is returned by a handler to signal the dispatcher to stop the loop.
@@ -30,19 +31,22 @@ type Dispatcher struct {
 	logger    *log.Logger
 	wg        sync.WaitGroup
 
-	// cancelMu protects inflight.
+	// cancelMu protects inflight and clientPending.
 	cancelMu sync.Mutex
-	// inflight maps numeric request IDs to their cancel functions.
+	// inflight maps numeric request IDs to their cancel functions (server-side).
 	inflight map[int64]context.CancelFunc
+	// clientPending maps raw request IDs to response channels (client-side).
+	clientPending map[string]chan *Response
 }
 
 // NewDispatcher creates a new Dispatcher.
 func NewDispatcher(transport *Transport, logger *log.Logger) *Dispatcher {
 	return &Dispatcher{
-		handlers:  make(map[string]handlerEntry),
-		transport: transport,
-		logger:    logger,
-		inflight:  make(map[int64]context.CancelFunc),
+		handlers:      make(map[string]handlerEntry),
+		transport:     transport,
+		logger:        logger,
+		inflight:      make(map[int64]context.CancelFunc),
+		clientPending: make(map[string]chan *Response),
 	}
 }
 
@@ -67,7 +71,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		default:
 		}
 
-		req, err := d.transport.Read()
+		body, err := d.transport.ReadRaw()
 		if err != nil {
 			// If the context was cancelled (e.g., by exit), treat as normal shutdown.
 			if ctx.Err() != nil {
@@ -76,6 +80,34 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 			}
 			d.wg.Wait()
 			return fmt.Errorf("reading message: %w", err)
+		}
+
+		// Probe message type.
+		var probe struct {
+			ID     *json.RawMessage `json:"id"`
+			Method string           `json:"method"`
+		}
+		if err := json.Unmarshal(body, &probe); err != nil {
+			d.logger.Printf("failed to probe message: %v", err)
+			continue
+		}
+
+		// Handle response from client.
+		if probe.ID != nil && probe.Method == "" {
+			var resp Response
+			if err := json.Unmarshal(body, &resp); err != nil {
+				d.logger.Printf("failed to decode response: %v", err)
+				continue
+			}
+			d.handleResponse(&resp)
+			continue
+		}
+
+		// Handle request/notification.
+		var req Request
+		if err := json.Unmarshal(body, &req); err != nil {
+			d.logger.Printf("failed to decode request: %v", err)
+			continue
 		}
 
 		d.logger.Printf("received: method=%s notification=%v", req.Method, req.IsNotification())
@@ -107,7 +139,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 				defer d.wg.Done()
 				defer d.untrackRequest(reqID)
 				d.handleAndRespond(reqCtx, req, entry.handler)
-			}(req)
+			}(&req)
 		} else {
 			// Sequential: lifecycle methods and notifications.
 			result, herr := entry.handler(ctx, req.Params)
@@ -135,6 +167,70 @@ func (d *Dispatcher) handleAndRespond(ctx context.Context, req *Request, handler
 
 	if err := d.sendResponse(req.ID, result, herr); err != nil {
 		d.logger.Printf("failed to write response for %s: %v", req.Method, err)
+	}
+}
+
+// Call sends a request to the client and waits for the response.
+func (d *Dispatcher) Call(ctx context.Context, method string, params any, result any) error {
+	id := fmt.Sprintf("decaf-%d", time.Now().UnixNano())
+	req, err := NewRequestWithID(id, method, params)
+	if err != nil {
+		return err
+	}
+
+	ch := make(chan *Response, 1)
+	d.cancelMu.Lock()
+	d.clientPending[id] = ch
+	d.cancelMu.Unlock()
+
+	defer func() {
+		d.cancelMu.Lock()
+		delete(d.clientPending, id)
+		d.cancelMu.Unlock()
+	}()
+
+	if err := d.transport.WriteRequest(req); err != nil {
+		return err
+	}
+
+	select {
+	case resp := <-ch:
+		if resp.Error != nil {
+			return fmt.Errorf("client error %d: %s", resp.Error.Code, resp.Error.Message)
+		}
+		if result != nil && resp.Result != nil {
+			return json.Unmarshal(resp.Result, result)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (d *Dispatcher) handleResponse(resp *Response) {
+	if resp.ID == nil {
+		return
+	}
+	var id string
+	if err := json.Unmarshal(*resp.ID, &id); err != nil {
+		// Try unmarshaling as number if string fails.
+		var num int64
+		if err := json.Unmarshal(*resp.ID, &num); err == nil {
+			id = fmt.Sprintf("%d", num)
+		} else {
+			d.logger.Printf("received response with incompatible id: %s", string(*resp.ID))
+			return
+		}
+	}
+
+	d.cancelMu.Lock()
+	ch, ok := d.clientPending[id]
+	d.cancelMu.Unlock()
+
+	if ok {
+		ch <- resp
+	} else {
+		d.logger.Printf("received response for unknown id %q", id)
 	}
 }
 

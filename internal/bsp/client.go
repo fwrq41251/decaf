@@ -154,6 +154,9 @@ func (c *Client) CompileTargets(ctx context.Context, targets []BuildTargetIdenti
 		return fmt.Errorf("buildTarget/compile failed: %w", err)
 	}
 	c.logger.Printf("compile finished: statusCode=%d (%d targets)", result.StatusCode, len(targets))
+	if result.StatusCode != StatusOK {
+		return fmt.Errorf("compilation failed with status code: %d", result.StatusCode)
+	}
 	return nil
 }
 
@@ -219,18 +222,21 @@ func (c *Client) Shutdown(ctx context.Context) error {
 		c.conn.Close()
 	}
 
-	// Drain all pending requests so callers don't block forever.
-	c.pendingMu.Lock()
-	for id, ch := range c.pending {
-		close(ch)
-		delete(c.pending, id)
-	}
-	c.pendingMu.Unlock()
+	c.clearPending()
 
 	if c.cmd != nil {
 		return c.cmd.Wait()
 	}
 	return nil
+}
+
+func (c *Client) clearPending() {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	for id, ch := range c.pending {
+		close(ch)
+		delete(c.pending, id)
+	}
 }
 
 // call sends a JSON-RPC request and waits for the response.
@@ -267,8 +273,8 @@ func (c *Client) call(ctx context.Context, method string, params any, result any
 	c.logger.Printf("bsp -> %s (id=%d)", method, id)
 
 	select {
-	case resp := <-ch:
-		if resp == nil {
+	case resp, ok := <-ch:
+		if !ok || resp == nil {
 			return fmt.Errorf("BSP connection closed")
 		}
 		if resp.Error != nil {
@@ -300,6 +306,7 @@ func (c *Client) notify(method string) error {
 
 // readLoop reads messages from Bloop and dispatches them.
 func (c *Client) readLoop() {
+	defer c.clearPending()
 	for {
 		body, err := c.transport.ReadRaw()
 		if err != nil {
