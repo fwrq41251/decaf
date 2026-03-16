@@ -141,12 +141,30 @@ func (c *Client) Compile(ctx context.Context) error {
 		}
 	}
 
+	return c.CompileTargets(ctx, ids)
+}
+
+// CompileTargets triggers compilation of specific build targets.
+func (c *Client) CompileTargets(ctx context.Context, targets []BuildTargetIdentifier) error {
+	if len(targets) == 0 {
+		return nil
+	}
 	var result CompileResult
-	if err := c.call(ctx, "buildTarget/compile", CompileParams{Targets: ids}, &result); err != nil {
+	if err := c.call(ctx, "buildTarget/compile", CompileParams{Targets: targets}, &result); err != nil {
 		return fmt.Errorf("buildTarget/compile failed: %w", err)
 	}
-	c.logger.Printf("compile finished: statusCode=%d", result.StatusCode)
+	c.logger.Printf("compile finished: statusCode=%d (%d targets)", result.StatusCode, len(targets))
 	return nil
+}
+
+// InverseSources returns the build targets that contain the given source file.
+func (c *Client) InverseSources(ctx context.Context, fileURI string) ([]BuildTargetIdentifier, error) {
+	var result InverseSourcesResult
+	params := InverseSourcesParams{TextDocument: TextDocumentIdentifier{URI: fileURI}}
+	if err := c.call(ctx, "buildTarget/inverseSources", params, &result); err != nil {
+		return nil, fmt.Errorf("buildTarget/inverseSources failed: %w", err)
+	}
+	return result.Targets, nil
 }
 
 // DependencySources returns the source JARs for all known build targets.

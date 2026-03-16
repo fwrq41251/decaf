@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+
+	"github.com/fwrq41251/decaf/internal/bsp"
 )
 
 func (h *Handler) handleDidOpen(_ context.Context, params json.RawMessage) (any, error) {
@@ -33,19 +35,7 @@ func (h *Handler) handleDidSave(ctx context.Context, params json.RawMessage) (an
 		return nil, err
 	}
 	h.logger.Printf("didSave: %s — triggering compile", p.TextDocument.URI)
-
-	go func() {
-		prog := h.beginProgress("decaf", "compiling…")
-		if err := h.bspClient.Compile(ctx); err != nil {
-			h.logger.Printf("compile on save failed: %v", err)
-			prog.end("compilation failed")
-			return
-		}
-		prog.report("indexing…", nil)
-		h.reindex()
-		prog.end("done")
-	}()
-
+	h.scheduleCompile(p.TextDocument.URI)
 	return nil, nil
 }
 
@@ -76,16 +66,26 @@ func (h *Handler) handleDidChangeWatchedFiles(_ context.Context, params json.Raw
 		return nil, nil
 	}
 
+	var uris []string
+	for _, e := range p.Changes {
+		if strings.HasSuffix(e.URI, ".java") {
+			uris = append(uris, e.URI)
+		}
+	}
 	h.logger.Printf("watched files changed: %d java file(s)", javaChanged)
-	h.scheduleCompile()
+	h.scheduleCompile(uris...)
 	return nil, nil
 }
 
 // scheduleCompile debounces compilation — waits 500ms after the last call
 // before triggering a compile + reindex cycle.
-func (h *Handler) scheduleCompile() {
+// If file URIs are provided, only the build targets owning those files are compiled.
+func (h *Handler) scheduleCompile(uris ...string) {
 	h.debounceMu.Lock()
 	defer h.debounceMu.Unlock()
+
+	// Merge URIs across debounced calls.
+	h.pendingURIs = append(h.pendingURIs, uris...)
 
 	if h.debounceTimer != nil {
 		h.debounceTimer.Stop()
@@ -96,15 +96,61 @@ func (h *Handler) scheduleCompile() {
 		if ctx == nil {
 			return
 		}
+
+		// Collect and clear pending URIs.
+		h.debounceMu.Lock()
+		changedURIs := h.pendingURIs
+		h.pendingURIs = nil
+		h.debounceMu.Unlock()
+
 		prog := h.beginProgress("decaf", "compiling…")
-		if err := h.bspClient.Compile(ctx); err != nil {
-			h.logger.Printf("compile on file change failed: %v", err)
-			prog.end("compilation failed")
-			return
+
+		compiled := false
+		if len(changedURIs) > 0 {
+			targets := h.resolveTargets(ctx, changedURIs)
+			if len(targets) > 0 {
+				if err := h.bspClient.CompileTargets(ctx, targets); err != nil {
+					h.logger.Printf("compile on file change failed: %v", err)
+					prog.end("compilation failed")
+					return
+				}
+				compiled = true
+			}
 		}
+
+		// Fall back to full compile if we couldn't resolve targets.
+		if !compiled {
+			if err := h.bspClient.Compile(ctx); err != nil {
+				h.logger.Printf("compile on file change failed: %v", err)
+				prog.end("compilation failed")
+				return
+			}
+		}
+
 		prog.report("indexing…", nil)
 		h.reindex()
 		prog.end("done")
 	})
+}
+
+// resolveTargets uses inverseSources to find build targets for the given file URIs,
+// deduplicating the results.
+func (h *Handler) resolveTargets(ctx context.Context, uris []string) []bsp.BuildTargetIdentifier {
+	seen := make(map[string]struct{})
+	var targets []bsp.BuildTargetIdentifier
+	for _, u := range uris {
+		ts, err := h.bspClient.InverseSources(ctx, u)
+		if err != nil {
+			h.logger.Printf("inverseSources failed for %s: %v", u, err)
+			return nil // fall back to full compile
+		}
+		for _, t := range ts {
+			if _, ok := seen[t.URI]; !ok {
+				seen[t.URI] = struct{}{}
+				targets = append(targets, t)
+			}
+		}
+	}
+	return targets
 }
 

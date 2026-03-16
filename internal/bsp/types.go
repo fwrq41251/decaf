@@ -115,6 +115,16 @@ type JvmEnvironmentItem struct {
 	JavaVersion        string                `json:"javaVersion,omitempty"`
 }
 
+// InverseSourcesParams is sent for "buildTarget/inverseSources".
+type InverseSourcesParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
+// InverseSourcesResult is returned by "buildTarget/inverseSources".
+type InverseSourcesResult struct {
+	Targets []BuildTargetIdentifier `json:"targets"`
+}
+
 // PublishDiagnosticsParams is sent by the build server as a notification.
 type PublishDiagnosticsParams struct {
 	TextDocument TextDocumentIdentifier `json:"textDocument"`

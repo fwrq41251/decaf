@@ -45,26 +45,7 @@ type ServerCapabilities struct {
 	ImplementationProvider    bool                     `json:"implementationProvider,omitempty"`
 	WorkspaceSymbolProvider   bool                     `json:"workspaceSymbolProvider,omitempty"`
 	CodeActionProvider        *CodeActionOptions       `json:"codeActionProvider,omitempty"`
-	DiagnosticProvider        *DiagnosticOptions       `json:"diagnosticProvider,omitempty"`
 	Workspace                 *ServerWorkspaceCapabilities `json:"workspace,omitempty"`
-}
-
-// DiagnosticOptions declares pull-mode diagnostic support (LSP 3.17).
-type DiagnosticOptions struct {
-	Identifier            string `json:"identifier,omitempty"`
-	InterFileDependencies bool   `json:"interFileDependencies"`
-	WorkspaceDiagnostics  bool   `json:"workspaceDiagnostics"`
-}
-
-// DocumentDiagnosticParams is sent by the client for textDocument/diagnostic.
-type DocumentDiagnosticParams struct {
-	TextDocument TextDocumentIdentifier `json:"textDocument"`
-}
-
-// DocumentDiagnosticReport is the response for textDocument/diagnostic.
-type DocumentDiagnosticReport struct {
-	Kind  string       `json:"kind"`
-	Items []Diagnostic `json:"items,omitempty"`
 }
 
 // ServerWorkspaceCapabilities describes workspace-related server capabilities.

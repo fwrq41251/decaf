@@ -2,7 +2,6 @@ package lsp
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"os"
 	"sync"
@@ -29,9 +28,10 @@ type Handler struct {
 	// docs stores in-memory overlay of open document contents.
 	docs *docStore
 
-	// debounceMu protects debounceTimer.
+	// debounceMu protects debounceTimer and pendingURIs.
 	debounceMu    sync.Mutex
 	debounceTimer *time.Timer
+	pendingURIs   []string
 	// backgroundCtx is used for background operations (compile, reindex).
 	backgroundCtx    context.Context
 	backgroundCancel context.CancelFunc
@@ -84,9 +84,6 @@ func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
 	// Code actions — concurrent (read-only analysis).
 	d.RegisterConcurrent("textDocument/codeAction", h.handleCodeAction)
 
-	// Pull-mode diagnostics (LSP 3.17).
-	d.RegisterConcurrent("textDocument/diagnostic", h.handleDiagnostic)
-
 	// Rename mutates state — sequential.
 	d.Register("textDocument/rename", h.handleRename)
 }
@@ -137,26 +134,6 @@ func (h *Handler) toFileURI(relURI string) string {
 		return relURI
 	}
 	return uri.Join(h.rootURI, relURI)
-}
-
-// handleDiagnostic handles textDocument/diagnostic (pull-mode, LSP 3.17).
-// It parses the open document with tree-sitter and returns syntax errors.
-func (h *Handler) handleDiagnostic(_ context.Context, params json.RawMessage) (any, error) {
-	var p DocumentDiagnosticParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, err
-	}
-
-	content, ok := h.docs.Get(p.TextDocument.URI)
-	if !ok {
-		return DocumentDiagnosticReport{Kind: "full"}, nil
-	}
-
-	diags := computeDiagnostics(content)
-	return DocumentDiagnosticReport{
-		Kind:  "full",
-		Items: diags,
-	}, nil
 }
 
 // handleBSPDiagnostics converts BSP diagnostics to LSP diagnostics and publishes them.
