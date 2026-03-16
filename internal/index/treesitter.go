@@ -38,18 +38,19 @@ func FindSymbolLocation(filePath, sym string) (int, int) {
 	isConstructor := strings.Contains(sym, "#`<init>`(")
 
 	// Extract the short name from the symbol.
-	name := extractShortName(sym)
+	name := ExtractShortName(sym)
 	if name == "" {
 		return -1, -1
 	}
 
 	rootNode := tree.RootNode()
-	
+
 	// We use a simple recursive search for a node that looks like a declaration of 'name'.
 	return findNode(rootNode, name, content, isConstructor)
-}
+	}
 
-func extractShortName(sym string) string {
+	func ExtractShortName(sym string) string {
+
 	// 1. Remove trailing SemanticDB markers.
 	sym = strings.TrimRight(sym, "#.:().")
 

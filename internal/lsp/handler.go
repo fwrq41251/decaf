@@ -32,6 +32,8 @@ type Handler struct {
 	debounceMu    sync.Mutex
 	debounceTimer *time.Timer
 	pendingURIs   []string
+	// compileMu ensures only one compilation/reindex cycle runs at a time.
+	compileMu sync.Mutex
 	// backgroundCtx is used for background operations (compile, reindex).
 	backgroundCtx    context.Context
 	backgroundCancel context.CancelFunc

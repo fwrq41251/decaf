@@ -450,24 +450,38 @@ func (idx *Index) intern(s string) string {
 // Definition returns the definition locations for a symbol at the given position.
 func (idx *Index) Definition(uri string, line, character int) []Symbol {
 	idx.mu.RLock()
-	defer idx.mu.RUnlock()
 
 	// Find the symbol at the given position.
 	relURI := idx.toRelativeURI(uri)
 	sym := idx.symbolAt(relURI, line, character)
 	idx.logger.Printf("Definition request: uri=%s, relURI=%s, symbolAt=%s", uri, relURI, sym)
+	
 	if sym == "" {
+		idx.mu.RUnlock()
 		return nil
 	}
 
 	defs := idx.definitions[sym]
-	if len(defs) == 0 && (idx.jdkSourceRoot != "" || len(idx.dependencySources) > 0) {
+	
+	// If it's an internal symbol with definitions, return them.
+	if len(defs) > 0 {
+		result := deduplicateSymbols(copySymbols(defs))
+		idx.mu.RUnlock()
+		return result
+	}
+
+	// It's a possible external symbol. Release RLock before doing potential I/O in resolveExternalSymbol.
+	jdkRoot := idx.jdkSourceRoot
+	depSources := idx.dependencySources
+	idx.mu.RUnlock()
+
+	if jdkRoot != "" || len(depSources) > 0 {
 		// Fallback for external symbols (JDK/Dependencies).
 		if ext := idx.resolveExternalSymbol(sym); ext != nil {
 			return []Symbol{*ext}
 		}
 	}
-	return deduplicateSymbols(copySymbols(defs))
+	return nil
 }
 
 func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
@@ -482,25 +496,32 @@ func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 	}
 	relPath := parts[0] + ".java"
 
-	// Check cache first.
+	// Check cache first (sync.Map is thread-safe).
 	if cachedPath, ok := idx.externalCache.Load(relPath); ok {
 		return idx.createExternalSymbol(sym, cachedPath.(string))
 	}
 
+	// Read JDK root and dependency sources under a short RLock.
+	idx.mu.RLock()
+	jdkRoot := idx.jdkSourceRoot
+	depSources := make([]string, len(idx.dependencySources))
+	copy(depSources, idx.dependencySources)
+	idx.mu.RUnlock()
+
 	// 1. Search in JDK source if available.
-	if idx.jdkSourceRoot != "" {
-		info, err := os.Stat(idx.jdkSourceRoot)
+	if jdkRoot != "" {
+		info, err := os.Stat(jdkRoot)
 		if err == nil {
 			if info.IsDir() {
 				// Already extracted or manually set directory.
-				foundPath := filepath.Join(idx.jdkSourceRoot, relPath)
+				foundPath := filepath.Join(jdkRoot, relPath)
 				if _, err := os.Stat(foundPath); err == nil {
 					idx.externalCache.Store(relPath, foundPath)
 					return idx.createExternalSymbol(sym, foundPath)
 				}
-			} else if strings.HasSuffix(idx.jdkSourceRoot, ".zip") || strings.HasSuffix(idx.jdkSourceRoot, ".jar") {
+			} else if strings.HasSuffix(jdkRoot, ".zip") || strings.HasSuffix(jdkRoot, ".jar") {
 				// It's a zip file (like src.zip). Extract on demand.
-				if foundPath := idx.findAndExtractFromJar(idx.jdkSourceRoot, relPath); foundPath != "" {
+				if foundPath := idx.findAndExtractFromJar(jdkRoot, relPath); foundPath != "" {
 					idx.externalCache.Store(relPath, foundPath)
 					return idx.createExternalSymbol(sym, foundPath)
 				}
@@ -509,8 +530,7 @@ func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 	}
 
 	// 2. Search in third-party dependency JARs.
-	// Caller (Definition) already holds the RLock, so we access dependencySources directly.
-	for _, jar := range idx.dependencySources {
+	for _, jar := range depSources {
 		if foundPath := idx.findAndExtractFromJar(jar, relPath); foundPath != "" {
 			idx.externalCache.Store(relPath, foundPath)
 			return idx.createExternalSymbol(sym, foundPath)
@@ -535,7 +555,7 @@ func (idx *Index) createExternalSymbol(sym, path string) *Symbol {
 			StartLine:      int32(line),
 			StartCharacter: int32(col),
 			EndLine:        int32(line),
-			EndCharacter:   int32(col + len(extractShortName(sym))),
+			EndCharacter:   int32(col + len(ExtractShortName(sym))),
 		}
 	}
 
@@ -857,6 +877,28 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 	}
 
 	return sym, result
+}
+
+// OccurrenceAt returns the SemanticDB occurrence at the given position.
+func (idx *Index) OccurrenceAt(uri string, line, character int) *Occurrence {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	relURI := idx.toRelativeURI(uri)
+	occs, ok := idx.fileOccurrences[relURI]
+	if !ok {
+		return nil
+	}
+	for _, occ := range occs {
+		r := occ.Range
+		if r == nil {
+			continue
+		}
+		if containsPosition(r, line, character) {
+			return occ
+		}
+	}
+	return nil
 }
 
 // AllFileOccurrences returns all occurrences in the given file.

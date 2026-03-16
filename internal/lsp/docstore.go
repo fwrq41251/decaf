@@ -97,7 +97,7 @@ func positionToOffset(content string, line, character int) int {
 		cur += idx + 1
 	}
 
-	// Advance by character count (UTF-16 offsets; for ASCII this is byte offset).
+	// character is a 0-based UTF-16 code unit offset from the start of the line.
 	lineStart := cur
 	lineEnd := strings.IndexByte(content[lineStart:], '\n')
 	if lineEnd < 0 {
@@ -106,9 +106,8 @@ func positionToOffset(content string, line, character int) int {
 		lineEnd += lineStart
 	}
 
-	off := lineStart + character
-	if off > lineEnd {
-		off = lineEnd
-	}
-	return off
+	lineText := content[lineStart:lineEnd]
+	byteOffInLine := utf16Index(lineText, character)
+	
+	return lineStart + byteOffInLine
 }

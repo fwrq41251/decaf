@@ -26,9 +26,9 @@ func TestExtractShortName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.sym, func(t *testing.T) {
-			got := extractShortName(tt.sym)
+			got := ExtractShortName(tt.sym)
 			if got != tt.expected {
-				t.Errorf("extractShortName(%q) = %q, want %q", tt.sym, got, tt.expected)
+				t.Errorf("ExtractShortName(%q) = %q, want %q", tt.sym, got, tt.expected)
 			}
 		})
 	}

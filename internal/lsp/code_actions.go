@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/fwrq41251/decaf/internal/index"
 )
 
 func (h *Handler) handleCodeAction(_ context.Context, params json.RawMessage) (any, error) {
@@ -123,14 +125,14 @@ func (h *Handler) handlePrepareRename(_ context.Context, params json.RawMessage)
 		return nil, nil
 	}
 
-	sym := h.idx.Hover(p.TextDocument.URI, p.Position.Line, p.Position.Character)
-	if sym == nil || sym.Range == nil {
+	occ := h.idx.OccurrenceAt(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	if occ == nil || occ.Range == nil {
 		return nil, nil
 	}
 
 	return map[string]any{
-		"range":       sdbRangeToLSP(sym.Range),
-		"placeholder": sym.Name,
+		"range":       sdbRangeToLSP(occ.Range),
+		"placeholder": index.ExtractShortName(occ.Symbol),
 	}, nil
 }
 

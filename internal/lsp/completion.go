@@ -95,12 +95,10 @@ func (h *Handler) wordPrefixAt(fileURI string, line, character int) string {
 	}
 	lineText := content[cur : cur+lineEnd]
 
-	if character > len(lineText) {
-		character = len(lineText)
-	}
+	byteOff := utf16Index(lineText, character)
 
 	// Walk backwards from cursor to find the start of the identifier.
-	start := character
+	start := byteOff
 	for start > 0 {
 		ch := lineText[start-1]
 		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '$' {
@@ -110,7 +108,7 @@ func (h *Handler) wordPrefixAt(fileURI string, line, character int) string {
 		}
 	}
 
-	return lineText[start:character]
+	return lineText[start:byteOff]
 }
 
 // countActiveParameter counts the number of commas between the nearest unmatched
@@ -138,15 +136,13 @@ func (h *Handler) countActiveParameter(fileURI string, line, character int) int 
 	}
 	lineText := content[cur : cur+lineEnd]
 
-	if character > len(lineText) {
-		character = len(lineText)
-	}
+	byteOff := utf16Index(lineText, character)
 
 	// Walk backwards from cursor to find the opening parenthesis,
 	// counting commas at the top nesting level.
 	commas := 0
 	depth := 0
-	for i := character - 1; i >= 0; i-- {
+	for i := byteOff - 1; i >= 0; i-- {
 		switch lineText[i] {
 		case ')':
 			depth++

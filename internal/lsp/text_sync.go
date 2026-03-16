@@ -92,6 +92,9 @@ func (h *Handler) scheduleCompile(uris ...string) {
 	}
 
 	h.debounceTimer = time.AfterFunc(500*time.Millisecond, func() {
+		h.compileMu.Lock()
+		defer h.compileMu.Unlock()
+
 		ctx := h.backgroundCtx
 		if ctx == nil {
 			return
