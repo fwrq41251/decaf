@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"time"
+	"sync/atomic"
 )
 
 // ErrExit is returned by a handler to signal the dispatcher to stop the loop.
@@ -37,6 +37,8 @@ type Dispatcher struct {
 	inflight map[int64]context.CancelFunc
 	// clientPending maps raw request IDs to response channels (client-side).
 	clientPending map[string]chan *Response
+	// nextCallID generates unique IDs for outbound requests.
+	nextCallID atomic.Int64
 }
 
 // NewDispatcher creates a new Dispatcher.
@@ -172,7 +174,7 @@ func (d *Dispatcher) handleAndRespond(ctx context.Context, req *Request, handler
 
 // Call sends a request to the client and waits for the response.
 func (d *Dispatcher) Call(ctx context.Context, method string, params any, result any) error {
-	id := fmt.Sprintf("decaf-%d", time.Now().UnixNano())
+	id := fmt.Sprintf("decaf-%d", d.nextCallID.Add(1))
 	req, err := NewRequestWithID(id, method, params)
 	if err != nil {
 		return err

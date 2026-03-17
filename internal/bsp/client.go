@@ -234,7 +234,11 @@ func (c *Client) clearPending() {
 	c.pendingMu.Lock()
 	defer c.pendingMu.Unlock()
 	for id, ch := range c.pending {
-		close(ch)
+		select {
+		case <-ch:
+		default:
+			close(ch)
+		}
 		delete(c.pending, id)
 	}
 }

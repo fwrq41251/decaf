@@ -112,10 +112,9 @@ func (h *Handler) scheduleCompile(uris ...string) {
 		if len(changedURIs) > 0 {
 			targets := h.resolveTargets(ctx, changedURIs)
 			if len(targets) > 0 {
-				if err := h.bspClient.CompileTargets(ctx, targets); err != nil {
+				err := h.bspClient.CompileTargets(ctx, targets)
+				if err != nil {
 					h.logger.Printf("compile on file change failed: %v", err)
-					prog.end("compilation failed")
-					return
 				}
 				compiled = true
 			}
@@ -125,11 +124,10 @@ func (h *Handler) scheduleCompile(uris ...string) {
 		if !compiled {
 			if err := h.bspClient.Compile(ctx); err != nil {
 				h.logger.Printf("compile on file change failed: %v", err)
-				prog.end("compilation failed")
-				return
 			}
 		}
 
+		// Always reindex — even partial compilation produces updated semanticdb.
 		prog.report("indexing…", nil)
 		h.reindex()
 		prog.end("done")

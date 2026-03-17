@@ -63,7 +63,11 @@ func NewRequestWithID(id string, method string, params any) (*Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	rawID := json.RawMessage(id)
+	idJSON, err := json.Marshal(id)
+	if err != nil {
+		return nil, err
+	}
+	rawID := json.RawMessage(idJSON)
 	return &Request{
 		JSONRPC: "2.0",
 		ID:      &rawID,
