@@ -50,8 +50,10 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any, error) {
 	h.initialized.Store(true)
 	ctx, cancel := context.WithCancel(ctx)
+	h.bgMu.Lock()
 	h.backgroundCtx = ctx
 	h.backgroundCancel = cancel
+	h.bgMu.Unlock()
 	h.logger.Println("client sent initialized notification")
 
 	// Register file watchers for .java files so we detect branch switches etc.
@@ -167,9 +169,11 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 func (h *Handler) handleShutdown(ctx context.Context, _ json.RawMessage) (any, error) {
 	h.shutdown.Store(true)
 	h.logger.Println("shutdown requested")
+	h.bgMu.Lock()
 	if h.backgroundCancel != nil {
 		h.backgroundCancel()
 	}
+	h.bgMu.Unlock()
 	if h.idx != nil {
 		h.idx.Close()
 	}

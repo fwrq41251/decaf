@@ -259,13 +259,21 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 
 	var result []Occurrence
 
-	// Collect all occurrences (definitions + references).
-	for _, fileOccs := range idx.fileOccurrences {
-		for _, occ := range fileOccs {
-			if occ.Symbol == sym {
-				result = append(result, *occ)
-			}
+	// Collect definition occurrences.
+	for _, d := range idx.definitions[sym] {
+		if d.Range != nil {
+			result = append(result, Occurrence{
+				Symbol: d.Symbol,
+				Role:   sdb.SymbolOccurrence_DEFINITION,
+				URI:    d.URI,
+				Range:  d.Range,
+			})
 		}
+	}
+
+	// Collect reference occurrences.
+	for _, occ := range idx.references[sym] {
+		result = append(result, *occ)
 	}
 
 	return sym, result

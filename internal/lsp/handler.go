@@ -34,18 +34,25 @@ type Handler struct {
 	pendingURIs   []string
 	// compileMu ensures only one compilation/reindex cycle runs at a time.
 	compileMu sync.Mutex
-	// backgroundCtx is used for background operations (compile, reindex).
+	// bgMu protects backgroundCtx and backgroundCancel.
+	bgMu             sync.Mutex
 	backgroundCtx    context.Context
 	backgroundCancel context.CancelFunc
+
+	// diagnosticsMu protects diagnostics map.
+	diagnosticsMu sync.Mutex
+	// diagnostics stores current diagnostics per URI.
+	diagnostics map[string][]Diagnostic
 }
 
 // NewHandler creates a new LSP handler.
 func NewHandler(logger *log.Logger, transport *jsonrpc.Transport) *Handler {
 	h := &Handler{
-		logger:    logger,
-		exitCh:    make(chan struct{}),
-		transport: transport,
-		docs:      newDocStore(),
+		logger:      logger,
+		exitCh:      make(chan struct{}),
+		transport:   transport,
+		docs:        newDocStore(),
+		diagnostics: make(map[string][]Diagnostic),
 	}
 	h.bspClient = bsp.NewClient(logger, h.handleBSPDiagnostics)
 	return h
@@ -140,9 +147,15 @@ func (h *Handler) toFileURI(relURI string) string {
 
 // handleBSPDiagnostics converts BSP diagnostics to LSP diagnostics and publishes them.
 func (h *Handler) handleBSPDiagnostics(bspDiag bsp.PublishDiagnosticsParams) {
-	lspDiags := make([]Diagnostic, 0, len(bspDiag.Diagnostics))
+	docURI := bspDiag.TextDocument.URI
+
+	h.diagnosticsMu.Lock()
+	if bspDiag.Reset {
+		h.diagnostics[docURI] = nil
+	}
+
 	for _, d := range bspDiag.Diagnostics {
-		lspDiags = append(lspDiags, Diagnostic{
+		h.diagnostics[docURI] = append(h.diagnostics[docURI], Diagnostic{
 			Range: Range{
 				Start: Position{Line: d.Range.Start.Line, Character: d.Range.Start.Character},
 				End:   Position{Line: d.Range.End.Line, Character: d.Range.End.Character},
@@ -152,10 +165,12 @@ func (h *Handler) handleBSPDiagnostics(bspDiag bsp.PublishDiagnosticsParams) {
 			Source:   "bloop",
 		})
 	}
+	currentDiags := h.diagnostics[docURI]
+	h.diagnosticsMu.Unlock()
 
 	params := PublishDiagnosticsParams{
-		URI:         bspDiag.TextDocument.URI,
-		Diagnostics: lspDiags,
+		URI:         docURI,
+		Diagnostics: currentDiags,
 	}
 
 	notification, err := jsonrpc.NewNotification("textDocument/publishDiagnostics", params)

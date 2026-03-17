@@ -92,10 +92,15 @@ func (h *Handler) scheduleCompile(uris ...string) {
 	}
 
 	h.debounceTimer = time.AfterFunc(500*time.Millisecond, func() {
+		totalStart := time.Now()
+
 		h.compileMu.Lock()
 		defer h.compileMu.Unlock()
+		h.logger.Printf("[timing] acquired compileMu after %v", time.Since(totalStart))
 
+		h.bgMu.Lock()
 		ctx := h.backgroundCtx
+		h.bgMu.Unlock()
 		if ctx == nil {
 			return
 		}
@@ -110,9 +115,13 @@ func (h *Handler) scheduleCompile(uris ...string) {
 
 		compiled := false
 		if len(changedURIs) > 0 {
+			t0 := time.Now()
 			targets := h.resolveTargets(ctx, changedURIs)
+			h.logger.Printf("[timing] resolveTargets (%d URIs -> %d targets) took %v", len(changedURIs), len(targets), time.Since(t0))
 			if len(targets) > 0 {
+				t1 := time.Now()
 				err := h.bspClient.CompileTargets(ctx, targets)
+				h.logger.Printf("[timing] CompileTargets took %v", time.Since(t1))
 				if err != nil {
 					h.logger.Printf("compile on file change failed: %v", err)
 				}
@@ -122,15 +131,21 @@ func (h *Handler) scheduleCompile(uris ...string) {
 
 		// Fall back to full compile if we couldn't resolve targets.
 		if !compiled {
+			t1 := time.Now()
 			if err := h.bspClient.Compile(ctx); err != nil {
 				h.logger.Printf("compile on file change failed: %v", err)
 			}
+			h.logger.Printf("[timing] full Compile took %v", time.Since(t1))
 		}
 
 		// Always reindex — even partial compilation produces updated semanticdb.
 		prog.report("indexing…", nil)
+		t2 := time.Now()
 		h.reindex()
+		h.logger.Printf("[timing] reindex took %v", time.Since(t2))
+
 		prog.end("done")
+		h.logger.Printf("[timing] total compile+reindex cycle took %v", time.Since(totalStart))
 	})
 }
 
