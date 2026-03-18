@@ -71,6 +71,26 @@ func (h *Handler) ExitCh() <-chan struct{} {
 	return h.exitCh
 }
 
+// Close cleans up resources (Bloop process, index) if they haven't been
+// cleaned up already by a normal shutdown/exit sequence.
+func (h *Handler) Close(ctx context.Context) {
+	if h.shutdown.Load() {
+		return
+	}
+	h.shutdown.Store(true)
+	h.bgMu.Lock()
+	if h.backgroundCancel != nil {
+		h.backgroundCancel()
+	}
+	h.bgMu.Unlock()
+	if h.idx != nil {
+		h.idx.Close()
+	}
+	if err := h.bspClient.Shutdown(ctx); err != nil {
+		h.logger.Printf("bloop shutdown error during cleanup: %v", err)
+	}
+}
+
 // RegisterAll registers all LSP handlers on the dispatcher.
 func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
 	// Lifecycle — must run sequentially.

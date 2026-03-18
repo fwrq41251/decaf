@@ -29,6 +29,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	handler := lsp.NewHandler(s.logger, transport)
 	handler.RegisterAll(dispatcher)
+	defer handler.Close(ctx)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
