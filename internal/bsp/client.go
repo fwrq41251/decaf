@@ -29,17 +29,19 @@ type Client struct {
 	nextID        atomic.Int64
 	pending       map[int64]chan *jsonrpc.Response
 	pendingMu     sync.Mutex
-	onDiagnostics DiagnosticsHandler
-	targets       []BuildTarget
+	onDiagnostics  DiagnosticsHandler
+	onDisconnect   func()
+	targets        []BuildTarget
 	socketDir     string // temp directory containing the unix socket
 }
 
 // NewClient creates a new BSP client.
-func NewClient(logger *log.Logger, onDiagnostics DiagnosticsHandler) *Client {
+func NewClient(logger *log.Logger, onDiagnostics DiagnosticsHandler, onDisconnect func()) *Client {
 	return &Client{
 		logger:        logger,
 		pending:       make(map[int64]chan *jsonrpc.Response),
 		onDiagnostics: onDiagnostics,
+		onDisconnect:  onDisconnect,
 	}
 }
 
@@ -315,6 +317,9 @@ func (c *Client) readLoop() {
 		body, err := c.transport.ReadRaw()
 		if err != nil {
 			c.logger.Printf("bsp read error: %v", err)
+			if c.onDisconnect != nil {
+				c.onDisconnect()
+			}
 			return
 		}
 

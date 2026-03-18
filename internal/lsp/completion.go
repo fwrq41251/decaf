@@ -120,7 +120,7 @@ func (h *Handler) countActiveParameter(fileURI string, line, character int) int 
 		return 0
 	}
 
-	// Find the target line.
+	// Compute the absolute byte offset of the cursor in the full content.
 	cur := 0
 	for l := 0; l < line; l++ {
 		idx := strings.IndexByte(content[cur:], '\n')
@@ -135,15 +135,15 @@ func (h *Handler) countActiveParameter(fileURI string, line, character int) int 
 		lineEnd = len(content) - cur
 	}
 	lineText := content[cur : cur+lineEnd]
+	absOff := cur + utf16Index(lineText, character)
 
-	byteOff := utf16Index(lineText, character)
-
-	// Walk backwards from cursor to find the opening parenthesis,
-	// counting commas at the top nesting level.
+	// Walk backwards through the entire file from cursor to find the
+	// nearest unmatched opening parenthesis, counting commas at the
+	// top nesting level. This handles multi-line method calls.
 	commas := 0
 	depth := 0
-	for i := byteOff - 1; i >= 0; i-- {
-		switch lineText[i] {
+	for i := absOff - 1; i >= 0; i-- {
+		switch content[i] {
 		case ')':
 			depth++
 		case '(':

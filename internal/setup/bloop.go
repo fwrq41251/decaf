@@ -84,13 +84,17 @@ func (s *Setup) injectIntoConfig(configPath, jarPath string) error {
 	// Get classesDir for targetroot.
 	var classesDir string
 	if cd, ok := project["classesDir"]; ok {
-		json.Unmarshal(cd, &classesDir)
+		if err := json.Unmarshal(cd, &classesDir); err != nil {
+			return fmt.Errorf("parsing classesDir in %s: %w", configPath, err)
+		}
 	}
 
 	// Get or create java.options.
 	var javaObj map[string]json.RawMessage
 	if javaRaw, ok := project["java"]; ok {
-		json.Unmarshal(javaRaw, &javaObj)
+		if err := json.Unmarshal(javaRaw, &javaObj); err != nil {
+			return fmt.Errorf("parsing java in %s: %w", configPath, err)
+		}
 	}
 	if javaObj == nil {
 		javaObj = make(map[string]json.RawMessage)
@@ -98,7 +102,9 @@ func (s *Setup) injectIntoConfig(configPath, jarPath string) error {
 
 	var options []string
 	if optsRaw, ok := javaObj["options"]; ok {
-		json.Unmarshal(optsRaw, &options)
+		if err := json.Unmarshal(optsRaw, &options); err != nil {
+			return fmt.Errorf("parsing java.options in %s: %w", configPath, err)
+		}
 	}
 
 	// Check if already injected and clean up old format.

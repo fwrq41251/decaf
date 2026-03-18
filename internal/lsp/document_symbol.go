@@ -37,15 +37,16 @@ func buildDocumentSymbols(symbols []index.Symbol) []DocumentSymbol {
 		} else {
 			// Try to find parent container by checking if the symbol string
 			// is a prefix match. E.g., "com/example/Foo#bar()." belongs to "com/example/Foo#".
-			placed := false
-			for key, c := range containers {
-				if len(s.Symbol) > len(key) && s.Symbol[:len(key)] == key {
-					c.children = append(c.children, ds)
-					placed = true
-					break
+			// Find the closest parent container (longest matching prefix).
+			bestKey := ""
+			for key := range containers {
+				if len(s.Symbol) > len(key) && s.Symbol[:len(key)] == key && len(key) > len(bestKey) {
+					bestKey = key
 				}
 			}
-			if !placed {
+			if bestKey != "" {
+				containers[bestKey].children = append(containers[bestKey].children, ds)
+			} else {
 				orphans = append(orphans, ds)
 			}
 		}

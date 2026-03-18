@@ -54,7 +54,11 @@ func NewHandler(logger *log.Logger, transport *jsonrpc.Transport) *Handler {
 		docs:        newDocStore(),
 		diagnostics: make(map[string][]Diagnostic),
 	}
-	h.bspClient = bsp.NewClient(logger, h.handleBSPDiagnostics)
+	h.bspClient = bsp.NewClient(logger, h.handleBSPDiagnostics, func() {
+		if !h.shutdown.Load() {
+			h.showMessage(MessageTypeError, "decaf: Bloop build server disconnected. Please restart your editor.")
+		}
+	})
 	return h
 }
 
