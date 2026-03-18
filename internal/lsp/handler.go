@@ -43,6 +43,9 @@ type Handler struct {
 	diagnosticsMu sync.Mutex
 	// diagnostics stores current diagnostics per URI.
 	diagnostics map[string][]Diagnostic
+
+	// indexReady is closed once the initial index load (and full build if needed) completes.
+	indexReady chan struct{}
 }
 
 // NewHandler creates a new LSP handler.
@@ -53,6 +56,7 @@ func NewHandler(logger *log.Logger, transport *jsonrpc.Transport) *Handler {
 		transport:   transport,
 		docs:        newDocStore(),
 		diagnostics: make(map[string][]Diagnostic),
+		indexReady:  make(chan struct{}),
 	}
 	h.bspClient = bsp.NewClient(logger, h.handleBSPDiagnostics, func() {
 		if !h.shutdown.Load() {
@@ -117,6 +121,16 @@ func (h *Handler) showMessage(msgType int, message string) {
 }
 
 func intPtr(n int) *int { return &n }
+
+// waitIndexReady blocks until the initial index is ready or the context is cancelled.
+func (h *Handler) waitIndexReady(ctx context.Context) bool {
+	select {
+	case <-h.indexReady:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
 
 func (h *Handler) reindex() {
 	if h.idx == nil {

@@ -6,13 +6,13 @@ import (
 	"strings"
 )
 
-func (h *Handler) handleCompletion(_ context.Context, params json.RawMessage) (any, error) {
+func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) (any, error) {
 	var p CompletionParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
 
-	if h.idx == nil {
+	if !h.waitIndexReady(ctx) {
 		return CompletionList{}, nil
 	}
 
@@ -41,13 +41,13 @@ func (h *Handler) handleCompletion(_ context.Context, params json.RawMessage) (a
 	return CompletionList{IsIncomplete: true, Items: items}, nil
 }
 
-func (h *Handler) handleSignatureHelp(_ context.Context, params json.RawMessage) (any, error) {
+func (h *Handler) handleSignatureHelp(ctx context.Context, params json.RawMessage) (any, error) {
 	var p SignatureHelpParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
 
-	if h.idx == nil {
+	if !h.waitIndexReady(ctx) {
 		return nil, nil
 	}
 

@@ -76,8 +76,23 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 	// Decide if we need a full build.
 	needsFullBuild := !h.idx.HasFiles()
 
+	if !needsFullBuild {
+		// Index already has data from existing .semanticdb files; signal ready immediately.
+		close(h.indexReady)
+	}
+
 	// Full setup + compile in background if needed.
 	go func() {
+		if needsFullBuild {
+			defer func() {
+				select {
+				case <-h.indexReady:
+					// already closed
+				default:
+					close(h.indexReady)
+				}
+			}()
+		}
 		prog := h.beginProgress("decaf", "initializing…")
 
 		if needsFullBuild {
@@ -156,6 +171,7 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 			}
 			prog.report("indexing…", intPtr(90))
 			h.reindex()
+			close(h.indexReady)
 		} else {
 			h.logger.Println("Existing index found, skipping initial full compilation.")
 		}

@@ -9,13 +9,13 @@ import (
 	"github.com/fwrq41251/decaf/internal/index"
 )
 
-func (h *Handler) handleCodeAction(_ context.Context, params json.RawMessage) (any, error) {
+func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) (any, error) {
 	var p CodeActionParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
 
-	if h.idx == nil {
+	if !h.waitIndexReady(ctx) {
 		return []CodeAction{}, nil
 	}
 
@@ -83,13 +83,13 @@ func (h *Handler) handleCodeAction(_ context.Context, params json.RawMessage) (a
 	return actions, nil
 }
 
-func (h *Handler) handleRename(_ context.Context, params json.RawMessage) (any, error) {
+func (h *Handler) handleRename(ctx context.Context, params json.RawMessage) (any, error) {
 	var p RenameParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
 
-	if h.idx == nil {
+	if !h.waitIndexReady(ctx) {
 		return nil, nil
 	}
 
@@ -115,13 +115,13 @@ func (h *Handler) handleRename(_ context.Context, params json.RawMessage) (any, 
 	return WorkspaceEdit{Changes: changes}, nil
 }
 
-func (h *Handler) handlePrepareRename(_ context.Context, params json.RawMessage) (any, error) {
+func (h *Handler) handlePrepareRename(ctx context.Context, params json.RawMessage) (any, error) {
 	var p PrepareRenameParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
 
-	if h.idx == nil {
+	if !h.waitIndexReady(ctx) {
 		return nil, nil
 	}
 

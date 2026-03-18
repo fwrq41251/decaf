@@ -8,13 +8,13 @@ import (
 	"github.com/fwrq41251/decaf/internal/index"
 )
 
-func (h *Handler) handleDefinition(_ context.Context, params json.RawMessage) (any, error) {
+func (h *Handler) handleDefinition(ctx context.Context, params json.RawMessage) (any, error) {
 	var p TextDocumentPositionParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
 
-	if h.idx == nil {
+	if !h.waitIndexReady(ctx) {
 		return []LSPLocation{}, nil
 	}
 
@@ -38,13 +38,13 @@ func (h *Handler) handleDefinition(_ context.Context, params json.RawMessage) (a
 	return locations, nil
 }
 
-func (h *Handler) handleReferences(_ context.Context, params json.RawMessage) (any, error) {
+func (h *Handler) handleReferences(ctx context.Context, params json.RawMessage) (any, error) {
 	var p ReferenceParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
 
-	if h.idx == nil {
+	if !h.waitIndexReady(ctx) {
 		return []LSPLocation{}, nil
 	}
 
@@ -95,13 +95,13 @@ func (h *Handler) handleReferences(_ context.Context, params json.RawMessage) (a
 	return locations, nil
 }
 
-func (h *Handler) handleHover(_ context.Context, params json.RawMessage) (any, error) {
+func (h *Handler) handleHover(ctx context.Context, params json.RawMessage) (any, error) {
 	var p TextDocumentPositionParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
 
-	if h.idx == nil {
+	if !h.waitIndexReady(ctx) {
 		return nil, nil
 	}
 
@@ -121,7 +121,7 @@ func (h *Handler) handleHover(_ context.Context, params json.RawMessage) (any, e
 	return result, nil
 }
 
-func (h *Handler) handleDocumentSymbol(_ context.Context, params json.RawMessage) (any, error) {
+func (h *Handler) handleDocumentSymbol(ctx context.Context, params json.RawMessage) (any, error) {
 	var p struct {
 		TextDocument TextDocumentIdentifier `json:"textDocument"`
 	}
@@ -129,7 +129,7 @@ func (h *Handler) handleDocumentSymbol(_ context.Context, params json.RawMessage
 		return nil, err
 	}
 
-	if h.idx == nil {
+	if !h.waitIndexReady(ctx) {
 		return []DocumentSymbol{}, nil
 	}
 
@@ -138,13 +138,13 @@ func (h *Handler) handleDocumentSymbol(_ context.Context, params json.RawMessage
 	return result, nil
 }
 
-func (h *Handler) handleDocumentHighlight(_ context.Context, params json.RawMessage) (any, error) {
+func (h *Handler) handleDocumentHighlight(ctx context.Context, params json.RawMessage) (any, error) {
 	var p TextDocumentPositionParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
 
-	if h.idx == nil {
+	if !h.waitIndexReady(ctx) {
 		return []DocumentHighlight{}, nil
 	}
 
@@ -163,13 +163,13 @@ func (h *Handler) handleDocumentHighlight(_ context.Context, params json.RawMess
 	return highlights, nil
 }
 
-func (h *Handler) handleImplementation(_ context.Context, params json.RawMessage) (any, error) {
+func (h *Handler) handleImplementation(ctx context.Context, params json.RawMessage) (any, error) {
 	var p TextDocumentPositionParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
 
-	if h.idx == nil {
+	if !h.waitIndexReady(ctx) {
 		return []LSPLocation{}, nil
 	}
 
@@ -188,13 +188,13 @@ func (h *Handler) handleImplementation(_ context.Context, params json.RawMessage
 	return locations, nil
 }
 
-func (h *Handler) handleWorkspaceSymbol(_ context.Context, params json.RawMessage) (any, error) {
+func (h *Handler) handleWorkspaceSymbol(ctx context.Context, params json.RawMessage) (any, error) {
 	var p WorkspaceSymbolParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
 
-	if h.idx == nil || p.Query == "" {
+	if p.Query == "" || !h.waitIndexReady(ctx) {
 		return []SymbolInformation{}, nil
 	}
 
