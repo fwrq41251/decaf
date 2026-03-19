@@ -133,6 +133,206 @@ func writeSDB(t *testing.T, path string, docs *sdb.TextDocuments) {
 	}
 }
 
+func TestMembersOfType(t *testing.T) {
+	tmpDir := t.TempDir()
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Foo.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "com/example/Foo#", DisplayName: "Foo", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "com/example/Foo#bar().", DisplayName: "bar", Kind: sdb.SymbolInformation_METHOD},
+				{Symbol: "com/example/Foo#baz().", DisplayName: "baz", Kind: sdb.SymbolInformation_METHOD},
+			},
+		}},
+	}
+	writeSDB(t, filepath.Join(sdbDir, "Foo.java.semanticdb"), docs)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	if err := idx.Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	members := idx.MembersOfType("com/example/Foo#")
+	if len(members) != 2 {
+		t.Fatalf("expected 2 members, got %d", len(members))
+	}
+	names := map[string]bool{}
+	for _, m := range members {
+		names[m.Name] = true
+	}
+	if !names["bar"] || !names["baz"] {
+		t.Fatalf("expected bar and baz, got %v", names)
+	}
+}
+
+func TestMembersOfType_Inherited(t *testing.T) {
+	tmpDir := t.TempDir()
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Parent.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "com/example/Parent#", DisplayName: "Parent", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "com/example/Parent#parentMethod().", DisplayName: "parentMethod", Kind: sdb.SymbolInformation_METHOD},
+				{
+					Symbol: "com/example/Child#", DisplayName: "Child", Kind: sdb.SymbolInformation_CLASS,
+					Signature: &sdb.Signature{
+						SealedValue: &sdb.Signature_ClassSignature{
+							ClassSignature: &sdb.ClassSignature{
+								Parents: []*sdb.Type{
+									{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "com/example/Parent#"}}},
+								},
+							},
+						},
+					},
+				},
+				{Symbol: "com/example/Child#childMethod().", DisplayName: "childMethod", Kind: sdb.SymbolInformation_METHOD},
+			},
+		}},
+	}
+	writeSDB(t, filepath.Join(sdbDir, "Parent.java.semanticdb"), docs)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	if err := idx.Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	members := idx.MembersOfType("com/example/Child#")
+	names := map[string]bool{}
+	for _, m := range members {
+		names[m.Name] = true
+	}
+	if !names["childMethod"] {
+		t.Fatal("expected childMethod in members")
+	}
+	if !names["parentMethod"] {
+		t.Fatal("expected inherited parentMethod in members")
+	}
+}
+
+func TestTypeOfSymbol(t *testing.T) {
+	tmpDir := t.TempDir()
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Foo.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "com/example/Foo#", DisplayName: "Foo", Kind: sdb.SymbolInformation_CLASS},
+				{
+					Symbol: "com/example/Foo#items.", DisplayName: "items", Kind: sdb.SymbolInformation_FIELD,
+					Signature: &sdb.Signature{
+						SealedValue: &sdb.Signature_ValueSignature{
+							ValueSignature: &sdb.ValueSignature{
+								Tpe: &sdb.Type{
+									SealedValue: &sdb.Type_TypeRef{
+										TypeRef: &sdb.TypeRef{Symbol: "java/util/List#"},
+									},
+								},
+							},
+						},
+					},
+				},
+				{
+					Symbol: "com/example/Foo#getName().", DisplayName: "getName", Kind: sdb.SymbolInformation_METHOD,
+					Signature: &sdb.Signature{
+						SealedValue: &sdb.Signature_MethodSignature{
+							MethodSignature: &sdb.MethodSignature{
+								ReturnType: &sdb.Type{
+									SealedValue: &sdb.Type_TypeRef{
+										TypeRef: &sdb.TypeRef{Symbol: "java/lang/String#"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}},
+	}
+	writeSDB(t, filepath.Join(sdbDir, "Foo.java.semanticdb"), docs)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	if err := idx.Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Field type
+	fieldType := idx.TypeOfSymbol("com/example/Foo#items.")
+	if fieldType != "java/util/List#" {
+		t.Fatalf("expected field type 'java/util/List#', got %q", fieldType)
+	}
+
+	// Method return type
+	methodType := idx.TypeOfSymbol("com/example/Foo#getName().")
+	if methodType != "java/lang/String#" {
+		t.Fatalf("expected method return type 'java/lang/String#', got %q", methodType)
+	}
+}
+
+func TestTypeBySimpleName(t *testing.T) {
+	tmpDir := t.TempDir()
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "com/example/Foo#", DisplayName: "Foo", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "com/example/Bar#", DisplayName: "Bar", Kind: sdb.SymbolInformation_INTERFACE},
+				{Symbol: "com/example/Foo#baz().", DisplayName: "baz", Kind: sdb.SymbolInformation_METHOD},
+			},
+		}},
+	}
+	writeSDB(t, filepath.Join(sdbDir, "Types.java.semanticdb"), docs)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	if err := idx.Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	foos := idx.TypeBySimpleName("Foo")
+	if len(foos) != 1 {
+		t.Fatalf("expected 1 result for Foo, got %d", len(foos))
+	}
+	if foos[0].Symbol != "com/example/Foo#" {
+		t.Fatalf("expected symbol 'com/example/Foo#', got %q", foos[0].Symbol)
+	}
+
+	bars := idx.TypeBySimpleName("Bar")
+	if len(bars) != 1 {
+		t.Fatalf("expected 1 result for Bar, got %d", len(bars))
+	}
+
+	// Method should not appear in TypeBySimpleName
+	bazs := idx.TypeBySimpleName("baz")
+	if len(bazs) != 0 {
+		t.Fatalf("expected 0 results for method 'baz', got %d", len(bazs))
+	}
+}
+
+func TestExtractOwner(t *testing.T) {
+	tests := []struct {
+		sym  string
+		want string
+	}{
+		{"com/example/Foo#bar().", "com/example/Foo#"},
+		{"com/example/Foo#", ""},
+		{"com/example/Foo#Inner#method().", "com/example/Foo#Inner#"},
+		{"com/example/Foo#items.", "com/example/Foo#"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := extractOwner(tt.sym)
+		if got != tt.want {
+			t.Errorf("extractOwner(%q) = %q, want %q", tt.sym, got, tt.want)
+		}
+	}
+}
+
 func TestIncrementalIndex(t *testing.T) {
 	tmpDir := t.TempDir()
 	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")

@@ -234,6 +234,63 @@ func (idx *Index) removeDocument(uri string) {
 		}
 	}
 
+	// Remove ownerMembers and symbolType entries for symbols from this document.
+	ownersToUpdate := make(map[string]struct{})
+	for _, sym := range docSymbols {
+		delete(idx.symbolType, sym)
+		if owner := extractOwner(sym); owner != "" {
+			ownersToUpdate[owner] = struct{}{}
+		}
+	}
+	for owner := range ownersToUpdate {
+		if members, ok := idx.ownerMembers[owner]; ok {
+			filtered := members[:0]
+			for _, m := range members {
+				if m.URI != uri {
+					filtered = append(filtered, m)
+				}
+			}
+			if len(filtered) > 0 {
+				idx.ownerMembers[owner] = filtered
+			} else {
+				delete(idx.ownerMembers, owner)
+			}
+		}
+	}
+
+	// Remove typeBySimpleName entries.
+	for _, syms := range idx.typeBySimpleName {
+		filtered := syms[:0]
+		for _, s := range syms {
+			if s.URI != uri {
+				filtered = append(filtered, s)
+			}
+		}
+		// Note: We don't delete from the map here to avoid concurrent map iteration/mutation issues
+		// if we were iterating differently, but here we can't easily delete while iterating.
+		// However, we are iterating over the whole map which is slow.
+		// A better way would be to track which simple names are in this document.
+	}
+	// Correct way to clean up typeBySimpleName:
+	for _, s := range idx.fileSymbols[uri] {
+		if isTypeKind(s.Kind) {
+			name := strings.ToLower(s.Name)
+			if syms, ok := idx.typeBySimpleName[name]; ok {
+				filtered := syms[:0]
+				for _, sym := range syms {
+					if sym.URI != uri {
+						filtered = append(filtered, sym)
+					}
+				}
+				if len(filtered) > 0 {
+					idx.typeBySimpleName[name] = filtered
+				} else {
+					delete(idx.typeBySimpleName, name)
+				}
+			}
+		}
+	}
+
 	delete(idx.fileOccurrences, uri)
 	delete(idx.fileSymbols, uri)
 
@@ -288,6 +345,24 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 		}
 		idx.definitions[symStr] = append(idx.definitions[symStr], s)
 		idx.fileSymbols[uri] = append(idx.fileSymbols[uri], s)
+
+		// Build typeBySimpleName index.
+		if isTypeKind(sym.Kind) {
+			name := strings.ToLower(sym.DisplayName)
+			idx.typeBySimpleName[name] = append(idx.typeBySimpleName[name], s)
+		}
+
+		// Build ownerMembers: extract owner type from symbol string.
+		if owner := extractOwner(symStr); owner != "" {
+			idx.ownerMembers[owner] = append(idx.ownerMembers[owner], s)
+		}
+
+		// Extract type information from signature for completion.
+		if sig := sym.Signature; sig != nil {
+			if typeSym := extractTypeSym(sig); typeSym != "" {
+				idx.symbolType[symStr] = idx.intern(typeSym)
+			}
+		}
 
 		// Build implementors index from class signatures.
 		if sig := sym.Signature; sig != nil {
@@ -345,4 +420,40 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 		}
 		return ri.StartCharacter < rj.StartCharacter
 	})
+}
+
+// extractOwner returns the owner type symbol for a member symbol.
+// e.g. "com/example/Foo#bar()." → "com/example/Foo#"
+// Returns "" for type-level symbols (e.g. "com/example/Foo#").
+func extractOwner(sym string) string {
+	lastHash := strings.LastIndex(sym, "#")
+	if lastHash == -1 || lastHash == len(sym)-1 {
+		return "" // no hash or hash is the last char (it's a type itself)
+	}
+	return sym[:lastHash+1]
+}
+
+// extractTypeSym extracts the type symbol from a SemanticDB Signature.
+// For methods: returns the return type symbol.
+// For values/fields: returns the declared type symbol.
+func extractTypeSym(sig *sdb.Signature) string {
+	switch s := sig.SealedValue.(type) {
+	case *sdb.Signature_MethodSignature:
+		return typeRefSymbol(s.MethodSignature.ReturnType)
+	case *sdb.Signature_ValueSignature:
+		return typeRefSymbol(s.ValueSignature.Tpe)
+	default:
+		return ""
+	}
+}
+
+// typeRefSymbol extracts the symbol string from a Type if it's a TypeRef.
+func typeRefSymbol(t *sdb.Type) string {
+	if t == nil {
+		return ""
+	}
+	if tr, ok := t.SealedValue.(*sdb.Type_TypeRef); ok {
+		return tr.TypeRef.Symbol
+	}
+	return ""
 }

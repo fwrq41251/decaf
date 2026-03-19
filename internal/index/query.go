@@ -367,6 +367,72 @@ func (idx *Index) Implementations(uri string, line, character int) []Symbol {
 	return result
 }
 
+// MembersOfType returns all direct member symbols of a type,
+// plus inherited members from parent types.
+func (idx *Index) MembersOfType(typeSym string) []Symbol {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	seen := make(map[string]struct{})
+	var result []Symbol
+	idx.collectMembers(typeSym, seen, &result)
+	return result
+}
+
+func (idx *Index) collectMembers(typeSym string, seen map[string]struct{}, result *[]Symbol) {
+	if _, ok := seen[typeSym]; ok {
+		return
+	}
+	seen[typeSym] = struct{}{}
+
+	for _, m := range idx.ownerMembers[typeSym] {
+		*result = append(*result, *m)
+	}
+
+	// Recurse into parent types for inherited members.
+	for _, parent := range idx.childToParents[typeSym] {
+		idx.collectMembers(parent, seen, result)
+	}
+}
+
+// TypeOfSymbol returns the type symbol for a given symbol.
+// For fields: the declared type. For methods: the return type.
+func (idx *Index) TypeOfSymbol(sym string) string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.symbolType[sym]
+}
+
+// TypeBySimpleName returns type symbols (class/interface/enum) matching the given simple name.
+func (idx *Index) TypeBySimpleName(name string) []Symbol {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	name = strings.ToLower(name)
+	var result []Symbol
+	for _, d := range idx.typeBySimpleName[name] {
+		result = append(result, *d)
+	}
+	return result
+}
+
+// ParentsOf returns the parent type symbols for a given type symbol.
+func (idx *Index) ParentsOf(typeSym string) []string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.childToParents[typeSym]
+}
+
+func isTypeKind(kind sdb.SymbolInformation_Kind) bool {
+	switch kind {
+	case sdb.SymbolInformation_CLASS, sdb.SymbolInformation_INTERFACE,
+		sdb.SymbolInformation_OBJECT, sdb.SymbolInformation_PACKAGE_OBJECT:
+		return true
+	default:
+		return false
+	}
+}
+
 func containsPosition(r *sdb.Range, line, character int) bool {
 	if int(r.StartLine) > line || int(r.EndLine) < line {
 		return false

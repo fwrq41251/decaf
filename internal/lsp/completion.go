@@ -16,29 +16,217 @@ func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) 
 		return CompletionList{}, nil
 	}
 
-	// Extract the word prefix at the cursor position from the overlay buffer.
-	prefix := ""
-	if p.Context == nil || p.Context.TriggerCharacter != "." {
-		prefix = h.wordPrefixAt(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	// Get the current buffer content (overlay or disk).
+	content := h.getFileContent(p.TextDocument.URI)
+	if content == "" {
+		return CompletionList{}, nil
 	}
 
-	symbols := h.idx.CompletionSymbols(p.TextDocument.URI, prefix)
-	items := make([]CompletionItem, 0, len(symbols))
-	for _, s := range symbols {
-		item := CompletionItem{
-			Label:      s.Name,
-			Kind:       sdbKindToCompletionKind(s.Kind),
-			InsertText: s.Name,
+	// Parse completion context using Tree-sitter.
+	cctx := parseCompletionCtx([]byte(content), p.Position.Line, p.Position.Character)
+
+	var items []CompletionItem
+
+	if cctx.Kind == CompletionDot {
+		items = h.completeDot(cctx, p.TextDocument.URI)
+	} else {
+		items = h.completeLexical(cctx, p.TextDocument.URI)
+	}
+
+	h.logger.Printf("completion at %s:%d:%d kind=%d prefix=%q receiver=%q -> %d items",
+		p.TextDocument.URI, p.Position.Line, p.Position.Character,
+		cctx.Kind, cctx.Prefix, cctx.Receiver, len(items))
+	return CompletionList{IsIncomplete: len(items) >= 100, Items: items}, nil
+}
+
+// completeDot handles member completion after a dot (e.g. "foo.ba").
+func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionItem {
+	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
+
+	// Resolve the receiver expression to a type symbol.
+	typeSym := h.resolveReceiverType(cctx, resolver)
+	if typeSym == "" {
+		// Fallback: maybe it's a static access on a class name.
+		typeSym = resolver.resolve(cctx.Receiver)
+	}
+	if typeSym == "" {
+		return nil
+	}
+
+	// Get members of the resolved type.
+	members := h.idx.MembersOfType(typeSym)
+	prefix := strings.ToLower(cctx.Prefix)
+
+	var items []CompletionItem
+	for _, m := range members {
+		if prefix != "" && !strings.HasPrefix(strings.ToLower(m.Name), prefix) {
+			continue
 		}
-		if s.Signature != nil {
-			item.Detail = s.Signature.Label
+		item := CompletionItem{
+			Label:      m.Name,
+			Kind:       sdbKindToCompletionKind(m.Kind),
+			InsertText: m.Name,
+		}
+		if m.Signature != nil {
+			item.Detail = m.Signature.Label
 		}
 		items = append(items, item)
+		if len(items) >= 100 {
+			break
+		}
+	}
+	return items
+}
+
+// resolveReceiverType resolves the type of a receiver expression (the part before the dot).
+func (h *Handler) resolveReceiverType(cctx *CompletionCtx, resolver *typeResolver) string {
+	recv := cctx.Receiver
+
+	// Handle "this" → enclosing class.
+	if recv == "this" {
+		return resolver.resolve(cctx.EnclosingClass)
+	}
+	// Handle "super" → parent of enclosing class.
+	if recv == "super" {
+		classSym := resolver.resolve(cctx.EnclosingClass)
+		if classSym != "" {
+			parents := h.idx.ParentsOf(classSym)
+			if len(parents) > 0 {
+				return parents[0]
+			}
+		}
+		return ""
 	}
 
-	h.logger.Printf("completion at %s:%d:%d prefix=%q -> %d items",
-		p.TextDocument.URI, p.Position.Line, p.Position.Character, prefix, len(items))
-	return CompletionList{IsIncomplete: true, Items: items}, nil
+	// Handle chained dot access (e.g. "foo.bar"): resolve left-to-right.
+	parts := strings.Split(recv, ".")
+	if len(parts) == 0 {
+		return ""
+	}
+
+	// Resolve the first part.
+	typeSym := h.resolveIdentifierType(parts[0], cctx, resolver)
+
+	// Resolve each subsequent part as a field/method access.
+	for i := 1; i < len(parts) && typeSym != ""; i++ {
+		memberName := parts[i]
+		typeSym = h.resolveMemberType(typeSym, memberName)
+	}
+
+	return typeSym
+}
+
+// resolveIdentifierType resolves the type of a simple identifier by searching
+// locals → params → fields, then falling back to class name (static access).
+func (h *Handler) resolveIdentifierType(name string, cctx *CompletionCtx, resolver *typeResolver) string {
+	// Search locals.
+	for i := len(cctx.Locals) - 1; i >= 0; i-- {
+		if cctx.Locals[i].Name == name {
+			return resolver.resolve(cctx.Locals[i].Type)
+		}
+	}
+	// Search params.
+	for _, p := range cctx.Params {
+		if p.Name == name {
+			return resolver.resolve(p.Type)
+		}
+	}
+	// Search class fields.
+	for _, f := range cctx.ClassFields {
+		if f.Name == name {
+			return resolver.resolve(f.Type)
+		}
+	}
+	// Maybe it's a class name (static access).
+	return resolver.resolve(name)
+}
+
+// resolveMemberType resolves the type of a member (field or method) on a given type.
+func (h *Handler) resolveMemberType(ownerTypeSym string, memberName string) string {
+	// Look up members of the owner type and find the matching member.
+	members := h.idx.MembersOfType(ownerTypeSym)
+	for _, m := range members {
+		if m.Name == memberName {
+			return h.idx.TypeOfSymbol(m.Symbol)
+		}
+	}
+	return ""
+}
+
+// completeLexical handles bare identifier completion (e.g. "pri").
+func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string) []CompletionItem {
+	prefix := strings.ToLower(cctx.Prefix)
+	if prefix == "" {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	var items []CompletionItem
+
+	addItem := func(name string, kind int, detail string) {
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		items = append(items, CompletionItem{
+			Label:      name,
+			Kind:       kind,
+			InsertText: name,
+			Detail:     detail,
+		})
+	}
+
+	matchPrefix := func(name string) bool {
+		return strings.HasPrefix(strings.ToLower(name), prefix)
+	}
+
+	// 1. Local variables.
+	for i := len(cctx.Locals) - 1; i >= 0; i-- {
+		l := cctx.Locals[i]
+		if matchPrefix(l.Name) {
+			addItem(l.Name, SymbolKindVariable, l.Type)
+		}
+	}
+
+	// 2. Method parameters.
+	for _, p := range cctx.Params {
+		if matchPrefix(p.Name) {
+			addItem(p.Name, SymbolKindVariable, p.Type)
+		}
+	}
+
+	// 3. Class fields.
+	for _, f := range cctx.ClassFields {
+		if matchPrefix(f.Name) {
+			addItem(f.Name, SymbolKindField, f.Type)
+		}
+	}
+
+	// 4. Class methods.
+	for _, m := range cctx.ClassMethods {
+		if matchPrefix(m) {
+			addItem(m, SymbolKindMethod, "")
+		}
+	}
+
+	if len(items) >= 100 {
+		return items[:100]
+	}
+
+	// 5. Global type and symbol completion from the index.
+	symbols := h.idx.CompletionSymbols(fileURI, cctx.Prefix)
+	for _, s := range symbols {
+		if len(items) >= 100 {
+			break
+		}
+		detail := ""
+		if s.Signature != nil {
+			detail = s.Signature.Label
+		}
+		addItem(s.Name, sdbKindToCompletionKind(s.Kind), detail)
+	}
+
+	return items
 }
 
 func (h *Handler) handleSignatureHelp(ctx context.Context, params json.RawMessage) (any, error) {

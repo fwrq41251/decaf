@@ -30,6 +30,15 @@ type Index struct {
 	uriRefSymbols map[string]map[string]struct{}
 	// child symbol -> list of parent symbols it implements/extends
 	childToParents map[string][]string
+	// simple name (lowercase) -> list of matching type symbols
+	typeBySimpleName map[string][]*Symbol
+	// ownerMembers maps a type symbol to its direct member definitions.
+	// e.g. "com/example/Foo#" → [bar, baz, ...]
+	ownerMembers map[string][]*Symbol
+	// symbolType maps a symbol to its type's SemanticDB symbol string.
+	// For fields/params: the declared type. For methods: the return type.
+	// e.g. "com/example/Foo#items." → "java/util/List#"
+	symbolType map[string]string
 
 	// string intern pool to deduplicate URI and symbol strings
 	internPool map[string]string
@@ -63,6 +72,9 @@ func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 		implementors:      make(map[string][]string),
 		uriRefSymbols:     make(map[string]map[string]struct{}),
 		childToParents:    make(map[string][]string),
+		typeBySimpleName:  make(map[string][]*Symbol),
+		ownerMembers:      make(map[string][]*Symbol),
+		symbolType:        make(map[string]string),
 		internPool:        make(map[string]string),
 		modTimes:          make(map[string]time.Time),
 		sdbToURIs:         make(map[string][]string),

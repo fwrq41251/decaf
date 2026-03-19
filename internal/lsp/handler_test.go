@@ -108,6 +108,8 @@ func TestDefinition(t *testing.T) {
 	
 	// Mock Index with one workspace definition and one external symbol.
 	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	close(h.indexReady) // signal index is ready for test
 	
 	// 1. Workspace symbol
 	docs := &sdb.TextDocuments{
@@ -221,6 +223,8 @@ func TestPrepareRename(t *testing.T) {
 	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
 	
 	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	close(h.indexReady) // signal index is ready for test
 	h.idx = idx
 
 	// Define a class and a reference to it in different locations.
