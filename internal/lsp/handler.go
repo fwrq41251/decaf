@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -41,8 +42,9 @@ type Handler struct {
 
 	// diagnosticsMu protects diagnostics map.
 	diagnosticsMu sync.Mutex
-	// diagnostics stores current diagnostics per URI.
-	diagnostics map[string][]Diagnostic
+	// diagnostics stores current diagnostics per URI and build target.
+	// URI -> TargetURI -> []Diagnostic
+	diagnostics map[string]map[string][]Diagnostic
 
 	// indexReady is closed once the initial index load (and full build if needed) completes.
 	indexReady chan struct{}
@@ -55,7 +57,7 @@ func NewHandler(logger *log.Logger, transport *jsonrpc.Transport) *Handler {
 		exitCh:      make(chan struct{}),
 		transport:   transport,
 		docs:        newDocStore(),
-		diagnostics: make(map[string][]Diagnostic),
+		diagnostics: make(map[string]map[string][]Diagnostic),
 		indexReady:  make(chan struct{}),
 	}
 	h.bspClient = bsp.NewClient(logger, h.handleBSPDiagnostics, func() {
@@ -185,15 +187,20 @@ func (h *Handler) toFileURI(relURI string) string {
 
 // handleBSPDiagnostics converts BSP diagnostics to LSP diagnostics and publishes them.
 func (h *Handler) handleBSPDiagnostics(bspDiag bsp.PublishDiagnosticsParams) {
-	docURI := bspDiag.TextDocument.URI
+	docURI := h.toFileURI(bspDiag.TextDocument.URI)
+	targetURI := bspDiag.BuildTarget.URI
 
 	h.diagnosticsMu.Lock()
+	if h.diagnostics[docURI] == nil {
+		h.diagnostics[docURI] = make(map[string][]Diagnostic)
+	}
+
 	if bspDiag.Reset {
-		h.diagnostics[docURI] = nil
+		h.diagnostics[docURI][targetURI] = []Diagnostic{}
 	}
 
 	for _, d := range bspDiag.Diagnostics {
-		h.diagnostics[docURI] = append(h.diagnostics[docURI], Diagnostic{
+		h.diagnostics[docURI][targetURI] = append(h.diagnostics[docURI][targetURI], Diagnostic{
 			Range: Range{
 				Start: Position{Line: d.Range.Start.Line, Character: d.Range.Start.Character},
 				End:   Position{Line: d.Range.End.Line, Character: d.Range.End.Character},
@@ -203,12 +210,28 @@ func (h *Handler) handleBSPDiagnostics(bspDiag bsp.PublishDiagnosticsParams) {
 			Source:   "bloop",
 		})
 	}
-	currentDiags := h.diagnostics[docURI]
+
+	// Merge all targets for this document to send a complete view to the editor.
+	merged := []Diagnostic{}
+	seen := make(map[string]bool)
+	for _, targetDiags := range h.diagnostics[docURI] {
+		for _, d := range targetDiags {
+			// Basic deduplication.
+			key := fmt.Sprintf("%d:%d-%d:%d:%d:%s",
+				d.Range.Start.Line, d.Range.Start.Character,
+				d.Range.End.Line, d.Range.End.Character,
+				d.Severity, d.Message)
+			if !seen[key] {
+				merged = append(merged, d)
+				seen[key] = true
+			}
+		}
+	}
 	h.diagnosticsMu.Unlock()
 
 	params := PublishDiagnosticsParams{
 		URI:         docURI,
-		Diagnostics: currentDiags,
+		Diagnostics: merged,
 	}
 
 	notification, err := jsonrpc.NewNotification("textDocument/publishDiagnostics", params)

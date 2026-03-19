@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fwrq41251/decaf/internal/bsp"
 	"github.com/fwrq41251/decaf/internal/index"
 	"github.com/fwrq41251/decaf/internal/jsonrpc"
 	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
@@ -297,5 +298,145 @@ func TestPrepareRename(t *testing.T) {
 	
 	if rngDef.Start.Line != 2 {
 		t.Errorf("expected range at line 2, got %d", rngDef.Start.Line)
+	}
+}
+
+func TestDiagnosticsClearing(t *testing.T) {
+	var output bytes.Buffer
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	transport := jsonrpc.NewTransport(&bytes.Buffer{}, &output)
+	h := NewHandler(logger, transport)
+
+	docURI := "file:///project/Main.java"
+
+	// 1. Send some diagnostics
+	h.handleBSPDiagnostics(bsp.PublishDiagnosticsParams{
+		TextDocument: bsp.TextDocumentIdentifier{URI: docURI},
+		Reset:        true,
+		Diagnostics: []bsp.Diagnostic{
+			{
+				Range:    bsp.Range{Start: bsp.Position{Line: 1, Character: 1}, End: bsp.Position{Line: 1, Character: 5}},
+				Severity: 1,
+				Message:  "Error 1",
+			},
+		},
+	})
+
+	// 2. Clear diagnostics
+	h.handleBSPDiagnostics(bsp.PublishDiagnosticsParams{
+		TextDocument: bsp.TextDocumentIdentifier{URI: docURI},
+		Reset:        true,
+		Diagnostics:  []bsp.Diagnostic{},
+	})
+
+	// Check output
+	outTransport := jsonrpc.NewTransport(&output, nil)
+	
+	// Skip first notification
+	_, err := outTransport.Read()
+	if err != nil {
+		t.Fatalf("reading first notification: %v", err)
+	}
+
+	// Read second notification
+	msg, err := outTransport.Read()
+	if err != nil {
+		t.Fatalf("reading second notification: %v", err)
+	}
+
+	if msg.Method != "textDocument/publishDiagnostics" {
+		t.Fatalf("expected textDocument/publishDiagnostics, got %s", msg.Method)
+	}
+
+	var params PublishDiagnosticsParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		t.Fatalf("decoding params: %v", err)
+	}
+
+	if len(params.Diagnostics) != 0 {
+		t.Errorf("expected 0 diagnostics, got %d", len(params.Diagnostics))
+	}
+
+	// Verify if it's "null" or "[]" in raw JSON
+	if strings.Contains(string(msg.Params), ":null") {
+		t.Errorf("JSON contains ':null', expected '[]' for diagnostics: %s", string(msg.Params))
+	}
+}
+
+func TestDiagnosticsMerging(t *testing.T) {
+	var output bytes.Buffer
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	transport := jsonrpc.NewTransport(&bytes.Buffer{}, &output)
+	h := NewHandler(logger, transport)
+
+	docURI := "file:///project/Main.java"
+
+	// 1. Target A reports an error
+	h.handleBSPDiagnostics(bsp.PublishDiagnosticsParams{
+		TextDocument: bsp.TextDocumentIdentifier{URI: docURI},
+		BuildTarget:  bsp.BuildTargetIdentifier{URI: "target-A"},
+		Reset:        true,
+		Diagnostics: []bsp.Diagnostic{
+			{
+				Range:    bsp.Range{Start: bsp.Position{Line: 1, Character: 1}, End: bsp.Position{Line: 1, Character: 5}},
+				Severity: 1,
+				Message:  "Error from A",
+			},
+		},
+	})
+
+	// 2. Target B reports another error
+	h.handleBSPDiagnostics(bsp.PublishDiagnosticsParams{
+		TextDocument: bsp.TextDocumentIdentifier{URI: docURI},
+		BuildTarget:  bsp.BuildTargetIdentifier{URI: "target-B"},
+		Reset:        true,
+		Diagnostics: []bsp.Diagnostic{
+			{
+				Range:    bsp.Range{Start: bsp.Position{Line: 2, Character: 1}, End: bsp.Position{Line: 2, Character: 5}},
+				Severity: 1,
+				Message:  "Error from B",
+			},
+		},
+	})
+
+	// Check output
+	outTransport := jsonrpc.NewTransport(&output, nil)
+	
+	// Skip first notification (only A)
+	_, _ = outTransport.Read()
+
+	// Read second notification (A + B)
+	msg, err := outTransport.Read()
+	if err != nil {
+		t.Fatalf("reading second notification: %v", err)
+	}
+
+	var params PublishDiagnosticsParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		t.Fatalf("decoding params: %v", err)
+	}
+
+	if len(params.Diagnostics) != 2 {
+		t.Errorf("expected 2 diagnostics (merged from A and B), got %d", len(params.Diagnostics))
+	}
+
+	// 3. Clear Target A
+	h.handleBSPDiagnostics(bsp.PublishDiagnosticsParams{
+		TextDocument: bsp.TextDocumentIdentifier{URI: docURI},
+		BuildTarget:  bsp.BuildTargetIdentifier{URI: "target-A"},
+		Reset:        true,
+		Diagnostics:  []bsp.Diagnostic{},
+	})
+
+	// Read third notification (only B remains)
+	msg, err = outTransport.Read()
+	if err != nil {
+		t.Fatalf("reading third notification: %v", err)
+	}
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		t.Fatalf("decoding params: %v", err)
+	}
+	if len(params.Diagnostics) != 1 {
+		t.Errorf("expected 1 diagnostic (only B remains), got %d", len(params.Diagnostics))
 	}
 }
