@@ -4,12 +4,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
 )
+
+// parsedFile holds the result of reading and unmarshaling a single .semanticdb file.
+type parsedFile struct {
+	path string
+	docs *sdb.TextDocuments
+}
 
 // Load indexes .semanticdb files incrementally.
 // On the first call it does a full directory walk and starts a file watcher.
@@ -26,7 +35,11 @@ func (idx *Index) Load() error {
 
 // loadFull walks the entire workspace, indexes all .semanticdb files,
 // and starts the file watcher for future incremental loads.
+//
+// File I/O and protobuf unmarshaling are performed concurrently using a worker
+// pool, while index mutation (indexDocument) runs serially under the write lock.
 func (idx *Index) loadFull() error {
+	// Phase 1: Walk the directory tree without holding the lock.
 	current := make(map[string]os.FileInfo)
 	err := filepath.Walk(idx.sourceRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -71,14 +84,28 @@ func (idx *Index) loadFull() error {
 		for _, path := range deleted {
 			idx.removeFile(path)
 		}
-		for _, path := range toIndex {
-			idx.removeFile(path)
-			if err := idx.indexFile(path); err != nil {
-				idx.logger.Printf("warning: failed to index %s: %v", path, err)
-				continue
+
+		// Phase 2: Concurrent file I/O + protobuf unmarshal.
+		parsed := idx.parseFilesConcurrently(toIndex)
+
+		// Phase 3: Serial index mutation (writes to shared maps / intern pool).
+		for _, pf := range parsed {
+			idx.removeFile(pf.path)
+			var uris []string
+			for _, doc := range pf.docs.Documents {
+				uri := doc.Uri
+				if uri == "" {
+					idx.logger.Printf("warning: empty URI in %s", pf.path)
+					continue
+				}
+				uri = filepath.ToSlash(uri)
+				uris = append(uris, uri)
+				idx.indexDocument(uri, doc)
 			}
-			idx.modTimes[path] = current[path].ModTime()
+			idx.sdbToURIs[pf.path] = uris
+			idx.modTimes[pf.path] = current[pf.path].ModTime()
 		}
+
 		if len(toIndex) > 0 || len(deleted) > 0 {
 			idx.clearExternalCache()
 		}
@@ -98,6 +125,58 @@ func (idx *Index) loadFull() error {
 	return nil
 }
 
+// parseFilesConcurrently reads and unmarshals .semanticdb files in parallel.
+// It returns successfully parsed files; failures are logged and skipped.
+func (idx *Index) parseFilesConcurrently(paths []string) []parsedFile {
+	if len(paths) == 0 {
+		return nil
+	}
+
+	workers := runtime.NumCPU()
+	if workers > len(paths) {
+		workers = len(paths)
+	}
+
+	results := make([]parsedFile, len(paths))
+	var parseErrors sync.Map
+
+	g := new(errgroup.Group)
+	g.SetLimit(workers)
+
+	for i, path := range paths {
+		g.Go(func() error {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				parseErrors.Store(path, err)
+				return nil // don't abort other goroutines
+			}
+			var docs sdb.TextDocuments
+			if err := proto.Unmarshal(data, &docs); err != nil {
+				parseErrors.Store(path, fmt.Errorf("unmarshaling: %w", err))
+				return nil
+			}
+			results[i] = parsedFile{path: path, docs: &docs}
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	// Compact: keep only successful parses.
+	out := results[:0]
+	for _, r := range results {
+		if r.docs != nil {
+			out = append(out, r)
+		}
+	}
+
+	parseErrors.Range(func(key, value any) bool {
+		idx.logger.Printf("warning: failed to parse %s: %v", key, value)
+		return true
+	})
+
+	return out
+}
+
 // loadFromWatcher processes only files reported as changed by the file watcher.
 func (idx *Index) loadFromWatcher() error {
 	dirty, removed := idx.watcher.drain()
@@ -113,19 +192,36 @@ func (idx *Index) loadFromWatcher() error {
 		idx.removeFile(path)
 	}
 
+	// Filter out files that disappeared between watcher event and now.
+	var validDirty []string
+	modInfos := make(map[string]os.FileInfo)
 	for _, path := range dirty {
 		info, err := os.Stat(path)
 		if err != nil {
-			// File was created then quickly deleted.
 			idx.removeFile(path)
 			continue
 		}
-		idx.removeFile(path)
-		if err := idx.indexFile(path); err != nil {
-			idx.logger.Printf("warning: failed to index %s: %v", path, err)
-			continue
+		validDirty = append(validDirty, path)
+		modInfos[path] = info
+	}
+
+	// Concurrent parse, then serial merge.
+	parsed := idx.parseFilesConcurrently(validDirty)
+	for _, pf := range parsed {
+		idx.removeFile(pf.path)
+		var uris []string
+		for _, doc := range pf.docs.Documents {
+			uri := doc.Uri
+			if uri == "" {
+				idx.logger.Printf("warning: empty URI in %s", pf.path)
+				continue
+			}
+			uri = filepath.ToSlash(uri)
+			uris = append(uris, uri)
+			idx.indexDocument(uri, doc)
 		}
-		idx.modTimes[path] = info.ModTime()
+		idx.sdbToURIs[pf.path] = uris
+		idx.modTimes[pf.path] = modInfos[pf.path].ModTime()
 	}
 
 	if len(dirty) > 0 || len(removed) > 0 {
@@ -301,33 +397,6 @@ func (idx *Index) removeDocument(uri string) {
 			delete(idx.internPool, sym)
 		}
 	}
-}
-
-func (idx *Index) indexFile(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-
-	var docs sdb.TextDocuments
-	if err := proto.Unmarshal(data, &docs); err != nil {
-		return fmt.Errorf("unmarshaling %s: %w", path, err)
-	}
-
-	var uris []string
-	for _, doc := range docs.Documents {
-		uri := doc.Uri
-		if uri == "" {
-			idx.logger.Printf("warning: empty URI in %s", path)
-			continue
-		}
-		uri = filepath.ToSlash(uri)
-		uris = append(uris, uri)
-		idx.indexDocument(uri, doc)
-	}
-	idx.sdbToURIs[path] = uris
-
-	return nil
 }
 
 func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
