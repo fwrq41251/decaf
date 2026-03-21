@@ -141,6 +141,7 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 			return
 		}
 
+		var classpathJARs []string
 		if envs, err := h.bspClient.JvmRunEnvironment(ctx); err == nil && len(envs) > 0 {
 			for _, env := range envs {
 				if env.JavaHome != "" {
@@ -151,12 +152,24 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 						break
 					}
 				}
+				for _, cp := range env.Classpath {
+					p := uri.ToPath(cp)
+					if strings.HasSuffix(p, ".jar") {
+						classpathJARs = append(classpathJARs, p)
+					}
+				}
 			}
 		}
 
 		if ctx.Err() != nil {
 			prog.end("cancelled")
 			return
+		}
+
+		// Index classpath JARs for third-party dependency completion/hover.
+		if len(classpathJARs) > 0 {
+			prog.report("indexing dependencies…", intPtr(55))
+			h.idx.IndexClasspathJARs(classpathJARs)
 		}
 
 		if needsFullBuild {

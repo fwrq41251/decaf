@@ -58,6 +58,9 @@ type Index struct {
 	depSourcesSet       map[string]struct{}
 	// cache for external symbol resolutions (relPath -> extractedPath)
 	externalCache sync.Map
+
+	// set of classpath JARs already indexed by the class indexer
+	indexedJARs map[string]struct{}
 }
 
 // NewIndex creates a new empty index.
@@ -80,6 +83,7 @@ func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 		sdbToURIs:         make(map[string][]string),
 		dependencySources: []string{},
 		depSourcesSet:     make(map[string]struct{}),
+		indexedJARs:       make(map[string]struct{}),
 	}
 }
 
