@@ -160,7 +160,8 @@ func determineCompletionKind(content []byte, cursorOffset int) (CompletionKind, 
 }
 
 // extractReceiverBefore extracts the expression text before the given position.
-// For v1, handles simple identifiers, this, super, and chained dot access like foo.bar.
+// Handles simple identifiers, this, super, chained dot access like foo.bar,
+// and method invocations like items.get(0).field or foo.bar().baz.
 func extractReceiverBefore(content []byte, pos int) string {
 	// Skip whitespace.
 	for pos > 0 && (content[pos-1] == ' ' || content[pos-1] == '\t') {
@@ -171,14 +172,38 @@ func extractReceiverBefore(content []byte, pos int) string {
 
 	// Walk backwards through chained dot expressions: foo.bar.baz
 	for {
-		// Collect identifier.
-		idEnd := pos
-		for pos > 0 && isIdentChar(content[pos-1]) {
-			pos--
-		}
-		if pos == idEnd {
-			// No identifier found.
-			break
+		// Check if the current segment ends with ')' (method invocation).
+		if pos > 0 && content[pos-1] == ')' {
+			// Skip backwards over the matched parentheses.
+			depth := 0
+			for pos > 0 {
+				pos--
+				if content[pos] == ')' {
+					depth++
+				} else if content[pos] == '(' {
+					depth--
+					if depth == 0 {
+						break
+					}
+				}
+			}
+			if depth != 0 {
+				break
+			}
+			// pos is now at '(', collect the method name identifier before it.
+			for pos > 0 && isIdentChar(content[pos-1]) {
+				pos--
+			}
+		} else {
+			// Collect identifier.
+			idEnd := pos
+			for pos > 0 && isIdentChar(content[pos-1]) {
+				pos--
+			}
+			if pos == idEnd {
+				// No identifier found.
+				break
+			}
 		}
 
 		// Check if there's another dot before this identifier (chained access).
@@ -196,7 +221,34 @@ func extractReceiverBefore(content []byte, pos int) string {
 	if pos == end {
 		return ""
 	}
-	return strings.TrimSpace(string(content[pos:end]))
+
+	// Build result by extracting identifiers and dots, skipping parenthesized args.
+	var result []byte
+	for i := pos; i < end; {
+		if content[i] == '(' {
+			// Skip over parenthesized arguments.
+			depth := 0
+			for i < end {
+				if content[i] == '(' {
+					depth++
+				} else if content[i] == ')' {
+					depth--
+					if depth == 0 {
+						i++
+						break
+					}
+				}
+				i++
+			}
+		} else if isIdentChar(content[i]) || content[i] == '.' {
+			result = append(result, content[i])
+			i++
+		} else {
+			// skip whitespace or other characters
+			i++
+		}
+	}
+	return string(result)
 }
 
 func isIdentChar(c byte) bool {
@@ -315,10 +367,7 @@ func extractType(node *slog.Node, content []byte) string {
 	case "type_identifier", "primitive_type", "void_type", "boolean_type":
 		return node.Content(content)
 	case "generic_type":
-		// Return just the base type name (first child).
-		if node.NamedChildCount() > 0 {
-			return extractType(node.NamedChild(0), content)
-		}
+		// Return the full generic type text (e.g. "List<String>").
 		return node.Content(content)
 	case "array_type":
 		// Element type + "[]".

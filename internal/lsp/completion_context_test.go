@@ -114,8 +114,8 @@ public class MyClass {
 	if len(ctx.Params) != 2 {
 		t.Fatalf("expected 2 params, got %d: %+v", len(ctx.Params), ctx.Params)
 	}
-	if ctx.Params[0].Name != "items" || ctx.Params[0].Type != "List" {
-		t.Fatalf("expected items:List, got %s:%s", ctx.Params[0].Name, ctx.Params[0].Type)
+	if ctx.Params[0].Name != "items" || ctx.Params[0].Type != "List<String>" {
+		t.Fatalf("expected items:List<String>, got %s:%s", ctx.Params[0].Name, ctx.Params[0].Type)
 	}
 	if ctx.Params[1].Name != "limit" {
 		t.Fatalf("expected limit, got %s", ctx.Params[1].Name)
@@ -272,5 +272,61 @@ public class MyClass {
 	}
 	if ctx.Prefix != "" {
 		t.Fatalf("expected empty prefix, got %q", ctx.Prefix)
+	}
+}
+
+func TestExtractReceiverBefore_MethodInvocation(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple method call",
+			input:    "items.get(0).",
+			expected: "items.get",
+		},
+		{
+			name:     "chained method then field",
+			input:    "foo.bar().baz.",
+			expected: "foo.bar.baz",
+		},
+		{
+			name:     "method call with string arg",
+			input:    `map.get("key").`,
+			expected: "map.get",
+		},
+		{
+			name:     "method call with multiple args",
+			input:    "foo.bar(a, b).",
+			expected: "foo.bar",
+		},
+		{
+			name:     "nested calls",
+			input:    "a.b(c.d()).",
+			expected: "a.b",
+		},
+		{
+			name:     "simple identifier",
+			input:    "items.",
+			expected: "items",
+		},
+		{
+			name:     "chained fields",
+			input:    "foo.bar.baz.",
+			expected: "foo.bar.baz",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := []byte(tt.input)
+			// pos is at the trailing dot, so len-1; extractReceiverBefore works on content before pos
+			pos := len(content) - 1
+			got := extractReceiverBefore(content, pos)
+			if got != tt.expected {
+				t.Errorf("extractReceiverBefore(%q, %d) = %q, want %q", tt.input, pos, got, tt.expected)
+			}
+		})
 	}
 }
