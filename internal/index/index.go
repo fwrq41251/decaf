@@ -40,6 +40,18 @@ type Index struct {
 	// e.g. "com/example/Foo#items." → "java/util/List#"
 	symbolType map[string]string
 
+	// symbolDeclType maps a symbol to its declared type as a TypeExpr (preserving generics).
+	// For fields/params: the declared type. For methods: the return type.
+	symbolDeclType map[string]*TypeExpr
+
+	// classTypeParams maps a class symbol to its type parameter symbols (in declaration order).
+	// e.g. "java/util/List#" → ["java/util/List#[E]"]
+	classTypeParams map[string][]string
+
+	// parentTypes maps a child class symbol to its parent types with generic arguments.
+	// e.g. "com/example/StringList#" → [{Sym:"java/util/ArrayList#", Args:[{Sym:"java/lang/String#"}]}]
+	parentTypes map[string][]*TypeExpr
+
 	// string intern pool to deduplicate URI and symbol strings
 	internPool map[string]string
 
@@ -78,6 +90,9 @@ func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 		typeBySimpleName:  make(map[string][]*Symbol),
 		ownerMembers:      make(map[string][]*Symbol),
 		symbolType:        make(map[string]string),
+		symbolDeclType:    make(map[string]*TypeExpr),
+		classTypeParams:   make(map[string][]string),
+		parentTypes:       make(map[string][]*TypeExpr),
 		internPool:        make(map[string]string),
 		modTimes:          make(map[string]time.Time),
 		sdbToURIs:         make(map[string][]string),

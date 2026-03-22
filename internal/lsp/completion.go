@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+
+	"github.com/fwrq41251/decaf/internal/index"
 )
 
 func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) (any, error) {
@@ -43,18 +45,20 @@ func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) 
 func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionItem {
 	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
 
-	// Resolve the receiver expression to a type symbol.
-	typeSym := h.resolveReceiverType(cctx, resolver)
-	if typeSym == "" {
+	// Resolve the receiver expression to a type with generic arguments.
+	typeExpr := h.resolveReceiverTypeExpr(cctx, resolver)
+	if typeExpr == nil {
 		// Fallback: maybe it's a static access on a class name.
-		typeSym = resolver.resolve(cctx.Receiver)
+		if sym := resolver.resolve(cctx.Receiver); sym != "" {
+			typeExpr = &index.TypeExpr{Sym: sym}
+		}
 	}
-	if typeSym == "" {
+	if typeExpr == nil {
 		return nil
 	}
 
 	// Get members of the resolved type.
-	members := h.idx.MembersOfType(typeSym)
+	members := h.idx.MembersOfType(typeExpr.Sym)
 	prefix := strings.ToLower(cctx.Prefix)
 
 	var items []CompletionItem
@@ -78,79 +82,132 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 	return items
 }
 
-// resolveReceiverType resolves the type of a receiver expression (the part before the dot).
-func (h *Handler) resolveReceiverType(cctx *CompletionCtx, resolver *typeResolver) string {
+// resolveReceiverTypeExpr resolves the type of a receiver expression, preserving generic arguments.
+func (h *Handler) resolveReceiverTypeExpr(cctx *CompletionCtx, resolver *typeResolver) *index.TypeExpr {
 	recv := cctx.Receiver
 
 	// Handle "this" → enclosing class.
 	if recv == "this" {
-		return resolver.resolve(cctx.EnclosingClass)
+		if sym := resolver.resolve(cctx.EnclosingClass); sym != "" {
+			return &index.TypeExpr{Sym: sym}
+		}
+		return nil
 	}
 	// Handle "super" → parent of enclosing class.
 	if recv == "super" {
 		classSym := resolver.resolve(cctx.EnclosingClass)
 		if classSym != "" {
-			parents := h.idx.ParentsOf(classSym)
-			if len(parents) > 0 {
-				return parents[0]
+			if pts := h.idx.ParentTypesOf(classSym); len(pts) > 0 {
+				return pts[0]
+			}
+			// Fallback to old ParentsOf.
+			if parents := h.idx.ParentsOf(classSym); len(parents) > 0 {
+				return &index.TypeExpr{Sym: parents[0]}
 			}
 		}
-		return ""
+		return nil
 	}
 
 	// Handle chained dot access (e.g. "foo.bar"): resolve left-to-right.
 	parts := strings.Split(recv, ".")
 	if len(parts) == 0 {
-		return ""
+		return nil
 	}
 
 	// Resolve the first part.
-	typeSym := h.resolveIdentifierType(parts[0], cctx, resolver)
+	typeExpr := h.resolveIdentifierTypeExpr(parts[0], cctx, resolver)
 
 	// Resolve each subsequent part as a field/method access.
-	for i := 1; i < len(parts) && typeSym != ""; i++ {
-		memberName := parts[i]
-		typeSym = h.resolveMemberType(typeSym, memberName)
+	for i := 1; i < len(parts) && typeExpr != nil; i++ {
+		typeExpr = h.resolveMemberTypeExpr(typeExpr, parts[i])
 	}
 
-	return typeSym
+	return typeExpr
 }
 
-// resolveIdentifierType resolves the type of a simple identifier by searching
-// locals → params → fields, then falling back to class name (static access).
-func (h *Handler) resolveIdentifierType(name string, cctx *CompletionCtx, resolver *typeResolver) string {
+// resolveIdentifierTypeExpr resolves the type of a simple identifier, preserving generic arguments.
+// Searches locals → params → fields (Tree-sitter source, may have "List<String>"),
+// then falls back to SemanticDB symbolDeclType for class fields.
+func (h *Handler) resolveIdentifierTypeExpr(name string, cctx *CompletionCtx, resolver *typeResolver) *index.TypeExpr {
 	// Search locals.
 	for i := len(cctx.Locals) - 1; i >= 0; i-- {
 		if cctx.Locals[i].Name == name {
-			return resolver.resolve(cctx.Locals[i].Type)
+			return resolver.resolveParameterized(cctx.Locals[i].Type)
 		}
 	}
 	// Search params.
 	for _, p := range cctx.Params {
 		if p.Name == name {
-			return resolver.resolve(p.Type)
+			return resolver.resolveParameterized(p.Type)
 		}
 	}
 	// Search class fields.
 	for _, f := range cctx.ClassFields {
 		if f.Name == name {
-			return resolver.resolve(f.Type)
+			return resolver.resolveParameterized(f.Type)
 		}
 	}
 	// Maybe it's a class name (static access).
-	return resolver.resolve(name)
+	if sym := resolver.resolve(name); sym != "" {
+		return &index.TypeExpr{Sym: sym}
+	}
+	return nil
 }
 
-// resolveMemberType resolves the type of a member (field or method) on a given type.
-func (h *Handler) resolveMemberType(ownerTypeSym string, memberName string) string {
-	// Look up members of the owner type and find the matching member.
-	members := h.idx.MembersOfType(ownerTypeSym)
+// resolveMemberTypeExpr resolves the type of a member on a given type,
+// performing generic type parameter substitution.
+func (h *Handler) resolveMemberTypeExpr(owner *index.TypeExpr, memberName string) *index.TypeExpr {
+	members := h.idx.MembersOfType(owner.Sym)
 	for _, m := range members {
-		if m.Name == memberName {
-			return h.idx.TypeOfSymbol(m.Symbol)
+		if m.Name != memberName {
+			continue
+		}
+		// Try structured type first (preserves generics).
+		if retType := h.idx.DeclTypeOf(m.Symbol); retType != nil {
+			return substituteTypeParams(retType, owner, h.idx)
+		}
+		// Fallback to flat symbolType.
+		if sym := h.idx.TypeOfSymbol(m.Symbol); sym != "" {
+			result := &index.TypeExpr{Sym: sym}
+			return substituteTypeParams(result, owner, h.idx)
+		}
+		return nil
+	}
+	return nil
+}
+
+// substituteTypeParams replaces type parameter references in retType with
+// actual type arguments from owner.
+//
+// Example: owner = {Sym:"List#", Args:[{Sym:"String#"}]}
+//
+//	List# classTypeParams = ["List#[E]"]
+//	retType = {Sym: "List#[E]"}  (return type of get())
+//	→ returns {Sym: "String#"}
+func substituteTypeParams(retType *index.TypeExpr, owner *index.TypeExpr, idx *index.Index) *index.TypeExpr {
+	if retType == nil || owner == nil || len(owner.Args) == 0 {
+		return retType
+	}
+
+	typeParams := idx.ClassTypeParams(owner.Sym)
+
+	// Check if retType.Sym is a type parameter reference.
+	for i, tp := range typeParams {
+		if retType.Sym == tp && i < len(owner.Args) {
+			return owner.Args[i]
 		}
 	}
-	return ""
+
+	// Recursively substitute type arguments.
+	if len(retType.Args) > 0 {
+		result := &index.TypeExpr{Sym: retType.Sym, Args: make([]*index.TypeExpr, len(retType.Args))}
+		for i, arg := range retType.Args {
+			result.Args[i] = substituteTypeParams(arg, owner, idx)
+		}
+		return result
+	}
+
+	return retType
 }
 
 // completeLexical handles bare identifier completion (e.g. "pri").

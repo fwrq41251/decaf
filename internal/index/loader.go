@@ -330,10 +330,13 @@ func (idx *Index) removeDocument(uri string) {
 		}
 	}
 
-	// Remove ownerMembers and symbolType entries for symbols from this document.
+	// Remove ownerMembers, symbolType, and generics entries for symbols from this document.
 	ownersToUpdate := make(map[string]struct{})
 	for _, sym := range docSymbols {
 		delete(idx.symbolType, sym)
+		delete(idx.symbolDeclType, sym)
+		delete(idx.classTypeParams, sym)
+		delete(idx.parentTypes, sym)
 		if owner := extractOwner(sym); owner != "" {
 			ownersToUpdate[owner] = struct{}{}
 		}
@@ -431,6 +434,9 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			if typeSym := extractTypeSym(sig); typeSym != "" {
 				idx.symbolType[symStr] = idx.intern(typeSym)
 			}
+			if te := extractTypeExpr(sig); te != nil {
+				idx.symbolDeclType[symStr] = te
+			}
 		}
 
 		// Build implementors index from class signatures.
@@ -441,6 +447,27 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 						parentSym := idx.intern(tr.TypeRef.Symbol)
 						idx.implementors[parentSym] = append(idx.implementors[parentSym], symStr)
 						idx.childToParents[symStr] = append(idx.childToParents[symStr], parentSym)
+					}
+				}
+
+				// Extract parent types with generic arguments.
+				for _, parent := range cs.ClassSignature.Parents {
+					if te := typeToExpr(parent); te != nil {
+						idx.parentTypes[symStr] = append(idx.parentTypes[symStr], te)
+					}
+				}
+
+				// Extract class type parameters.
+				if tp := cs.ClassSignature.TypeParameters; tp != nil {
+					var params []string
+					for _, hl := range tp.Hardlinks {
+						if hl.Symbol != "" {
+							params = append(params, hl.Symbol)
+						}
+					}
+					params = append(params, tp.Symlinks...)
+					if len(params) > 0 {
+						idx.classTypeParams[symStr] = params
 					}
 				}
 			}
@@ -500,6 +527,37 @@ func extractOwner(sym string) string {
 		return "" // no hash or hash is the last char (it's a type itself)
 	}
 	return sym[:lastHash+1]
+}
+
+// typeToExpr converts a SemanticDB Type to a TypeExpr (recursive, handles TypeRef with type_arguments).
+func typeToExpr(t *sdb.Type) *TypeExpr {
+	if t == nil {
+		return nil
+	}
+	tr, ok := t.SealedValue.(*sdb.Type_TypeRef)
+	if !ok {
+		return nil
+	}
+	te := &TypeExpr{Sym: tr.TypeRef.Symbol}
+	for _, arg := range tr.TypeRef.TypeArguments {
+		if a := typeToExpr(arg); a != nil {
+			te.Args = append(te.Args, a)
+		}
+	}
+	return te
+}
+
+// extractTypeExpr extracts the type as a TypeExpr from a SemanticDB Signature.
+// For methods: returns the return type. For values/fields: returns the declared type.
+func extractTypeExpr(sig *sdb.Signature) *TypeExpr {
+	switch s := sig.SealedValue.(type) {
+	case *sdb.Signature_MethodSignature:
+		return typeToExpr(s.MethodSignature.ReturnType)
+	case *sdb.Signature_ValueSignature:
+		return typeToExpr(s.ValueSignature.Tpe)
+	default:
+		return nil
+	}
 }
 
 // extractTypeSym extracts the type symbol from a SemanticDB Signature.

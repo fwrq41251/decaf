@@ -416,6 +416,27 @@ func (idx *Index) TypeBySimpleName(name string) []Symbol {
 	return result
 }
 
+// DeclTypeOf returns the declared type of a symbol as a TypeExpr (preserving generics).
+func (idx *Index) DeclTypeOf(sym string) *TypeExpr {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.symbolDeclType[sym]
+}
+
+// ClassTypeParams returns the type parameter symbols for a class (in declaration order).
+func (idx *Index) ClassTypeParams(sym string) []string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.classTypeParams[sym]
+}
+
+// ParentTypesOf returns parent types with their generic arguments.
+func (idx *Index) ParentTypesOf(sym string) []*TypeExpr {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.parentTypes[sym]
+}
+
 // ParentsOf returns the parent type symbols for a given type symbol.
 func (idx *Index) ParentsOf(typeSym string) []string {
 	idx.mu.RLock()
