@@ -237,9 +237,9 @@ func TestPositionToOffset(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := positionToOffset(tt.content, tt.line, tt.col, false)
+		got := PositionToByteOffset([]byte(tt.content), tt.line, tt.col)
 		if got != tt.want {
-			t.Errorf("positionToOffset(%q, %d, %d) = %d, want %d", tt.content, tt.line, tt.col, got, tt.want)
+			t.Errorf("PositionToByteOffset(%q, %d, %d) = %d, want %d", tt.content, tt.line, tt.col, got, tt.want)
 		}
 	}
 }

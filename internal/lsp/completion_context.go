@@ -52,7 +52,7 @@ func parseCompletionCtx(content []byte, line, character int) *CompletionCtx {
 	ctx := &CompletionCtx{}
 
 	// 1. Determine cursor byte offset.
-	cursorOffset := byteOffsetForPosition(content, line, character)
+	cursorOffset := PositionToByteOffset(content, line, character)
 
 	// 2. Determine completion kind and extract receiver/prefix.
 	ctx.Kind, ctx.Receiver, ctx.Prefix = determineCompletionKind(content, cursorOffset, root)
@@ -89,31 +89,6 @@ func parseCompletionCtx(content []byte, line, character int) *CompletionCtx {
 	}
 
 	return ctx
-}
-// byteOffsetForPosition converts a 0-indexed line and character to a byte offset.
-func byteOffsetForPosition(content []byte, line, character int) int {
-	offset := 0
-	for l := 0; l < line; l++ {
-		idx := indexByte(content[offset:], '\n')
-		if idx < 0 {
-			return len(content)
-		}
-		offset += idx + 1
-	}
-	offset += character
-	if offset > len(content) {
-		offset = len(content)
-	}
-	return offset
-}
-
-func indexByte(b []byte, c byte) int {
-	for i, v := range b {
-		if v == c {
-			return i
-		}
-	}
-	return -1
 }
 
 // determineCompletionKind examines text before cursor to detect dot completion,

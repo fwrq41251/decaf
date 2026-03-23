@@ -65,8 +65,9 @@ func (ds *docStore) ApplyChanges(uri string, changes []TextDocumentContentChange
 
 // applyEdit replaces the text between start and end positions with newText.
 func applyEdit(content string, r Range, newText string) string {
-	startOff := positionToOffset(content, r.Start.Line, r.Start.Character, false)
-	endOff := positionToOffset(content, r.End.Line, r.End.Character, true)
+	contentBytes := []byte(content)
+	startOff := PositionToByteOffset(contentBytes, r.Start.Line, r.Start.Character)
+	endOff := PositionToByteOffsetEnd(contentBytes, r.End.Line, r.End.Character)
 
 	if startOff < 0 {
 		startOff = 0
@@ -84,35 +85,4 @@ func applyEdit(content string, r Range, newText string) string {
 	sb.WriteString(newText)
 	sb.WriteString(content[endOff:])
 	return sb.String()
-}
-
-// positionToOffset converts a 0-based line/character position to a byte offset.
-func positionToOffset(content string, line, character int, end bool) int {
-	cur := 0
-	for l := 0; l < line; l++ {
-		idx := strings.IndexByte(content[cur:], '\n')
-		if idx < 0 {
-			return len(content)
-		}
-		cur += idx + 1
-	}
-
-	// character is a 0-based UTF-16 code unit offset from the start of the line.
-	lineStart := cur
-	lineEnd := strings.IndexByte(content[lineStart:], '\n')
-	if lineEnd < 0 {
-		lineEnd = len(content)
-	} else {
-		lineEnd += lineStart
-	}
-
-	lineText := content[lineStart:lineEnd]
-	var byteOffInLine int
-	if end {
-		byteOffInLine = utf16IndexEnd(lineText, character)
-	} else {
-		byteOffInLine = utf16Index(lineText, character)
-	}
-	
-	return lineStart + byteOffInLine
 }

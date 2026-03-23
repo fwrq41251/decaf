@@ -1,5 +1,51 @@
 package lsp
 
+import (
+	"bytes"
+)
+
+// PositionToByteOffset converts a 0-indexed (line, character) position to a byte offset
+// in the given content, correctly handling UTF-16 code units for the character offset.
+func PositionToByteOffset(content []byte, line, character int) int {
+	return positionToByteOffsetImpl(content, line, character, false)
+}
+
+// PositionToByteOffsetEnd is like PositionToByteOffset but returns the end of the character
+// if the position falls in the middle of a multi-byte UTF-8 sequence.
+func PositionToByteOffsetEnd(content []byte, line, character int) int {
+	return positionToByteOffsetImpl(content, line, character, true)
+}
+
+func positionToByteOffsetImpl(content []byte, line, character int, end bool) int {
+	cur := 0
+	for l := 0; l < line; l++ {
+		idx := bytes.IndexByte(content[cur:], '\n')
+		if idx < 0 {
+			return len(content)
+		}
+		cur += idx + 1
+	}
+
+	// Find the end of the current line to isolate it for UTF-16 counting.
+	lineStart := cur
+	lineEnd := bytes.IndexByte(content[lineStart:], '\n')
+	if lineEnd < 0 {
+		lineEnd = len(content)
+	} else {
+		lineEnd += lineStart
+	}
+
+	lineText := string(content[lineStart:lineEnd])
+	var byteOffInLine int
+	if end {
+		byteOffInLine = utf16IndexEnd(lineText, character)
+	} else {
+		byteOffInLine = utf16Index(lineText, character)
+	}
+
+	return lineStart + byteOffInLine
+}
+
 // utf16Index returns the byte index of the n-th UTF-16 code unit in s.
 // If n falls in the middle of a multi-unit character, it returns the start of that character.
 // If n is out of range, it returns the length of s.

@@ -377,28 +377,13 @@ func (h *Handler) wordPrefixAt(fileURI string, line, character int) string {
 		return ""
 	}
 
-	// Find the target line.
-	cur := 0
-	for l := 0; l < line; l++ {
-		idx := strings.IndexByte(content[cur:], '\n')
-		if idx < 0 {
-			return ""
-		}
-		cur += idx + 1
-	}
-
-	lineEnd := strings.IndexByte(content[cur:], '\n')
-	if lineEnd < 0 {
-		lineEnd = len(content) - cur
-	}
-	lineText := content[cur : cur+lineEnd]
-
-	byteOff := utf16Index(lineText, character)
+	contentBytes := []byte(content)
+	byteOff := PositionToByteOffset(contentBytes, line, character)
 
 	// Walk backwards from cursor to find the start of the identifier.
 	start := byteOff
 	for start > 0 {
-		ch := lineText[start-1]
+		ch := contentBytes[start-1]
 		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '$' {
 			start--
 		} else {
@@ -406,7 +391,7 @@ func (h *Handler) wordPrefixAt(fileURI string, line, character int) string {
 		}
 	}
 
-	return lineText[start:byteOff]
+	return string(contentBytes[start:byteOff])
 }
 
 // countActiveParameter uses the Tree-sitter AST to find the enclosing
@@ -441,7 +426,7 @@ func (h *Handler) countActiveParameter(fileURI string, line, character int) int 
 	}
 
 	// Count named children (arguments) that end before or contain the cursor.
-	cursorByte := byteOffsetForPosition(src, line, character)
+	cursorByte := PositionToByteOffset(src, line, character)
 	active := 0
 	for i := 0; i < int(argList.NamedChildCount()); i++ {
 		child := argList.NamedChild(i)
