@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fwrq41251/decaf/internal/index"
@@ -366,7 +367,9 @@ func TestParseImportBlock(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			block := parseImportBlock(tt.lines)
+			content := []byte(strings.Join(tt.lines, "\n"))
+			tree, _ := getTree(content)
+			block := parseImportBlock(tree.RootNode(), content)
 			if block.startLine != tt.wantStart {
 				t.Errorf("startLine = %d, want %d", block.startLine, tt.wantStart)
 			}

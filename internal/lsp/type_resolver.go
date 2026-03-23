@@ -14,9 +14,27 @@ type typeResolver struct {
 	pkg     string // current file's package, e.g. "com.example"
 }
 
-// resolveParameterized resolves a type name that may include generic arguments
-// (e.g. "List<String>") into a TypeExpr preserving the generic structure.
-func (r *typeResolver) resolveParameterized(name string) *index.TypeExpr {
+// resolveParameterized resolves a type expression into a TypeExpr with SemanticDB symbols.
+func (r *typeResolver) resolveParameterized(te *index.TypeExpr) *index.TypeExpr {
+	if te == nil {
+		return nil
+	}
+	sym := r.resolve(te.Sym)
+	if sym == "" {
+		return nil
+	}
+	result := &index.TypeExpr{Sym: sym}
+	for _, arg := range te.Args {
+		argTE := r.resolveParameterized(arg)
+		if argTE != nil {
+			result.Args = append(result.Args, argTE)
+		}
+	}
+	return result
+}
+
+// resolveParameterizedStr resolves a type name string (e.g. "List<String>") into a TypeExpr.
+func (r *typeResolver) resolveParameterizedStr(name string) *index.TypeExpr {
 	baseName, argNames := splitGenericName(name)
 	sym := r.resolve(baseName)
 	if sym == "" {
@@ -24,7 +42,7 @@ func (r *typeResolver) resolveParameterized(name string) *index.TypeExpr {
 	}
 	te := &index.TypeExpr{Sym: sym}
 	for _, arg := range argNames {
-		argTE := r.resolveParameterized(arg)
+		argTE := r.resolveParameterizedStr(arg)
 		if argTE != nil {
 			te.Args = append(te.Args, argTE)
 		}

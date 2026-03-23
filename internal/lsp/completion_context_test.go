@@ -91,7 +91,7 @@ public class MyClass {
 	if len(ctx.Locals) != 2 {
 		t.Fatalf("expected 2 locals, got %d: %+v", len(ctx.Locals), ctx.Locals)
 	}
-	if ctx.Locals[0].Name != "local1" || ctx.Locals[0].Type != "String" {
+	if ctx.Locals[0].Name != "local1" || ctx.Locals[0].Type.String() != "String" {
 		t.Fatalf("expected local1:String, got %s:%s", ctx.Locals[0].Name, ctx.Locals[0].Type)
 	}
 	if ctx.Locals[1].Name != "local2" {
@@ -114,7 +114,7 @@ public class MyClass {
 	if len(ctx.Params) != 2 {
 		t.Fatalf("expected 2 params, got %d: %+v", len(ctx.Params), ctx.Params)
 	}
-	if ctx.Params[0].Name != "items" || ctx.Params[0].Type != "List<String>" {
+	if ctx.Params[0].Name != "items" || ctx.Params[0].Type.String() != "List<String>" {
 		t.Fatalf("expected items:List<String>, got %s:%s", ctx.Params[0].Name, ctx.Params[0].Type)
 	}
 	if ctx.Params[1].Name != "limit" {
@@ -138,7 +138,7 @@ public class MyClass {
 	if len(ctx.ClassFields) != 2 {
 		t.Fatalf("expected 2 class fields, got %d: %+v", len(ctx.ClassFields), ctx.ClassFields)
 	}
-	if ctx.ClassFields[0].Name != "name" || ctx.ClassFields[0].Type != "String" {
+	if ctx.ClassFields[0].Name != "name" || ctx.ClassFields[0].Type.String() != "String" {
 		t.Fatalf("expected name:String, got %s:%s", ctx.ClassFields[0].Name, ctx.ClassFields[0].Type)
 	}
 	if ctx.ClassFields[1].Name != "count" {

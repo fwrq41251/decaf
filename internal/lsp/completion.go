@@ -294,21 +294,21 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string) []Complet
 	for i := len(cctx.Locals) - 1; i >= 0; i-- {
 		l := cctx.Locals[i]
 		if matchPrefix(l.Name) {
-			addItem(l.Name, SymbolKindVariable, l.Type)
+			addItem(l.Name, SymbolKindVariable, l.Type.String())
 		}
 	}
 
 	// 2. Method parameters.
 	for _, p := range cctx.Params {
 		if matchPrefix(p.Name) {
-			addItem(p.Name, SymbolKindVariable, p.Type)
+			addItem(p.Name, SymbolKindVariable, p.Type.String())
 		}
 	}
 
 	// 3. Class fields.
 	for _, f := range cctx.ClassFields {
 		if matchPrefix(f.Name) {
-			addItem(f.Name, SymbolKindField, f.Type)
+			addItem(f.Name, SymbolKindField, f.Type.String())
 		}
 	}
 

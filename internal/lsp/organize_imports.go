@@ -1,13 +1,13 @@
 package lsp
 
 import (
-	"bufio"
 	"os"
 	"sort"
 	"strings"
 
 	"github.com/fwrq41251/decaf/internal/index"
 	"github.com/fwrq41251/decaf/internal/uri"
+	slog "github.com/smacker/go-tree-sitter"
 )
 
 // importBlock records the line range of the import section in a Java file.
@@ -22,19 +22,25 @@ type importBlock struct {
 // adds missing ones, and sorts the remainder.
 // If overlay is non-empty it is used as the file content instead of reading from disk.
 func organizeImports(fileURI string, idx *index.Index, overlay string) *WorkspaceEdit {
-	var lines []string
+	var content []byte
 	if overlay != "" {
-		lines = strings.Split(overlay, "\n")
+		content = []byte(overlay)
 	} else {
 		filePath := uri.ToPath(fileURI)
 		var err error
-		lines, err = readLines(filePath)
+		content, err = os.ReadFile(filePath)
 		if err != nil {
 			return nil
 		}
 	}
 
-	block := parseImportBlock(lines)
+	tree, err := getTree(content)
+	if err != nil {
+		return nil
+	}
+	root := tree.RootNode()
+
+	block := parseImportBlock(root, content)
 
 	// Gather all SemanticDB symbols referenced in this file.
 	occs := idx.AllFileOccurrences(fileURI)
@@ -84,7 +90,7 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 		importedSet[imp] = true
 	}
 
-	filePackage := detectPackage(lines)
+	filePackage := detectPackage(root, content)
 	for sym := range usedSymbols {
 		fqn := fqnFromSymbol(sym)
 		if fqn == "" {
@@ -149,7 +155,10 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 	// If there were no imports before and we're adding some, ensure a blank line before.
 	newText := sb.String()
 	if len(block.imports) == 0 && len(kept) > 0 {
-		newText = "\n" + newText
+		// If we are at the very beginning of the file (no package), no need for leading newline.
+		if block.startLine > 0 {
+			newText = "\n" + newText
+		}
 	}
 
 	editRange := Range{
@@ -164,77 +173,58 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 	}
 }
 
-func readLines(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	return lines, scanner.Err()
-}
-
-// parseImportBlock finds the contiguous import region in a Java source file.
-func parseImportBlock(lines []string) importBlock {
+// parseImportBlock finds the contiguous import region in a Java source file using AST.
+func parseImportBlock(root *slog.Node, content []byte) importBlock {
 	var block importBlock
 	block.startLine = -1
 
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "import static ") {
-			imp := strings.TrimSuffix(strings.TrimPrefix(trimmed, "import static "), ";")
-			imp = strings.TrimSpace(imp)
-			if block.startLine == -1 {
-				block.startLine = i
-			}
-			block.staticImports = append(block.staticImports, imp)
-			block.endLine = i + 1
-		} else if strings.HasPrefix(trimmed, "import ") {
-			imp := strings.TrimSuffix(strings.TrimPrefix(trimmed, "import "), ";")
-			imp = strings.TrimSpace(imp)
-			if block.startLine == -1 {
-				block.startLine = i
-			}
-			block.imports = append(block.imports, imp)
-			block.endLine = i + 1
-		} else if block.startLine != -1 {
-			// Allow blank lines within the import block.
-			if trimmed == "" {
+	for i := 0; i < int(root.NamedChildCount()); i++ {
+		child := root.NamedChild(i)
+		if child.Type() == "import_declaration" {
+			spec := parseImport(child, content)
+			if spec.Path == "" {
 				continue
 			}
-			// Non-import, non-blank line after imports started — end the block.
-			break
+
+			line := int(child.StartPoint().Row)
+			if block.startLine == -1 {
+				block.startLine = line
+			}
+			if spec.Static {
+				block.staticImports = append(block.staticImports, spec.Path)
+			} else {
+				block.imports = append(block.imports, spec.Path)
+			}
+			block.endLine = int(child.EndPoint().Row) + 1
 		}
 	}
 
 	if block.startLine == -1 {
 		// No imports found. Insert after the package declaration (or at top).
-		for i, line := range lines {
-			if strings.HasPrefix(strings.TrimSpace(line), "package ") {
-				block.startLine = i + 1
-				block.endLine = i + 1
-				return block
-			}
+		pkgNode := findChildByType(root, "package_declaration")
+		if pkgNode != nil {
+			block.startLine = int(pkgNode.EndPoint().Row) + 1
+			block.endLine = block.startLine
+		} else {
+			block.startLine = 0
+			block.endLine = 0
 		}
-		block.startLine = 0
-		block.endLine = 0
 	}
 
 	return block
 }
 
-// detectPackage returns the package name from the Java source (e.g. "com.example").
-func detectPackage(lines []string) string {
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "package ") {
-			pkg := strings.TrimSuffix(strings.TrimPrefix(trimmed, "package "), ";")
-			return strings.TrimSpace(pkg)
+// detectPackage returns the package name from the Java source using AST.
+func detectPackage(root *slog.Node, content []byte) string {
+	pkgNode := findChildByType(root, "package_declaration")
+	if pkgNode == nil {
+		return ""
+	}
+	// The package name is in a scoped_identifier or identifier child.
+	for j := 0; j < int(pkgNode.NamedChildCount()); j++ {
+		gc := pkgNode.NamedChild(j)
+		if gc.Type() == "scoped_identifier" || gc.Type() == "identifier" {
+			return gc.Content(content)
 		}
 	}
 	return ""
@@ -312,19 +302,25 @@ func importSortKey(imp string) string {
 // addImportEdit computes a WorkspaceEdit that adds a single import statement
 // for the given fully-qualified name at the correct sorted position.
 func addImportEdit(fileURI string, overlay string, fqn string) *WorkspaceEdit {
-	var lines []string
+	var content []byte
 	if overlay != "" {
-		lines = strings.Split(overlay, "\n")
+		content = []byte(overlay)
 	} else {
 		filePath := uri.ToPath(fileURI)
 		var err error
-		lines, err = readLines(filePath)
+		content, err = os.ReadFile(filePath)
 		if err != nil {
 			return nil
 		}
 	}
 
-	block := parseImportBlock(lines)
+	tree, err := getTree(content)
+	if err != nil {
+		return nil
+	}
+	root := tree.RootNode()
+
+	block := parseImportBlock(root, content)
 
 	// Check if already imported.
 	for _, imp := range block.imports {
@@ -372,14 +368,19 @@ func addImportEdit(fileURI string, overlay string, fqn string) *WorkspaceEdit {
 		// Find the actual line of the insertIdx-th regular import.
 		regularIdx := 0
 		insertLine = block.endLine // default: append at end
-		for i := block.startLine; i < block.endLine; i++ {
-			trimmed := strings.TrimSpace(lines[i])
-			if strings.HasPrefix(trimmed, "import ") && !strings.HasPrefix(trimmed, "import static ") {
-				if regularIdx == insertIdx {
-					insertLine = i
-					break
+
+		// Re-parse regular imports from nodes to find the line of insertIdx.
+		for i := 0; i < int(root.NamedChildCount()); i++ {
+			child := root.NamedChild(i)
+			if child.Type() == "import_declaration" {
+				spec := parseImport(child, content)
+				if !spec.Static && spec.Path != "" {
+					if regularIdx == insertIdx {
+						insertLine = int(child.StartPoint().Row)
+						break
+					}
+					regularIdx++
 				}
-				regularIdx++
 			}
 		}
 	}
@@ -394,4 +395,14 @@ func addImportEdit(fileURI string, overlay string, fqn string) *WorkspaceEdit {
 			fileURI: {{Range: editRange, NewText: newText}},
 		},
 	}
+}
+
+func findChildByType(n *slog.Node, nodeType string) *slog.Node {
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		child := n.NamedChild(i)
+		if child.Type() == nodeType {
+			return child
+		}
+	}
+	return nil
 }

@@ -155,7 +155,7 @@ func TestResolveParameterized(t *testing.T) {
 		imports: []ImportSpec{{Path: "java.util.List"}, {Path: "java.lang.String"}},
 	}
 
-	te := resolver.resolveParameterized("List<String>")
+	te := resolver.resolveParameterizedStr("List<String>")
 	if te == nil {
 		t.Fatal("resolveParameterized returned nil")
 	}

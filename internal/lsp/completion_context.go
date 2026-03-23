@@ -2,11 +2,9 @@ package lsp
 
 import (
 	"context"
-	"strings"
-	"sync"
 
+	"github.com/fwrq41251/decaf/internal/index"
 	slog "github.com/smacker/go-tree-sitter"
-	"github.com/tree-sitter/tree-sitter-java/bindings/go"
 )
 
 // CompletionKind distinguishes between lexical and dot-triggered completion.
@@ -20,14 +18,7 @@ const (
 // ValueDecl represents a variable/field/parameter declaration with its type.
 type ValueDecl struct {
 	Name string
-	Type string // simple type name, e.g. "List", "int", "String[]"
-}
-
-// ImportSpec represents a single import statement.
-type ImportSpec struct {
-	Path     string // e.g. "java.util.List" or "java.util.*"
-	Static   bool
-	Wildcard bool
+	Type *index.TypeExpr // Changed from string to *index.TypeExpr
 }
 
 // CompletionCtx holds the parsed context for a completion request.
@@ -44,13 +35,7 @@ type CompletionCtx struct {
 	EnclosingClass string // simple name of the enclosing class
 }
 
-var javaParserPool = sync.Pool{
-	New: func() any {
-		p := slog.NewParser()
-		p.SetLanguage(slog.NewLanguage(tree_sitter_java.Language()))
-		return p
-	},
-}
+var _ = javaParserPool
 
 // parseCompletionCtx parses the buffer content with Tree-sitter and extracts
 // completion context at the given cursor position (0-indexed line and character).
@@ -101,11 +86,10 @@ func parseCompletionCtx(content []byte, line, character int) *CompletionCtx {
 
 		// 8. Extract local variables from current scope.
 		extractLocals(cursorNode, content, cursorOffset, ctx)
-		}
+	}
 
-		return ctx
-		}
-
+	return ctx
+}
 // byteOffsetForPosition converts a 0-indexed line and character to a byte offset.
 func byteOffsetForPosition(content []byte, line, character int) int {
 	offset := 0
@@ -278,109 +262,48 @@ func extractImportsAndPackage(root *slog.Node, content []byte, ctx *CompletionCt
 	}
 }
 
-// parseImport extracts import details from an import_declaration node.
-func parseImport(node *slog.Node, content []byte) ImportSpec {
-	spec := ImportSpec{}
-	text := node.Content(content)
-
-	spec.Static = strings.Contains(text, "static ")
-
-	// Check for wildcard.
-	if strings.HasSuffix(strings.TrimRight(text, "; \t\n"), ".*") {
-		spec.Wildcard = true
-	}
-
-	// Extract the path from children.
-	for i := 0; i < int(node.NamedChildCount()); i++ {
-		child := node.NamedChild(i)
-		switch child.Type() {
-		case "scoped_identifier", "identifier":
-			spec.Path = child.Content(content)
-		case "asterisk":
-			spec.Wildcard = true
-			// Append .* to path if not already there.
-			if spec.Path != "" && !strings.HasSuffix(spec.Path, ".*") {
-				spec.Path += ".*"
-			}
-		}
-	}
-
-	return spec
-}
-
-// nodeAtPosition returns the deepest node containing the given position.
-func nodeAtPosition(node *slog.Node, line, character int) *slog.Node {
+// extractType extracts the type structure from a type node.
+func extractType(node *slog.Node, content []byte) *index.TypeExpr {
 	if node == nil {
 		return nil
-	}
-
-	start := node.StartPoint()
-	end := node.EndPoint()
-
-	// Check if position is within this node.
-	if !pointInRange(uint32(line), uint32(character), start, end) {
-		return nil
-	}
-
-	// Try to find a deeper child that contains the position.
-	for i := 0; i < int(node.ChildCount()); i++ {
-		child := node.Child(i)
-		found := nodeAtPosition(child, line, character)
-		if found != nil {
-			return found
-		}
-	}
-
-	return node
-}
-
-func pointInRange(row, col uint32, start, end slog.Point) bool {
-	if row < start.Row || row > end.Row {
-		return false
-	}
-	if row == start.Row && col < start.Column {
-		return false
-	}
-	if row == end.Row && col > end.Column {
-		return false
-	}
-	return true
-}
-
-// findAncestor walks up the tree from node to find the first ancestor with one of the given types.
-func findAncestor(node *slog.Node, types ...string) *slog.Node {
-	for n := node.Parent(); n != nil; n = n.Parent() {
-		for _, t := range types {
-			if n.Type() == t {
-				return n
-			}
-		}
-	}
-	return nil
-}
-
-// extractType extracts the type text from a type node.
-func extractType(node *slog.Node, content []byte) string {
-	if node == nil {
-		return ""
 	}
 	switch node.Type() {
 	case "type_identifier", "primitive_type", "void_type", "boolean_type":
-		return node.Content(content)
+		return &index.TypeExpr{Sym: node.Content(content)}
 	case "generic_type":
-		// Return the full generic type text (e.g. "List<String>").
-		return node.Content(content)
+		// generic_type has a base type and type_arguments.
+		var base *index.TypeExpr
+		var args []*index.TypeExpr
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			child := node.NamedChild(i)
+			if child.Type() == "type_arguments" {
+				for j := 0; j < int(child.NamedChildCount()); j++ {
+					arg := extractType(child.NamedChild(j), content)
+					if arg != nil {
+						args = append(args, arg)
+					}
+				}
+			} else {
+				base = extractType(child, content)
+			}
+		}
+		if base != nil {
+			base.Args = args
+			return base
+		}
 	case "array_type":
 		// Element type + "[]".
 		if node.NamedChildCount() > 0 {
-			return extractType(node.NamedChild(0), content) + "[]"
+			base := extractType(node.NamedChild(0), content)
+			if base != nil {
+				base.Sym += "[]"
+				return base
+			}
 		}
-		return node.Content(content)
 	case "scoped_type_identifier":
-		return node.Content(content)
-	default:
-		return node.Content(content)
+		return &index.TypeExpr{Sym: node.Content(content)}
 	}
+	return &index.TypeExpr{Sym: node.Content(content)}
 }
 
 // extractDeclarators extracts variable names from variable_declarator children.
@@ -420,18 +343,18 @@ func extractClassMembers(classNode *slog.Node, content []byte, ctx *CompletionCt
 		child := classBody.NamedChild(i)
 		switch child.Type() {
 		case "field_declaration":
-			typeName := ""
+			var typeExpr *index.TypeExpr
 			for j := 0; j < int(child.NamedChildCount()); j++ {
 				gc := child.NamedChild(j)
 				switch gc.Type() {
 				case "type_identifier", "primitive_type", "generic_type", "array_type",
 					"scoped_type_identifier", "void_type", "boolean_type":
-					typeName = extractType(gc, content)
+					typeExpr = extractType(gc, content)
 				}
 			}
 			names := extractDeclarators(child, content)
 			for _, name := range names {
-				ctx.ClassFields = append(ctx.ClassFields, ValueDecl{Name: name, Type: typeName})
+				ctx.ClassFields = append(ctx.ClassFields, ValueDecl{Name: name, Type: typeExpr})
 			}
 		case "method_declaration":
 			for j := 0; j < int(child.NamedChildCount()); j++ {
@@ -453,20 +376,20 @@ func extractMethodParams(methodNode *slog.Node, content []byte, ctx *CompletionC
 			for j := 0; j < int(child.NamedChildCount()); j++ {
 				param := child.NamedChild(j)
 				if param.Type() == "formal_parameter" || param.Type() == "spread_parameter" {
-					typeName := ""
+					var typeExpr *index.TypeExpr
 					paramName := ""
 					for k := 0; k < int(param.NamedChildCount()); k++ {
 						gc := param.NamedChild(k)
 						switch gc.Type() {
 						case "type_identifier", "primitive_type", "generic_type", "array_type",
 							"scoped_type_identifier", "void_type", "boolean_type":
-							typeName = extractType(gc, content)
+							typeExpr = extractType(gc, content)
 						case "identifier":
 							paramName = gc.Content(content)
 						}
 					}
 					if paramName != "" {
-						ctx.Params = append(ctx.Params, ValueDecl{Name: paramName, Type: typeName})
+						ctx.Params = append(ctx.Params, ValueDecl{Name: paramName, Type: typeExpr})
 					}
 				}
 			}
@@ -518,18 +441,18 @@ func extractLocals(cursorNode *slog.Node, content []byte, cursorOffset int, ctx 
 // collectLocalDecls extracts variables from a single local_variable_declaration node.
 func collectLocalDecls(node *slog.Node, content []byte, ctx *CompletionCtx) {
 	if node.Type() == "local_variable_declaration" {
-		typeName := ""
+		var typeExpr *index.TypeExpr
 		for j := 0; j < int(node.NamedChildCount()); j++ {
 			gc := node.NamedChild(j)
 			switch gc.Type() {
 			case "type_identifier", "primitive_type", "generic_type", "array_type",
 				"scoped_type_identifier", "void_type", "boolean_type":
-				typeName = extractType(gc, content)
+				typeExpr = extractType(gc, content)
 			}
 		}
 		names := extractDeclarators(node, content)
 		for _, name := range names {
-			ctx.Locals = append(ctx.Locals, ValueDecl{Name: name, Type: typeName})
+			ctx.Locals = append(ctx.Locals, ValueDecl{Name: name, Type: typeExpr})
 		}
 	}
 }
