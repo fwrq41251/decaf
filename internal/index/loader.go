@@ -24,10 +24,11 @@ type parsedFile struct {
 // On the first call it does a full directory walk and starts a file watcher.
 // Subsequent calls process only files reported as changed by the watcher.
 func (idx *Index) Load() error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
+	idx.mu.RLock()
+	hasWatcher := idx.watcher != nil
+	idx.mu.RUnlock()
 
-	if idx.watcher != nil {
+	if hasWatcher {
 		return idx.loadFromWatcher()
 	}
 	return idx.loadFull()
@@ -36,10 +37,10 @@ func (idx *Index) Load() error {
 // loadFull walks the entire workspace, indexes all .semanticdb files,
 // and starts the file watcher for future incremental loads.
 //
-// File I/O and protobuf unmarshaling are performed concurrently using a worker
-// pool, while index mutation (indexDocument) runs serially under the write lock.
+// File I/O and protobuf unmarshaling run lock-free; only the final index
+// mutation step acquires the write lock to minimize blocking of LSP queries.
 func (idx *Index) loadFull() error {
-	// Phase 1: Walk the directory tree without holding the lock.
+	// Phase 1: Walk the directory tree (lock-free, sourceRoot is immutable).
 	current := make(map[string]os.FileInfo)
 	err := filepath.Walk(idx.sourceRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -60,6 +61,8 @@ func (idx *Index) loadFull() error {
 		return fmt.Errorf("walking source root: %w", err)
 	}
 
+	// Phase 2: Diff against previous modTimes under a brief read lock.
+	idx.mu.RLock()
 	var toIndex []string
 	for path, info := range current {
 		prev, ok := idx.modTimes[path]
@@ -74,7 +77,13 @@ func (idx *Index) loadFull() error {
 			deleted = append(deleted, path)
 		}
 	}
+	idx.mu.RUnlock()
 
+	// Phase 3: Concurrent file I/O + protobuf unmarshal (lock-free).
+	parsed := idx.parseFilesConcurrently(toIndex)
+
+	// Phase 4: Acquire write lock for serial index mutation.
+	idx.mu.Lock()
 	if len(toIndex) == 0 && len(deleted) == 0 {
 		idx.logger.Printf("index up-to-date (%d files, no changes)", len(current))
 	} else {
@@ -85,10 +94,6 @@ func (idx *Index) loadFull() error {
 			idx.removeFile(path)
 		}
 
-		// Phase 2: Concurrent file I/O + protobuf unmarshal.
-		parsed := idx.parseFilesConcurrently(toIndex)
-
-		// Phase 3: Serial index mutation (writes to shared maps / intern pool).
 		for _, pf := range parsed {
 			idx.removeFile(pf.path)
 			var uris []string
@@ -121,6 +126,7 @@ func (idx *Index) loadFull() error {
 		idx.watcher = w
 		idx.logger.Printf("file watcher started for %s", idx.sourceRoot)
 	}
+	idx.mu.Unlock()
 
 	return nil
 }
@@ -178,8 +184,14 @@ func (idx *Index) parseFilesConcurrently(paths []string) []parsedFile {
 }
 
 // loadFromWatcher processes only files reported as changed by the file watcher.
+// I/O (drain, stat, parse) runs lock-free; only the merge step holds the write lock.
 func (idx *Index) loadFromWatcher() error {
-	dirty, removed := idx.watcher.drain()
+	// Phase 1: Drain watcher events and stat files (lock-free).
+	idx.mu.RLock()
+	w := idx.watcher
+	idx.mu.RUnlock()
+
+	dirty, removed := w.drain()
 
 	if len(dirty) == 0 && len(removed) == 0 {
 		idx.logger.Printf("index up-to-date (no watcher events)")
@@ -188,25 +200,34 @@ func (idx *Index) loadFromWatcher() error {
 
 	idx.logger.Printf("watcher index: %d changed, %d removed", len(dirty), len(removed))
 
-	for _, path := range removed {
-		idx.removeFile(path)
-	}
-
 	// Filter out files that disappeared between watcher event and now.
 	var validDirty []string
+	var gonePaths []string
 	modInfos := make(map[string]os.FileInfo)
 	for _, path := range dirty {
 		info, err := os.Stat(path)
 		if err != nil {
-			idx.removeFile(path)
+			gonePaths = append(gonePaths, path)
 			continue
 		}
 		validDirty = append(validDirty, path)
 		modInfos[path] = info
 	}
 
-	// Concurrent parse, then serial merge.
+	// Phase 2: Concurrent parse (lock-free).
 	parsed := idx.parseFilesConcurrently(validDirty)
+
+	// Phase 3: Acquire write lock for serial index mutation.
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	for _, path := range removed {
+		idx.removeFile(path)
+	}
+	for _, path := range gonePaths {
+		idx.removeFile(path)
+	}
+
 	for _, pf := range parsed {
 		idx.removeFile(pf.path)
 		var uris []string

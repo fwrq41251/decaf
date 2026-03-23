@@ -45,6 +45,11 @@ func (h *Handler) handleDidClose(_ context.Context, params json.RawMessage) (any
 		return nil, err
 	}
 	h.docs.Close(p.TextDocument.URI)
+
+	h.diagnosticsMu.Lock()
+	delete(h.diagnostics, p.TextDocument.URI)
+	h.diagnosticsMu.Unlock()
+
 	h.logger.Printf("didClose: %s", p.TextDocument.URI)
 	return nil, nil
 }
@@ -110,6 +115,10 @@ func (h *Handler) scheduleCompile(uris ...string) {
 		changedURIs := h.pendingURIs
 		h.pendingURIs = nil
 		h.debounceMu.Unlock()
+
+		if len(changedURIs) == 0 {
+			return
+		}
 
 		prog := h.beginProgress("decaf", "compiling…")
 

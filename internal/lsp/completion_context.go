@@ -70,7 +70,7 @@ func parseCompletionCtx(content []byte, line, character int) *CompletionCtx {
 	cursorOffset := byteOffsetForPosition(content, line, character)
 
 	// 2. Determine completion kind and extract receiver/prefix.
-	ctx.Kind, ctx.Receiver, ctx.Prefix = determineCompletionKind(content, cursorOffset)
+	ctx.Kind, ctx.Receiver, ctx.Prefix = determineCompletionKind(content, cursorOffset, root)
 
 	// 3. Extract imports and package from root.
 	extractImportsAndPackage(root, content, ctx)
@@ -132,8 +132,9 @@ func indexByte(b []byte, c byte) int {
 	return -1
 }
 
-// determineCompletionKind examines text before cursor to detect dot completion.
-func determineCompletionKind(content []byte, cursorOffset int) (CompletionKind, string, string) {
+// determineCompletionKind examines text before cursor to detect dot completion,
+// using the Tree-sitter AST to extract the receiver expression.
+func determineCompletionKind(content []byte, cursorOffset int, root *slog.Node) (CompletionKind, string, string) {
 	// Walk backwards from cursor to collect identifier prefix.
 	pos := cursorOffset
 	for pos > 0 && isIdentChar(content[pos-1]) {
@@ -148,9 +149,8 @@ func determineCompletionKind(content []byte, cursorOffset int) (CompletionKind, 
 		dotPos--
 	}
 	if dotPos > 0 && content[dotPos-1] == '.' {
-		dotPos-- // skip the dot
-		// Extract receiver: walk backwards from dot.
-		receiver := extractReceiverBefore(content, dotPos)
+		dotBytePos := dotPos - 1 // index of the dot
+		receiver := extractReceiverFromAST(root, content, dotBytePos)
 		if receiver != "" {
 			return CompletionDot, receiver, prefix
 		}
@@ -159,96 +159,97 @@ func determineCompletionKind(content []byte, cursorOffset int) (CompletionKind, 
 	return CompletionLexical, "", prefix
 }
 
-// extractReceiverBefore extracts the expression text before the given position.
-// Handles simple identifiers, this, super, chained dot access like foo.bar,
-// and method invocations like items.get(0).field or foo.bar().baz.
-func extractReceiverBefore(content []byte, pos int) string {
-	// Skip whitespace.
-	for pos > 0 && (content[pos-1] == ' ' || content[pos-1] == '\t') {
-		pos--
+// extractReceiverFromAST uses the Tree-sitter AST to extract the receiver
+// expression before the dot at dotBytePos.
+func extractReceiverFromAST(root *slog.Node, content []byte, dotBytePos int) string {
+	if dotBytePos <= 0 {
+		return ""
 	}
 
-	end := pos
+	// Find the AST node at the byte just before the dot.
+	line, col := byteOffsetToPosition(content, dotBytePos-1)
+	node := nodeAtPosition(root, line, col)
+	if node == nil {
+		return ""
+	}
 
-	// Walk backwards through chained dot expressions: foo.bar.baz
-	for {
-		// Check if the current segment ends with ')' (method invocation).
-		if pos > 0 && content[pos-1] == ')' {
-			// Skip backwards over the matched parentheses.
-			depth := 0
-			for pos > 0 {
-				pos--
-				if content[pos] == ')' {
-					depth++
-				} else if content[pos] == '(' {
-					depth--
-					if depth == 0 {
-						break
-					}
-				}
-			}
-			if depth != 0 {
-				break
-			}
-			// pos is now at '(', collect the method name identifier before it.
-			for pos > 0 && isIdentChar(content[pos-1]) {
-				pos--
-			}
-		} else {
-			// Collect identifier.
-			idEnd := pos
-			for pos > 0 && isIdentChar(content[pos-1]) {
-				pos--
-			}
-			if pos == idEnd {
-				// No identifier found.
-				break
-			}
-		}
-
-		// Check if there's another dot before this identifier (chained access).
-		checkPos := pos
-		for checkPos > 0 && (content[checkPos-1] == ' ' || content[checkPos-1] == '\t') {
-			checkPos--
-		}
-		if checkPos > 0 && content[checkPos-1] == '.' {
-			pos = checkPos - 1 // skip the dot, continue to next segment
+	// Walk up to the highest expression node that ends at or before the dot.
+	for node.Parent() != nil {
+		parent := node.Parent()
+		if int(parent.EndByte()) <= dotBytePos {
+			node = parent
 		} else {
 			break
 		}
 	}
 
-	if pos == end {
+	return exprToReceiver(node, content)
+}
+
+// exprToReceiver converts a Tree-sitter expression node to a dot-separated
+// receiver string suitable for type resolution (stripping method arguments).
+func exprToReceiver(node *slog.Node, content []byte) string {
+	if node == nil {
 		return ""
 	}
-
-	// Build result by extracting identifiers and dots, skipping parenthesized args.
-	var result []byte
-	for i := pos; i < end; {
-		if content[i] == '(' {
-			// Skip over parenthesized arguments.
-			depth := 0
-			for i < end {
-				if content[i] == '(' {
-					depth++
-				} else if content[i] == ')' {
-					depth--
-					if depth == 0 {
-						i++
-						break
-					}
-				}
-				i++
+	switch node.Type() {
+	case "identifier":
+		return node.Content(content)
+	case "this":
+		return "this"
+	case "super":
+		return "super"
+	case "string_literal":
+		return node.Content(content)
+	case "parenthesized_expression":
+		return node.Content(content)
+	case "field_access":
+		obj := node.ChildByFieldName("object")
+		field := node.ChildByFieldName("field")
+		if obj != nil && field != nil {
+			recv := exprToReceiver(obj, content)
+			if recv != "" {
+				return recv + "." + field.Content(content)
 			}
-		} else if isIdentChar(content[i]) || content[i] == '.' {
-			result = append(result, content[i])
-			i++
-		} else {
-			// skip whitespace or other characters
-			i++
+			return field.Content(content)
+		}
+		if obj != nil {
+			return exprToReceiver(obj, content)
+		}
+	case "method_invocation":
+		obj := node.ChildByFieldName("object")
+		name := node.ChildByFieldName("name")
+		if obj != nil && name != nil {
+			recv := exprToReceiver(obj, content)
+			if recv != "" {
+				return recv + "." + name.Content(content)
+			}
+			return name.Content(content)
+		}
+		if name != nil {
+			return name.Content(content)
 		}
 	}
-	return string(result)
+	// Fallback: return content if it looks like an identifier.
+	text := node.Content(content)
+	if len(text) > 0 && isIdentChar(text[0]) {
+		return text
+	}
+	return ""
+}
+
+// byteOffsetToPosition converts a byte offset to a 0-indexed (line, column) pair.
+func byteOffsetToPosition(content []byte, offset int) (int, int) {
+	line, col := 0, 0
+	for i := 0; i < offset && i < len(content); i++ {
+		if content[i] == '\n' {
+			line++
+			col = 0
+		} else {
+			col++
+		}
+	}
+	return line, col
 }
 
 func isIdentChar(c byte) bool {

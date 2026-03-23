@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/fwrq41251/decaf/internal/index"
+	slog "github.com/smacker/go-tree-sitter"
 )
 
 func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) (any, error) {
@@ -177,37 +178,89 @@ func (h *Handler) resolveMemberTypeExpr(owner *index.TypeExpr, memberName string
 }
 
 // substituteTypeParams replaces type parameter references in retType with
-// actual type arguments from owner.
+// actual type arguments from owner, traversing the inheritance chain to
+// resolve type parameters declared on parent types.
 //
-// Example: owner = {Sym:"List#", Args:[{Sym:"String#"}]}
+// Example: owner = {Sym:"ArrayList#", Args:[{Sym:"String#"}]}
 //
-//	List# classTypeParams = ["List#[E]"]
-//	retType = {Sym: "List#[E]"}  (return type of get())
+//	ArrayList# extends AbstractList<E>, AbstractList<E> extends List<E>
+//	retType = {Sym: "List#[E]"}  (return type of List.get())
+//	→ builds chain: ArrayList#[E]→String#, AbstractList#[E]→String#, List#[E]→String#
 //	→ returns {Sym: "String#"}
 func substituteTypeParams(retType *index.TypeExpr, owner *index.TypeExpr, idx *index.Index) *index.TypeExpr {
 	if retType == nil || owner == nil || len(owner.Args) == 0 {
 		return retType
 	}
 
-	typeParams := idx.ClassTypeParams(owner.Sym)
+	subst := buildSubstitutionMap(owner, idx)
+	if len(subst) == 0 {
+		return retType
+	}
 
-	// Check if retType.Sym is a type parameter reference.
+	return applySubstitution(retType, subst)
+}
+
+// buildSubstitutionMap builds a map from type parameter symbols to concrete
+// TypeExprs by starting with the owner's type params and walking the
+// inheritance chain via ParentTypesOf.
+func buildSubstitutionMap(owner *index.TypeExpr, idx *index.Index) map[string]*index.TypeExpr {
+	subst := make(map[string]*index.TypeExpr)
+
+	// Seed with the owner's own type params → args.
+	typeParams := idx.ClassTypeParams(owner.Sym)
 	for i, tp := range typeParams {
-		if retType.Sym == tp && i < len(owner.Args) {
-			return owner.Args[i]
+		if i < len(owner.Args) {
+			subst[tp] = owner.Args[i]
 		}
 	}
 
-	// Recursively substitute type arguments.
-	if len(retType.Args) > 0 {
-		result := &index.TypeExpr{Sym: retType.Sym, Args: make([]*index.TypeExpr, len(retType.Args))}
-		for i, arg := range retType.Args {
-			result.Args[i] = substituteTypeParams(arg, owner, idx)
+	// BFS through parent types to propagate substitutions up the hierarchy.
+	visited := make(map[string]bool)
+	queue := []string{owner.Sym}
+
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+
+		if visited[current] {
+			continue
+		}
+		visited[current] = true
+
+		for _, parentType := range idx.ParentTypesOf(current) {
+			parentParams := idx.ClassTypeParams(parentType.Sym)
+			for i, pp := range parentParams {
+				if i < len(parentType.Args) {
+					subst[pp] = applySubstitution(parentType.Args[i], subst)
+				}
+			}
+			queue = append(queue, parentType.Sym)
+		}
+	}
+
+	return subst
+}
+
+// applySubstitution replaces type parameter references in te using the
+// substitution map, recursing into generic type arguments.
+func applySubstitution(te *index.TypeExpr, subst map[string]*index.TypeExpr) *index.TypeExpr {
+	if te == nil {
+		return nil
+	}
+
+	if resolved, ok := subst[te.Sym]; ok {
+		return resolved
+	}
+
+	if len(te.Args) > 0 {
+		result := &index.TypeExpr{Sym: te.Sym, Args: make([]*index.TypeExpr, len(te.Args))}
+		for i, arg := range te.Args {
+			result.Args[i] = applySubstitution(arg, subst)
 		}
 		return result
 	}
 
-	return retType
+	return te
 }
 
 // completeLexical handles bare identifier completion (e.g. "pri").
@@ -356,51 +409,46 @@ func (h *Handler) wordPrefixAt(fileURI string, line, character int) string {
 	return lineText[start:byteOff]
 }
 
-// countActiveParameter counts the number of commas between the nearest unmatched
-// opening parenthesis and the cursor position, using the overlay buffer content.
-// This determines which parameter is "active" for signature help.
+// countActiveParameter uses the Tree-sitter AST to find the enclosing
+// argument_list and counts which argument the cursor is in.
 func (h *Handler) countActiveParameter(fileURI string, line, character int) int {
 	content := h.getFileContent(fileURI)
 	if content == "" {
 		return 0
 	}
 
-	// Compute the absolute byte offset of the cursor in the full content.
-	cur := 0
-	for l := 0; l < line; l++ {
-		idx := strings.IndexByte(content[cur:], '\n')
-		if idx < 0 {
-			return 0
-		}
-		cur += idx + 1
+	src := []byte(content)
+	parser := javaParserPool.Get().(*slog.Parser)
+	defer javaParserPool.Put(parser)
+
+	tree, err := parser.ParseCtx(context.Background(), nil, src)
+	if err != nil {
+		return 0
 	}
 
-	lineEnd := strings.IndexByte(content[cur:], '\n')
-	if lineEnd < 0 {
-		lineEnd = len(content) - cur
+	node := nodeAtPosition(tree.RootNode(), line, character)
+	if node == nil {
+		return 0
 	}
-	lineText := content[cur : cur+lineEnd]
-	absOff := cur + utf16Index(lineText, character)
 
-	// Walk backwards through the entire file from cursor to find the
-	// nearest unmatched opening parenthesis, counting commas at the
-	// top nesting level. This handles multi-line method calls.
-	commas := 0
-	depth := 0
-	for i := absOff - 1; i >= 0; i-- {
-		switch content[i] {
-		case ')':
-			depth++
-		case '(':
-			if depth == 0 {
-				return commas
-			}
-			depth--
-		case ',':
-			if depth == 0 {
-				commas++
-			}
-		}
+	// Find the enclosing argument_list node.
+	argList := node
+	for argList != nil && argList.Type() != "argument_list" {
+		argList = argList.Parent()
 	}
-	return commas
+	if argList == nil {
+		return 0
+	}
+
+	// Count named children (arguments) that end before or contain the cursor.
+	cursorByte := byteOffsetForPosition(src, line, character)
+	active := 0
+	for i := 0; i < int(argList.NamedChildCount()); i++ {
+		child := argList.NamedChild(i)
+		if int(child.StartByte()) >= cursorByte {
+			break
+		}
+		active = i
+	}
+	return active
 }

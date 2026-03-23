@@ -116,6 +116,38 @@ func TestSubstituteTypeParams_NoArgs(t *testing.T) {
 	}
 }
 
+func TestSubstituteTypeParams_Inherited(t *testing.T) {
+	// Simulate: ArrayList<String>.get(0) → get() is declared on List<E>
+	// ArrayList<String> → AbstractList<String> → List<String>
+	// retType = List#[E] → should resolve to String#
+	idx := setupGenericIndex(t)
+
+	// Set up inheritance chain:
+	// ArrayList#[E] extends AbstractList#<ArrayList#[E]>
+	idx.SetClassTypeParamsForTest("java/util/ArrayList#", []string{"java/util/ArrayList#[E]"})
+	idx.SetParentTypesForTest("java/util/ArrayList#", []*index.TypeExpr{
+		{Sym: "java/util/AbstractList#", Args: []*index.TypeExpr{{Sym: "java/util/ArrayList#[E]"}}},
+	})
+	// AbstractList#[E] extends List#<AbstractList#[E]>
+	idx.SetClassTypeParamsForTest("java/util/AbstractList#", []string{"java/util/AbstractList#[E]"})
+	idx.SetParentTypesForTest("java/util/AbstractList#", []*index.TypeExpr{
+		{Sym: "java/util/List#", Args: []*index.TypeExpr{{Sym: "java/util/AbstractList#[E]"}}},
+	})
+
+	owner := &index.TypeExpr{
+		Sym:  "java/util/ArrayList#",
+		Args: []*index.TypeExpr{{Sym: "java/lang/String#"}},
+	}
+
+	// get() returns E, declared on List → "java/util/List#[E]"
+	retType := &index.TypeExpr{Sym: "java/util/List#[E]"}
+
+	result := substituteTypeParams(retType, owner, idx)
+	if result == nil || result.Sym != "java/lang/String#" {
+		t.Errorf("expected java/lang/String#, got %v", result)
+	}
+}
+
 func TestResolveParameterized(t *testing.T) {
 	idx := setupGenericIndex(t)
 	resolver := &typeResolver{

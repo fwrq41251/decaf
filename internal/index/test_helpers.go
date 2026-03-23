@@ -9,6 +9,13 @@ func (idx *Index) SetClassTypeParamsForTest(sym string, params []string) {
 	idx.classTypeParams[sym] = params
 }
 
+// SetParentTypesForTest sets parentTypes for testing. Test-only.
+func (idx *Index) SetParentTypesForTest(sym string, parents []*TypeExpr) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.parentTypes[sym] = parents
+}
+
 // AddDefinitionForTest adds a minimal definition for testing. Test-only.
 func (idx *Index) AddDefinitionForTest(sym, name string) {
 	idx.mu.Lock()

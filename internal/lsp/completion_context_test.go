@@ -275,57 +275,89 @@ public class MyClass {
 	}
 }
 
-func TestExtractReceiverBefore_MethodInvocation(t *testing.T) {
+func TestExtractReceiverFromAST(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    string
+		src      string
+		line     int
+		char     int
 		expected string
 	}{
 		{
-			name:     "simple method call",
-			input:    "items.get(0).",
+			name: "simple method call",
+			src: `class X { void f() {
+        items.get(0).
+    }}`,
+			line: 1, char: 21,
 			expected: "items.get",
 		},
 		{
-			name:     "chained method then field",
-			input:    "foo.bar().baz.",
+			name: "chained method then field",
+			src: `class X { void f() {
+        foo.bar().baz.
+    }}`,
+			line: 1, char: 22,
 			expected: "foo.bar.baz",
 		},
 		{
-			name:     "method call with string arg",
-			input:    `map.get("key").`,
+			name: "method call with string arg",
+			src: `class X { void f() {
+        map.get("key").
+    }}`,
+			line: 1, char: 23,
 			expected: "map.get",
 		},
 		{
-			name:     "method call with multiple args",
-			input:    "foo.bar(a, b).",
+			name: "method call with multiple args",
+			src: `class X { void f() {
+        foo.bar(a, b).
+    }}`,
+			line: 1, char: 22,
 			expected: "foo.bar",
 		},
 		{
-			name:     "nested calls",
-			input:    "a.b(c.d()).",
+			name: "nested calls",
+			src: `class X { void f() {
+        a.b(c.d()).
+    }}`,
+			line: 1, char: 19,
 			expected: "a.b",
 		},
 		{
-			name:     "simple identifier",
-			input:    "items.",
+			name: "simple identifier",
+			src: `class X { void f() {
+        items.
+    }}`,
+			line: 1, char: 14,
 			expected: "items",
 		},
 		{
-			name:     "chained fields",
-			input:    "foo.bar.baz.",
+			name: "chained fields",
+			src: `class X { void f() {
+        foo.bar.baz.
+    }}`,
+			line: 1, char: 20,
 			expected: "foo.bar.baz",
+		},
+		{
+			name: "string with dots and parens",
+			src: `class X { void f() {
+        "a.b(c)".length().
+    }}`,
+			line: 1, char: 26, // right after the trailing dot at char 25
+			expected: "\"a.b(c)\".length",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			content := []byte(tt.input)
-			// pos is at the trailing dot, so len-1; extractReceiverBefore works on content before pos
-			pos := len(content) - 1
-			got := extractReceiverBefore(content, pos)
-			if got != tt.expected {
-				t.Errorf("extractReceiverBefore(%q, %d) = %q, want %q", tt.input, pos, got, tt.expected)
+			content := []byte(tt.src)
+			ctx := parseCompletionCtx(content, tt.line, tt.char)
+			if ctx.Kind != CompletionDot {
+				t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
+			}
+			if ctx.Receiver != tt.expected {
+				t.Errorf("receiver = %q, want %q", ctx.Receiver, tt.expected)
 			}
 		})
 	}
