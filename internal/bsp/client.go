@@ -32,8 +32,10 @@ type Client struct {
 	onDiagnostics  DiagnosticsHandler
 	onDisconnect   func()
 	targets        []BuildTarget
-	socketDir     string // temp directory containing the unix socket
-}
+	socketDir      string // temp directory containing the unix socket
+	exitErr        chan error
+	}
+
 
 // NewClient creates a new BSP client.
 func NewClient(logger *log.Logger, onDiagnostics DiagnosticsHandler, onDisconnect func()) *Client {
@@ -72,6 +74,14 @@ func (c *Client) Start(ctx context.Context, rootURI string) error {
 	if err := c.cmd.Start(); err != nil {
 		return fmt.Errorf("starting bloop process: %w", err)
 	}
+
+	c.exitErr = make(chan error, 1)
+	go func() {
+		err := c.cmd.Wait()
+		c.logger.Printf("bloop process exited: %v", err)
+		c.exitErr <- err
+		close(c.exitErr)
+	}()
 
 	// Wait for socket to be created (with timeout).
 	start := time.Now()
@@ -226,8 +236,13 @@ func (c *Client) Shutdown(ctx context.Context) error {
 
 	c.clearPending()
 
-	if c.cmd != nil {
-		return c.cmd.Wait()
+	if c.cmd != nil && c.exitErr != nil {
+		select {
+		case err := <-c.exitErr:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return nil
 }
