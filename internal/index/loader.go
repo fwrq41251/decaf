@@ -91,7 +91,11 @@ func (idx *Index) loadFull() error {
 			len(toIndex), len(deleted), len(current))
 
 		for _, path := range deleted {
-			idx.removeFile(path)
+			if idx.sourceFilesExist(path) {
+				idx.logger.Printf("keeping stale index for %s (source files still exist)", path)
+			} else {
+				idx.removeFile(path)
+			}
 		}
 
 		for _, pf := range parsed {
@@ -222,9 +226,17 @@ func (idx *Index) loadFromWatcher() error {
 	defer idx.mu.Unlock()
 
 	for _, path := range removed {
+		if idx.sourceFilesExist(path) {
+			idx.logger.Printf("keeping stale index for %s (source files still exist)", path)
+			continue
+		}
 		idx.removeFile(path)
 	}
 	for _, path := range gonePaths {
+		if idx.sourceFilesExist(path) {
+			idx.logger.Printf("keeping stale index for %s (source files still exist)", path)
+			continue
+		}
 		idx.removeFile(path)
 	}
 
@@ -272,6 +284,21 @@ func (idx *Index) Close() {
 		_ = idx.watcher.close()
 		idx.watcher = nil
 	}
+}
+
+// sourceFilesExist checks if any source files associated with a .semanticdb
+// file still exist on disk. Used to avoid eagerly removing index data when
+// compilation fails (the .semanticdb is gone but the source is still there).
+// Must be called with idx.mu held.
+func (idx *Index) sourceFilesExist(sdbPath string) bool {
+	uris := idx.sdbToURIs[sdbPath]
+	for _, u := range uris {
+		srcPath := filepath.Join(idx.sourceRoot, filepath.FromSlash(u))
+		if _, err := os.Stat(srcPath); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // removeFile removes all index data associated with a .semanticdb file.

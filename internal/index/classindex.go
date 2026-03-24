@@ -273,48 +273,55 @@ func convertClassFile(cf *classFile) *classSymbols {
 // mergeClassSymbols adds the symbols from a parsed class into the index maps.
 // Returns true if the class was newly added (not a duplicate).
 func (idx *Index) mergeClassSymbols(cs classSymbols) bool {
-	// Skip if already defined (project .semanticdb definitions take priority).
-	if _, exists := idx.definitions[cs.classSym]; exists {
-		return false
-	}
-
 	classSym := idx.intern(cs.classSym)
 
-	// Add class definition.
-	s := &Symbol{
-		Name:   cs.className,
-		Symbol: classSym,
-		Kind:   cs.classKind,
-	}
-	idx.definitions[classSym] = append(idx.definitions[classSym], s)
+	// If the class is already defined (e.g. from SemanticDB), keep the
+	// existing class definition but still merge members and parent info
+	// that SemanticDB doesn't provide for external types.
+	alreadyDefined := len(idx.definitions[classSym]) > 0
 
-	// typeBySimpleName index.
-	name := strings.ToLower(cs.className)
-	idx.typeBySimpleName[name] = append(idx.typeBySimpleName[name], s)
-
-	// Implementors / childToParents.
-	for _, parent := range cs.parents {
-		parentSym := idx.intern(parent)
-		idx.implementors[parentSym] = append(idx.implementors[parentSym], classSym)
-		idx.childToParents[classSym] = append(idx.childToParents[classSym], parentSym)
-	}
-
-	// Members.
-	for _, m := range cs.members {
-		memberSym := idx.intern(m.sym)
-		ms := &Symbol{
-			Name:      m.name,
-			Symbol:    memberSym,
-			Kind:      m.kind,
-			Signature: m.signature,
+	if !alreadyDefined {
+		// Add class definition.
+		s := &Symbol{
+			Name:   cs.className,
+			Symbol: classSym,
+			Kind:   cs.classKind,
 		}
-		idx.definitions[memberSym] = append(idx.definitions[memberSym], ms)
-		idx.ownerMembers[classSym] = append(idx.ownerMembers[classSym], ms)
+		idx.definitions[classSym] = append(idx.definitions[classSym], s)
 
-		if m.typeSym != "" {
-			idx.symbolType[memberSym] = idx.intern(m.typeSym)
+		// typeBySimpleName index.
+		name := strings.ToLower(cs.className)
+		idx.typeBySimpleName[name] = append(idx.typeBySimpleName[name], s)
+	}
+
+	// Merge parent types if not already set (SemanticDB may or may not have them).
+	if len(idx.childToParents[classSym]) == 0 {
+		for _, parent := range cs.parents {
+			parentSym := idx.intern(parent)
+			idx.implementors[parentSym] = append(idx.implementors[parentSym], classSym)
+			idx.childToParents[classSym] = append(idx.childToParents[classSym], parentSym)
 		}
 	}
 
-	return true
+	// Merge members if ownerMembers is empty (SemanticDB typically doesn't
+	// include members for external types).
+	if len(idx.ownerMembers[classSym]) == 0 {
+		for _, m := range cs.members {
+			memberSym := idx.intern(m.sym)
+			ms := &Symbol{
+				Name:      m.name,
+				Symbol:    memberSym,
+				Kind:      m.kind,
+				Signature: m.signature,
+			}
+			idx.definitions[memberSym] = append(idx.definitions[memberSym], ms)
+			idx.ownerMembers[classSym] = append(idx.ownerMembers[classSym], ms)
+
+			if m.typeSym != "" {
+				idx.symbolType[memberSym] = idx.intern(m.typeSym)
+			}
+		}
+	}
+
+	return !alreadyDefined
 }

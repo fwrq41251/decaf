@@ -26,20 +26,22 @@ func (idx *Index) Definition(uri string, line, character int) []Symbol {
 
 	defs := idx.definitions[sym]
 
-	// If it's an internal symbol with definitions, return them.
+	// If it's an internal symbol with definitions that have source locations, return them.
 	if len(defs) > 0 {
 		result := deduplicateSymbols(copySymbols(defs))
-		idx.mu.RUnlock()
-		return result
+		if len(result) > 0 {
+			idx.mu.RUnlock()
+			return result
+		}
 	}
 
-	// It's a possible external symbol. Release RLock before doing potential I/O in resolveExternalSymbol.
+	// No definitions with source locations — try external symbol resolution
+	// (JDK source, dependency source JARs).
 	jdkRoot := idx.jdkSourceRoot
 	depSources := idx.dependencySources
 	idx.mu.RUnlock()
 
 	if jdkRoot != "" || len(depSources) > 0 {
-		// Fallback for external symbols (JDK/Dependencies).
 		if ext := idx.resolveExternalSymbol(sym); ext != nil {
 			return []Symbol{*ext}
 		}
@@ -193,24 +195,37 @@ func (idx *Index) CompletionSymbols(uri string, prefix string) []Symbol {
 	prefix = strings.ToLower(prefix)
 	relURI := idx.toRelativeURI(uri)
 
-	var sameFile []Symbol
-	var otherFile []Symbol
+	// Collect types and non-types separately so we can prioritize type names.
+	var sameFileTypes, sameFileOther []Symbol
+	var otherTypes, otherOther []Symbol
 	for _, defs := range idx.definitions {
 		for _, d := range defs {
 			if !strings.HasPrefix(strings.ToLower(d.Name), prefix) {
 				continue
 			}
+			isType := isTypeKind(d.Kind)
 			if d.URI == relURI {
-				sameFile = append(sameFile, *d)
+				if isType {
+					sameFileTypes = append(sameFileTypes, *d)
+				} else {
+					sameFileOther = append(sameFileOther, *d)
+				}
 			} else {
-				otherFile = append(otherFile, *d)
+				if isType {
+					otherTypes = append(otherTypes, *d)
+				} else {
+					otherOther = append(otherOther, *d)
+				}
 			}
 		}
 	}
 
-	result := make([]Symbol, 0, len(sameFile)+len(otherFile))
-	result = append(result, sameFile...)
-	result = append(result, otherFile...)
+	// Priority: same-file types > other types > same-file members > other members.
+	result := make([]Symbol, 0, len(sameFileTypes)+len(otherTypes)+len(sameFileOther)+len(otherOther))
+	result = append(result, sameFileTypes...)
+	result = append(result, otherTypes...)
+	result = append(result, sameFileOther...)
+	result = append(result, otherOther...)
 
 	// Cap at 100 results.
 	if len(result) > 100 {

@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/fwrq41251/decaf/internal/index"
@@ -160,6 +164,8 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 				}
 			}
 		}
+		// Collect JDK jmod files for indexing (JDK 9+).
+		classpathJARs = append(classpathJARs, discoverJDKJmods(h.logger, sourceRoot)...)
 
 		if ctx.Err() != nil {
 			prog.end("cancelled")
@@ -250,4 +256,36 @@ func (h *Handler) registerFileWatchers() {
 		return
 	}
 	h.logger.Println("registered file watcher for **/*.java")
+}
+
+// discoverJDKJmods finds JDK jmod files (JDK 9+) by detecting JAVA_HOME.
+func discoverJDKJmods(logger *log.Logger, sourceRoot string) []string {
+	javaHome := os.Getenv("JAVA_HOME")
+	if javaHome == "" {
+		if path, err := exec.LookPath("java"); err == nil {
+			if realPath, err := filepath.EvalSymlinks(path); err == nil {
+				javaHome = filepath.Dir(filepath.Dir(realPath))
+			}
+		}
+	}
+	if javaHome == "" {
+		return nil
+	}
+
+	jmodsDir := filepath.Join(javaHome, "jmods")
+	entries, err := os.ReadDir(jmodsDir)
+	if err != nil {
+		return nil
+	}
+
+	var jmods []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".jmod") {
+			jmods = append(jmods, filepath.Join(jmodsDir, e.Name()))
+		}
+	}
+	if len(jmods) > 0 {
+		logger.Printf("discovered %d JDK jmod files in %s", len(jmods), jmodsDir)
+	}
+	return jmods
 }
