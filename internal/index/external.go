@@ -15,57 +15,76 @@ import (
 
 func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 	idx.logger.Printf("Resolving external symbol: %s", sym)
-	// Simple mapping for JDK/Dependency symbols.
-	// Format: "java/lang/String#" -> "java/lang/String.java"
-	// Format: "org/springframework/util/StringUtils#hasText()." -> "org/springframework/util/StringUtils.java"
 
-	parts := strings.Split(sym, "#")
-	if len(parts) == 0 {
-		return nil
-	}
-	relPath := parts[0] + ".java"
-
-	// Check cache first (sync.Map is thread-safe).
-	if cachedPath, ok := idx.externalCache.Load(relPath); ok {
-		return idx.createExternalSymbol(sym, cachedPath.(string))
+	// Clean the symbol: strip trailing SemanticDB markers.
+	cleanSym := strings.TrimRight(sym, "#.:().")
+	if idx := strings.Index(cleanSym, "("); idx != -1 {
+		cleanSym = cleanSym[:idx]
 	}
 
-	// Read JDK root and dependency sources under a short RLock.
+	// Iteratively probe for the source file by stripping segments from the end.
+	// This handles nested classes like java/util/Map.Entry (in Map.java) or
+	// com/example/Outer#Inner (in Outer.java).
+	parts := strings.FieldsFunc(cleanSym, func(r rune) bool {
+		return r == '/' || r == '.' || r == '#'
+	})
+
+	// Read JDK root and dependency sources once.
 	idx.mu.RLock()
 	jdkRoot := idx.jdkSourceRoot
 	depSources := make([]string, len(idx.dependencySources))
 	copy(depSources, idx.dependencySources)
 	idx.mu.RUnlock()
 
-	// 1. Search in JDK source if available.
-	if jdkRoot != "" {
-		info, err := os.Stat(jdkRoot)
-		if err == nil {
-			if info.IsDir() {
-				// Already extracted or manually set directory.
-				foundPath := filepath.Join(jdkRoot, relPath)
-				if _, err := os.Stat(foundPath); err == nil {
-					idx.externalCache.Store(relPath, foundPath)
-					return idx.createExternalSymbol(sym, foundPath)
-				}
-			} else if strings.HasSuffix(jdkRoot, ".zip") || strings.HasSuffix(jdkRoot, ".jar") {
-				// It's a zip file (like src.zip). Extract on demand.
-				if foundPath := idx.findAndExtractFromJar(jdkRoot, relPath); foundPath != "" {
-					idx.externalCache.Store(relPath, foundPath)
-					return idx.createExternalSymbol(sym, foundPath)
-				}
+	// Probing from most specific (all parts) to least specific (at least one part).
+	// E.g., for com/example/Outer/Inner, try:
+	// 1. com/example/Outer/Inner.java
+	// 2. com/example/Outer.java
+	// 3. com.java (unlikely but safe)
+	for i := len(parts); i > 0; i-- {
+		relPath := strings.Join(parts[:i], "/") + ".java"
+
+		// Check cache.
+		if cachedPath, ok := idx.externalCache.Load(relPath); ok {
+			return idx.createExternalSymbol(sym, cachedPath.(string))
+		}
+
+		// Search in JDK.
+		if jdkRoot != "" {
+			if s := idx.tryResolveFromContainer(jdkRoot, relPath, sym); s != nil {
+				return s
+			}
+		}
+
+		// Search in dependencies.
+		for _, jar := range depSources {
+			if s := idx.tryResolveFromContainer(jar, relPath, sym); s != nil {
+				return s
 			}
 		}
 	}
 
-	// 2. Search in third-party dependency JARs.
-	for _, jar := range depSources {
-		if foundPath := idx.findAndExtractFromJar(jar, relPath); foundPath != "" {
-			idx.externalCache.Store(relPath, foundPath)
-			return idx.createExternalSymbol(sym, foundPath)
-		}
+	return nil
+}
+
+func (idx *Index) tryResolveFromContainer(container, relPath, originalSym string) *Symbol {
+	info, err := os.Stat(container)
+	if err != nil {
+		return nil
 	}
 
+	if info.IsDir() {
+		foundPath := filepath.Join(container, relPath)
+		if _, err := os.Stat(foundPath); err == nil {
+			idx.externalCache.Store(relPath, foundPath)
+			return idx.createExternalSymbol(originalSym, foundPath)
+		}
+	} else if strings.HasSuffix(container, ".zip") || strings.HasSuffix(container, ".jar") {
+		if foundPath := idx.findAndExtractFromJar(container, relPath); foundPath != "" {
+			idx.externalCache.Store(relPath, foundPath)
+			return idx.createExternalSymbol(originalSym, foundPath)
+		}
+	}
 	return nil
 }
 
