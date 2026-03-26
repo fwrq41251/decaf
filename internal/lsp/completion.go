@@ -71,7 +71,18 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 		if !staticAccess && m.IsStatic {
 			continue
 		}
-		item := methodCompletionItem(m.Name, sdbKindToCompletionKind(m.Kind), m.Signature)
+		// Build sortText: exact case match first, then fields before methods.
+		sortPrefix := "1" // case-insensitive match
+		if cctx.Prefix != "" && strings.HasPrefix(m.Name, cctx.Prefix) {
+			sortPrefix = "0" // exact case match
+		}
+		kind := sdbKindToCompletionKind(m.Kind)
+		kindOrder := "1" // methods
+		if kind == CompletionKindField || kind == CompletionKindProperty {
+			kindOrder = "0" // fields first
+		}
+		sortText := sortPrefix + kindOrder + m.Name
+		item := methodCompletionItem(m.Name, kind, m.Signature, sortText)
 		items = append(items, item)
 		if len(items) >= 100 {
 			break
@@ -274,7 +285,15 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	seen := make(map[string]struct{})
 	var items []CompletionItem
 
-	addItem := func(name string, kind int, detail string) {
+	// casePrefix returns "0" if name starts with the original-case prefix, "1" otherwise.
+	casePrefix := func(name string) string {
+		if cctx.Prefix != "" && strings.HasPrefix(name, cctx.Prefix) {
+			return "0"
+		}
+		return "1"
+	}
+
+	addItem := func(name string, kind int, detail string, scopeOrder string) {
 		if _, ok := seen[name]; ok {
 			return
 		}
@@ -284,6 +303,8 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			Kind:       kind,
 			InsertText: name,
 			Detail:     detail,
+			SortText:   casePrefix(name) + scopeOrder + name,
+			FilterText: name,
 		})
 	}
 
@@ -291,29 +312,29 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		return strings.HasPrefix(strings.ToLower(name), prefix)
 	}
 
-	// 1. Local variables.
+	// 1. Local variables (scope "0").
 	for i := len(cctx.Locals) - 1; i >= 0; i-- {
 		l := cctx.Locals[i]
 		if matchPrefix(l.Name) {
-			addItem(l.Name, SymbolKindVariable, l.Type.String())
+			addItem(l.Name, SymbolKindVariable, l.Type.String(), "0")
 		}
 	}
 
-	// 2. Method parameters.
+	// 2. Method parameters (scope "1").
 	for _, p := range cctx.Params {
 		if matchPrefix(p.Name) {
-			addItem(p.Name, SymbolKindVariable, p.Type.String())
+			addItem(p.Name, SymbolKindVariable, p.Type.String(), "1")
 		}
 	}
 
-	// 3. Class fields.
+	// 3. Class fields (scope "2").
 	for _, f := range cctx.ClassFields {
 		if matchPrefix(f.Name) {
-			addItem(f.Name, SymbolKindField, f.Type.String())
+			addItem(f.Name, SymbolKindField, f.Type.String(), "2")
 		}
 	}
 
-	// 4. Class methods.
+	// 4. Class methods (scope "3").
 	for _, m := range cctx.ClassMethods {
 		if matchPrefix(m) {
 			if _, ok := seen[m]; ok {
@@ -325,6 +346,8 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 				Kind:             SymbolKindMethod,
 				InsertText:       m + "($1)$0",
 				InsertTextFormat: InsertTextFormatSnippet,
+				SortText:         casePrefix(m) + "3" + m,
+				FilterText:       m,
 			})
 		}
 	}
@@ -348,11 +371,26 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		}
 		seen[s.Name] = struct{}{}
 
+		scopeOrder := "7" // default: other symbol
+		if s.SameFile {
+			if isTypeCompletionKind(sdbKindToCompletionKind(s.Kind)) {
+				scopeOrder = "4" // same-file type
+			} else {
+				scopeOrder = "6" // same-file other
+			}
+		} else {
+			if isTypeCompletionKind(sdbKindToCompletionKind(s.Kind)) {
+				scopeOrder = "5" // other type
+			}
+		}
+
 		item := CompletionItem{
 			Label:      s.Name,
 			Kind:       sdbKindToCompletionKind(s.Kind),
 			InsertText: s.Name,
 			Detail:     detail,
+			SortText:   casePrefix(s.Name) + scopeOrder + s.Name,
+			FilterText: s.Name,
 		}
 
 		// Auto-import for type symbols from other packages.
@@ -373,11 +411,13 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 
 // methodCompletionItem builds a CompletionItem for a member (method or field).
 // Methods get snippet format with parentheses; fields get plain text.
-func methodCompletionItem(name string, kind int, sig *index.SignatureInfo) CompletionItem {
+func methodCompletionItem(name string, kind int, sig *index.SignatureInfo, sortText string) CompletionItem {
 	item := CompletionItem{
 		Label:      name,
 		Kind:       kind,
 		InsertText: name,
+		SortText:   sortText,
+		FilterText: name,
 	}
 	if sig != nil {
 		item.Detail = sig.Label
@@ -391,6 +431,10 @@ func methodCompletionItem(name string, kind int, sig *index.SignatureInfo) Compl
 		item.InsertTextFormat = InsertTextFormatSnippet
 	}
 	return item
+}
+
+func isTypeCompletionKind(kind int) bool {
+	return kind == CompletionKindClass || kind == CompletionKindInterface || kind == CompletionKindEnum
 }
 
 func (h *Handler) handleSignatureHelp(ctx context.Context, params json.RawMessage) (any, error) {

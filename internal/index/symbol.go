@@ -20,6 +20,7 @@ type Symbol struct {
 	Range     *sdb.Range
 	Signature *SignatureInfo
 	IsStatic  bool
+	SameFile  bool
 }
 
 // Occurrence represents a symbol occurrence (reference or definition).

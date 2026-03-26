@@ -205,10 +205,12 @@ func (idx *Index) CompletionSymbols(uri string, prefix string) []Symbol {
 			}
 			isType := isTypeKind(d.Kind)
 			if d.URI == relURI {
+				s := *d
+				s.SameFile = true
 				if isType {
-					sameFileTypes = append(sameFileTypes, *d)
+					sameFileTypes = append(sameFileTypes, s)
 				} else {
-					sameFileOther = append(sameFileOther, *d)
+					sameFileOther = append(sameFileOther, s)
 				}
 			} else {
 				if isType {

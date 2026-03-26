@@ -12,7 +12,7 @@ func TestMethodCompletionItem(t *testing.T) {
 		Label:  "void doWork(String name)",
 		Params: []string{"String name"},
 	}
-	item := methodCompletionItem("doWork", CompletionKindMethod, sig)
+	item := methodCompletionItem("doWork", CompletionKindMethod, sig, "")
 	if item.InsertText != "doWork($1)$0" {
 		t.Errorf("method with params: InsertText = %q, want %q", item.InsertText, "doWork($1)$0")
 	}
@@ -24,7 +24,7 @@ func TestMethodCompletionItem(t *testing.T) {
 	sigNoParams := &index.SignatureInfo{
 		Label: "int getCount()",
 	}
-	item2 := methodCompletionItem("getCount", CompletionKindMethod, sigNoParams)
+	item2 := methodCompletionItem("getCount", CompletionKindMethod, sigNoParams, "")
 	if item2.InsertText != "getCount()$0" {
 		t.Errorf("method no params: InsertText = %q, want %q", item2.InsertText, "getCount()$0")
 	}
@@ -33,7 +33,7 @@ func TestMethodCompletionItem(t *testing.T) {
 	}
 
 	// Field (non-method kind): plain text, no parens.
-	item3 := methodCompletionItem("value", CompletionKindField, nil)
+	item3 := methodCompletionItem("value", CompletionKindField, nil, "")
 	if item3.InsertText != "value" {
 		t.Errorf("field: InsertText = %q, want %q", item3.InsertText, "value")
 	}
