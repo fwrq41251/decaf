@@ -462,6 +462,7 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			Kind:      sym.Kind,
 			URI:       uri,
 			Signature: buildSignatureInfo(sym.DisplayName, sym.Signature),
+			IsStatic:  sym.Properties&int32(sdb.SymbolInformation_STATIC) != 0,
 		}
 		idx.definitions[symStr] = append(idx.definitions[symStr], s)
 		idx.fileSymbols[uri] = append(idx.fileSymbols[uri], s)

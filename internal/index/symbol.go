@@ -19,6 +19,7 @@ type Symbol struct {
 	URI       string // relative URI from SemanticDB
 	Range     *sdb.Range
 	Signature *SignatureInfo
+	IsStatic  bool
 }
 
 // Occurrence represents a symbol occurrence (reference or definition).

@@ -295,12 +295,20 @@ type CompletionList struct {
 }
 
 type CompletionItem struct {
-	Label         string         `json:"label"`
-	Kind          int            `json:"kind,omitempty"`
-	Detail        string         `json:"detail,omitempty"`
-	Documentation *MarkupContent `json:"documentation,omitempty"`
-	InsertText    string         `json:"insertText,omitempty"`
+	Label               string         `json:"label"`
+	Kind                int            `json:"kind,omitempty"`
+	Detail              string         `json:"detail,omitempty"`
+	Documentation       *MarkupContent `json:"documentation,omitempty"`
+	InsertText          string         `json:"insertText,omitempty"`
+	InsertTextFormat    int            `json:"insertTextFormat,omitempty"`
+	AdditionalTextEdits []TextEdit     `json:"additionalTextEdits,omitempty"`
 }
+
+// InsertTextFormat constants.
+const (
+	InsertTextFormatPlainText = 1
+	InsertTextFormatSnippet   = 2
+)
 
 // CompletionItemKind constants.
 const (

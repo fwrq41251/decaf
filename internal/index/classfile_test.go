@@ -409,6 +409,131 @@ func TestIndexClasspathJARs(t *testing.T) {
 	idx.IndexClasspathJARs([]string{jarPath})
 }
 
+func TestIndexClasspathJARs_MergesWithSemanticDB(t *testing.T) {
+	// Simulate SemanticDB having partial data (1 method) and the classfile
+	// having the full list (3 methods including the 1 from SemanticDB).
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	defer idx.Close()
+
+	// Pre-populate ownerMembers with 1 method from SemanticDB.
+	sdbMethod := &Symbol{
+		Name:   "getValue",
+		Symbol: "com/example/Foo#getValue().",
+		Kind:   sdb.SymbolInformation_METHOD,
+	}
+	idx.ownerMembers["com/example/Foo#"] = []*Symbol{sdbMethod}
+	idx.definitions["com/example/Foo#"] = []*Symbol{{
+		Name:   "Foo",
+		Symbol: "com/example/Foo#",
+		Kind:   sdb.SymbolInformation_CLASS,
+		URI:    "src/Foo.java",
+	}}
+
+	// Build JAR with same class having 3 methods (getValue, setValue, reset).
+	jarPath := filepath.Join(tmpDir, "lib.jar")
+	fooClass := writeClass(t,
+		"com/example/Foo",
+		"java/lang/Object",
+		accPublic,
+		nil,
+		nil,
+		[]classMember{
+			{accPublic, "getValue", "()I"},
+			{accPublic, "setValue", "(I)V"},
+			{accPublic, "reset", "()V"},
+		},
+	)
+	f, err := os.Create(jarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, _ := zw.Create("com/example/Foo.class")
+	w.Write(fooClass)
+	zw.Close()
+	f.Close()
+
+	idx.IndexClasspathJARs([]string{jarPath})
+
+	// After merge, ownerMembers should have all 3 methods:
+	// the 1 from SemanticDB + 2 new from classfile (getValue is deduped).
+	members := idx.ownerMembers["com/example/Foo#"]
+	if len(members) != 3 {
+		names := make([]string, len(members))
+		for i, m := range members {
+			names[i] = m.Name
+		}
+		t.Fatalf("expected 3 members, got %d: %v", len(members), names)
+	}
+
+	nameSet := make(map[string]bool)
+	for _, m := range members {
+		nameSet[m.Name] = true
+	}
+	for _, want := range []string{"getValue", "setValue", "reset"} {
+		if !nameSet[want] {
+			t.Errorf("missing member %q in ownerMembers", want)
+		}
+	}
+}
+
+func TestIndexClasspathJARs_StaticFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+	jarPath := filepath.Join(tmpDir, "lib.jar")
+
+	fooClass := writeClass(t,
+		"com/example/Foo",
+		"java/lang/Object",
+		accPublic,
+		nil,
+		[]classMember{
+			{accPublic | accStatic, "CONSTANT", "I"},
+			{accPublic, "value", "I"},
+		},
+		[]classMember{
+			{accPublic | accStatic, "create", "()Lcom/example/Foo;"},
+			{accPublic, "getValue", "()I"},
+		},
+	)
+
+	f, err := os.Create(jarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, _ := zw.Create("com/example/Foo.class")
+	w.Write(fooClass)
+	zw.Close()
+	f.Close()
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	defer idx.Close()
+
+	idx.IndexClasspathJARs([]string{jarPath})
+
+	members := idx.ownerMembers["com/example/Foo#"]
+	staticMap := make(map[string]bool)
+	for _, m := range members {
+		staticMap[m.Name] = m.IsStatic
+	}
+
+	if !staticMap["CONSTANT"] {
+		t.Error("CONSTANT should be static")
+	}
+	if staticMap["value"] {
+		t.Error("value should not be static")
+	}
+	if !staticMap["create"] {
+		t.Error("create should be static")
+	}
+	if staticMap["getValue"] {
+		t.Error("getValue should not be static")
+	}
+}
+
 func TestIndexClasspathJARs_ProjectTakesPriority(t *testing.T) {
 	// Simulate a class that exists in both .semanticdb (project) and JAR.
 	// Project definitions should not be overwritten.

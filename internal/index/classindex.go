@@ -78,6 +78,7 @@ type memberSymbol struct {
 	kind      sdb.SymbolInformation_Kind
 	typeSym   string         // return type / field type as SemanticDB symbol
 	signature *SignatureInfo // human-readable signature
+	isStatic  bool
 }
 
 // scanJARsConcurrently reads all .class files from the given JARs in parallel,
@@ -220,6 +221,7 @@ func convertClassFile(cf *classFile) *classSymbols {
 			name: f.Name,
 			kind: sdb.SymbolInformation_FIELD,
 			typeSym: typeSym,
+			isStatic: f.AccessFlags&accStatic != 0,
 			signature: &SignatureInfo{
 				Label: fmt.Sprintf("%s: %s", f.Name, descriptorToSimpleName(f.Descriptor)),
 			},
@@ -257,6 +259,7 @@ func convertClassFile(cf *classFile) *classSymbols {
 			name:      methodName,
 			kind:      methodKind,
 			typeSym:   retSym,
+			isStatic:  m.AccessFlags&accStatic != 0,
 			signature: sig,
 		})
 	}
@@ -303,23 +306,31 @@ func (idx *Index) mergeClassSymbols(cs classSymbols) bool {
 		}
 	}
 
-	// Merge members if ownerMembers is empty (SemanticDB typically doesn't
-	// include members for external types).
-	if len(idx.ownerMembers[classSym]) == 0 {
-		for _, m := range cs.members {
-			memberSym := idx.intern(m.sym)
-			ms := &Symbol{
-				Name:      m.name,
-				Symbol:    memberSym,
-				Kind:      m.kind,
-				Signature: m.signature,
-			}
-			idx.definitions[memberSym] = append(idx.definitions[memberSym], ms)
-			idx.ownerMembers[classSym] = append(idx.ownerMembers[classSym], ms)
+	// Merge members from classfile. SemanticDB may have already added some
+	// members (only those referenced by project code), so we deduplicate
+	// by member name to avoid duplicates while ensuring the full method list
+	// from the classfile is available.
+	existingMembers := make(map[string]struct{})
+	for _, m := range idx.ownerMembers[classSym] {
+		existingMembers[m.Name] = struct{}{}
+	}
+	for _, m := range cs.members {
+		if _, ok := existingMembers[m.name]; ok {
+			continue
+		}
+		memberSym := idx.intern(m.sym)
+		ms := &Symbol{
+			Name:      m.name,
+			Symbol:    memberSym,
+			Kind:      m.kind,
+			Signature: m.signature,
+			IsStatic:  m.isStatic,
+		}
+		idx.definitions[memberSym] = append(idx.definitions[memberSym], ms)
+		idx.ownerMembers[classSym] = append(idx.ownerMembers[classSym], ms)
 
-			if m.typeSym != "" {
-				idx.symbolType[memberSym] = idx.intern(m.typeSym)
-			}
+		if m.typeSym != "" {
+			idx.symbolType[memberSym] = idx.intern(m.typeSym)
 		}
 	}
 

@@ -327,6 +327,55 @@ public class App {}
 	}
 }
 
+func TestComputeImportEdit(t *testing.T) {
+	source := []byte(`package com.example;
+
+import java.util.List;
+import java.util.*;
+
+public class App {}
+`)
+
+	imports := []ImportSpec{
+		{Path: "java.util.List"},
+		{Path: "java.util.*", Wildcard: true},
+	}
+	pkg := "com.example"
+
+	// Basic case: class not yet imported should produce an edit.
+	edit := computeImportEdit(source, imports, pkg, "org.apache.commons.Lang")
+	if edit == nil {
+		t.Fatal("expected non-nil edit for org.apache.commons.Lang")
+	}
+	if !containsStr(edit.NewText, "import org.apache.commons.Lang;") {
+		t.Errorf("edit text should contain import statement, got: %s", edit.NewText)
+	}
+
+	// Already-imported case: returns nil.
+	edit = computeImportEdit(source, imports, pkg, "java.util.List")
+	if edit != nil {
+		t.Error("expected nil edit for already-imported java.util.List")
+	}
+
+	// java.lang case: returns nil (no import needed).
+	edit = computeImportEdit(source, imports, pkg, "java.lang.String")
+	if edit != nil {
+		t.Error("expected nil edit for java.lang.String")
+	}
+
+	// Same-package case: returns nil.
+	edit = computeImportEdit(source, imports, pkg, "com.example.Other")
+	if edit != nil {
+		t.Error("expected nil edit for same-package class")
+	}
+
+	// Wildcard-imported case: returns nil.
+	edit = computeImportEdit(source, imports, pkg, "java.util.Map")
+	if edit != nil {
+		t.Error("expected nil edit for wildcard-covered java.util.Map")
+	}
+}
+
 func TestParseImportBlock(t *testing.T) {
 	tests := []struct {
 		name       string

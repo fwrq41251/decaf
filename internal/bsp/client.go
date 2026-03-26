@@ -238,12 +238,22 @@ func (c *Client) Shutdown(ctx context.Context) error {
 
 	if c.cmd != nil && c.exitErr != nil {
 		select {
-		case err := <-c.exitErr:
-			return err
+		case <-c.exitErr:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
+
+	// Stop the Bloop daemon to free resources.
+	if bloopExe, err := exec.LookPath("bloop"); err == nil {
+		cmd := exec.CommandContext(ctx, bloopExe, "exit")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			c.logger.Printf("bloop exit failed: %v (output: %s)", err, string(out))
+		} else {
+			c.logger.Println("bloop daemon stopped")
+		}
+	}
+
 	return nil
 }
 

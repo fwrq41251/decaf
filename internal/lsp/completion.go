@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/fwrq41251/decaf/internal/index"
+	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
 	slog "github.com/smacker/go-tree-sitter"
 )
 
@@ -30,10 +31,11 @@ func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) 
 
 	var items []CompletionItem
 
+	contentBytes := []byte(content)
 	if cctx.Kind == CompletionDot {
 		items = h.completeDot(cctx, p.TextDocument.URI)
 	} else {
-		items = h.completeLexical(cctx, p.TextDocument.URI)
+		items = h.completeLexical(cctx, p.TextDocument.URI, contentBytes)
 	}
 
 	h.logger.Printf("completion at %s:%d:%d kind=%d prefix=%q receiver=%q -> %d items",
@@ -47,13 +49,8 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
 
 	// Resolve the receiver expression to a type with generic arguments.
-	typeExpr := h.resolveReceiverTypeExpr(cctx, resolver)
-	if typeExpr == nil {
-		// Fallback: maybe it's a static access on a class name.
-		if sym := resolver.resolve(cctx.Receiver); sym != "" {
-			typeExpr = &index.TypeExpr{Sym: sym}
-		}
-	}
+	// Also track whether this is a static access (e.g. "Objects.") vs instance access (e.g. "obj.").
+	typeExpr, staticAccess := h.resolveReceiverTypeExpr(cctx, resolver)
 	if typeExpr == nil {
 		return nil
 	}
@@ -67,14 +64,14 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 		if prefix != "" && !strings.HasPrefix(strings.ToLower(m.Name), prefix) {
 			continue
 		}
-		item := CompletionItem{
-			Label:      m.Name,
-			Kind:       sdbKindToCompletionKind(m.Kind),
-			InsertText: m.Name,
+		// Filter by static/instance context.
+		if staticAccess && !m.IsStatic {
+			continue
 		}
-		if m.Signature != nil {
-			item.Detail = m.Signature.Label
+		if !staticAccess && m.IsStatic {
+			continue
 		}
+		item := methodCompletionItem(m.Name, sdbKindToCompletionKind(m.Kind), m.Signature)
 		items = append(items, item)
 		if len(items) >= 100 {
 			break
@@ -84,75 +81,79 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 }
 
 // resolveReceiverTypeExpr resolves the type of a receiver expression, preserving generic arguments.
-func (h *Handler) resolveReceiverTypeExpr(cctx *CompletionCtx, resolver *typeResolver) *index.TypeExpr {
+// Returns the resolved type and whether this is a static access (class name before the dot).
+func (h *Handler) resolveReceiverTypeExpr(cctx *CompletionCtx, resolver *typeResolver) (*index.TypeExpr, bool) {
 	recv := cctx.Receiver
 
 	// Handle "this" → enclosing class.
 	if recv == "this" {
 		if sym := resolver.resolve(cctx.EnclosingClass); sym != "" {
-			return &index.TypeExpr{Sym: sym}
+			return &index.TypeExpr{Sym: sym}, false
 		}
-		return nil
+		return nil, false
 	}
 	// Handle "super" → parent of enclosing class.
 	if recv == "super" {
 		classSym := resolver.resolve(cctx.EnclosingClass)
 		if classSym != "" {
 			if pts := h.idx.ParentTypesOf(classSym); len(pts) > 0 {
-				return pts[0]
+				return pts[0], false
 			}
 			// Fallback to old ParentsOf.
 			if parents := h.idx.ParentsOf(classSym); len(parents) > 0 {
-				return &index.TypeExpr{Sym: parents[0]}
+				return &index.TypeExpr{Sym: parents[0]}, false
 			}
 		}
-		return nil
+		return nil, false
 	}
 
 	// Handle chained dot access (e.g. "foo.bar"): resolve left-to-right.
 	parts := strings.Split(recv, ".")
 	if len(parts) == 0 {
-		return nil
+		return nil, false
 	}
 
 	// Resolve the first part.
-	typeExpr := h.resolveIdentifierTypeExpr(parts[0], cctx, resolver)
+	typeExpr, staticAccess := h.resolveIdentifierTypeExpr(parts[0], cctx, resolver)
 
 	// Resolve each subsequent part as a field/method access.
+	// Once we resolve through a member, it's no longer a static access.
 	for i := 1; i < len(parts) && typeExpr != nil; i++ {
 		typeExpr = h.resolveMemberTypeExpr(typeExpr, parts[i])
+		staticAccess = false
 	}
 
-	return typeExpr
+	return typeExpr, staticAccess
 }
 
 // resolveIdentifierTypeExpr resolves the type of a simple identifier, preserving generic arguments.
 // Searches locals → params → fields (Tree-sitter source, may have "List<String>"),
-// then falls back to SemanticDB symbolDeclType for class fields.
-func (h *Handler) resolveIdentifierTypeExpr(name string, cctx *CompletionCtx, resolver *typeResolver) *index.TypeExpr {
+// then falls back to class name resolution (static access).
+// Returns the resolved type and whether this is a static access (class name, not a variable).
+func (h *Handler) resolveIdentifierTypeExpr(name string, cctx *CompletionCtx, resolver *typeResolver) (*index.TypeExpr, bool) {
 	// Search locals.
 	for i := len(cctx.Locals) - 1; i >= 0; i-- {
 		if cctx.Locals[i].Name == name {
-			return resolver.resolveParameterized(cctx.Locals[i].Type)
+			return resolver.resolveParameterized(cctx.Locals[i].Type), false
 		}
 	}
 	// Search params.
 	for _, p := range cctx.Params {
 		if p.Name == name {
-			return resolver.resolveParameterized(p.Type)
+			return resolver.resolveParameterized(p.Type), false
 		}
 	}
 	// Search class fields.
 	for _, f := range cctx.ClassFields {
 		if f.Name == name {
-			return resolver.resolveParameterized(f.Type)
+			return resolver.resolveParameterized(f.Type), false
 		}
 	}
 	// Maybe it's a class name (static access).
 	if sym := resolver.resolve(name); sym != "" {
-		return &index.TypeExpr{Sym: sym}
+		return &index.TypeExpr{Sym: sym}, true
 	}
-	return nil
+	return nil, false
 }
 
 // resolveMemberTypeExpr resolves the type of a member on a given type,
@@ -264,7 +265,7 @@ func applySubstitution(te *index.TypeExpr, subst map[string]*index.TypeExpr) *in
 }
 
 // completeLexical handles bare identifier completion (e.g. "pri").
-func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string) []CompletionItem {
+func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content []byte) []CompletionItem {
 	prefix := strings.ToLower(cctx.Prefix)
 	if prefix == "" {
 		return nil
@@ -315,7 +316,16 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string) []Complet
 	// 4. Class methods.
 	for _, m := range cctx.ClassMethods {
 		if matchPrefix(m) {
-			addItem(m, SymbolKindMethod, "")
+			if _, ok := seen[m]; ok {
+				continue
+			}
+			seen[m] = struct{}{}
+			items = append(items, CompletionItem{
+				Label:            m,
+				Kind:             SymbolKindMethod,
+				InsertText:       m + "($1)$0",
+				InsertTextFormat: InsertTextFormatSnippet,
+			})
 		}
 	}
 
@@ -333,10 +343,54 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string) []Complet
 		if s.Signature != nil {
 			detail = s.Signature.Label
 		}
-		addItem(s.Name, sdbKindToCompletionKind(s.Kind), detail)
+		if _, ok := seen[s.Name]; ok {
+			continue
+		}
+		seen[s.Name] = struct{}{}
+
+		item := CompletionItem{
+			Label:      s.Name,
+			Kind:       sdbKindToCompletionKind(s.Kind),
+			InsertText: s.Name,
+			Detail:     detail,
+		}
+
+		// Auto-import for type symbols from other packages.
+		if s.Kind == sdb.SymbolInformation_CLASS || s.Kind == sdb.SymbolInformation_INTERFACE {
+			if fqn := fqnFromSymbol(s.Symbol); fqn != "" {
+				if edit := computeImportEdit(content, cctx.Imports, cctx.Package, fqn); edit != nil {
+					item.AdditionalTextEdits = []TextEdit{*edit}
+					item.Detail = fqn
+				}
+			}
+		}
+
+		items = append(items, item)
 	}
 
 	return items
+}
+
+// methodCompletionItem builds a CompletionItem for a member (method or field).
+// Methods get snippet format with parentheses; fields get plain text.
+func methodCompletionItem(name string, kind int, sig *index.SignatureInfo) CompletionItem {
+	item := CompletionItem{
+		Label:      name,
+		Kind:       kind,
+		InsertText: name,
+	}
+	if sig != nil {
+		item.Detail = sig.Label
+	}
+	if kind == CompletionKindMethod || kind == CompletionKindConstructor {
+		if sig != nil && len(sig.Params) > 0 {
+			item.InsertText = name + "($1)$0"
+		} else {
+			item.InsertText = name + "()$0"
+		}
+		item.InsertTextFormat = InsertTextFormatSnippet
+	}
+	return item
 }
 
 func (h *Handler) handleSignatureHelp(ctx context.Context, params json.RawMessage) (any, error) {

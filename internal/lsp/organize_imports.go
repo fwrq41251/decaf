@@ -397,6 +397,89 @@ func addImportEdit(fileURI string, overlay string, fqn string) *WorkspaceEdit {
 	}
 }
 
+// computeImportEdit returns a TextEdit that inserts an import statement for the
+// given FQN, or nil if the import already exists or is unnecessary (java.lang, same package).
+func computeImportEdit(content []byte, imports []ImportSpec, pkg string, fqn string) *TextEdit {
+	importPkg := packageFromFQN(fqn)
+	if importPkg == "" || importPkg == "java.lang" || importPkg == pkg {
+		return nil
+	}
+
+	// Check if already imported (explicit or wildcard).
+	for _, imp := range imports {
+		if imp.Static {
+			continue
+		}
+		if imp.Path == fqn {
+			return nil
+		}
+		if imp.Wildcard && strings.TrimSuffix(imp.Path, ".*") == importPkg {
+			return nil
+		}
+	}
+
+	tree, err := getTree(content)
+	if err != nil {
+		return nil
+	}
+	root := tree.RootNode()
+	block := parseImportBlock(root, content)
+
+	// Find the correct insertion point.
+	newKey := importSortKey(fqn)
+	insertIdx := len(block.imports)
+	for i, imp := range block.imports {
+		if importSortKey(imp) > newKey {
+			insertIdx = i
+			break
+		}
+	}
+
+	importLine := "import " + fqn + ";\n"
+
+	var newText string
+	if len(block.imports) == 0 && len(block.staticImports) == 0 {
+		newText = "\n" + importLine
+	} else {
+		newGroup := importGroup(fqn)
+		var sb strings.Builder
+		if insertIdx > 0 && importGroup(block.imports[insertIdx-1]) != newGroup {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(importLine)
+		if insertIdx < len(block.imports) && importGroup(block.imports[insertIdx]) != newGroup {
+			sb.WriteByte('\n')
+		}
+		newText = sb.String()
+	}
+
+	var insertLine int
+	if len(block.imports) == 0 && len(block.staticImports) == 0 {
+		insertLine = block.startLine
+	} else {
+		regularIdx := 0
+		insertLine = block.endLine
+		for i := 0; i < int(root.NamedChildCount()); i++ {
+			child := root.NamedChild(i)
+			if child.Type() == "import_declaration" {
+				spec := parseImport(child, content)
+				if !spec.Static && spec.Path != "" {
+					if regularIdx == insertIdx {
+						insertLine = int(child.StartPoint().Row)
+						break
+					}
+					regularIdx++
+				}
+			}
+		}
+	}
+
+	return &TextEdit{
+		Range:   Range{Start: Position{Line: insertLine, Character: 0}, End: Position{Line: insertLine, Character: 0}},
+		NewText: newText,
+	}
+}
+
 func findChildByType(n *slog.Node, nodeType string) *slog.Node {
 	for i := 0; i < int(n.NamedChildCount()); i++ {
 		child := n.NamedChild(i)

@@ -314,6 +314,50 @@ func TestTypeBySimpleName(t *testing.T) {
 	}
 }
 
+func TestSemanticDB_StaticFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Foo.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "com/example/Foo#", DisplayName: "Foo", Kind: sdb.SymbolInformation_CLASS},
+				{
+					Symbol:      "com/example/Foo#getInstance().",
+					DisplayName: "getInstance",
+					Kind:        sdb.SymbolInformation_METHOD,
+					Properties:  int32(sdb.SymbolInformation_STATIC),
+				},
+				{
+					Symbol:      "com/example/Foo#getName().",
+					DisplayName: "getName",
+					Kind:        sdb.SymbolInformation_METHOD,
+				},
+			},
+		}},
+	}
+	writeSDB(t, filepath.Join(sdbDir, "Foo.java.semanticdb"), docs)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	if err := idx.Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	members := idx.MembersOfType("com/example/Foo#")
+	staticMap := make(map[string]bool)
+	for _, m := range members {
+		staticMap[m.Name] = m.IsStatic
+	}
+
+	if !staticMap["getInstance"] {
+		t.Error("getInstance should have IsStatic=true")
+	}
+	if staticMap["getName"] {
+		t.Error("getName should have IsStatic=false")
+	}
+}
+
 func TestExtractOwner(t *testing.T) {
 	tests := []struct {
 		sym  string
