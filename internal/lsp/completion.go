@@ -10,6 +10,19 @@ import (
 	slog "github.com/smacker/go-tree-sitter"
 )
 
+var javaKeywords = []string{
+	"abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class", "const",
+	"continue", "default", "do", "double", "else", "enum", "extends", "final", "finally", "float",
+	"for", "goto", "if", "implements", "import", "instanceof", "int", "interface", "long", "native",
+	"new", "package", "private", "protected", "public", "return", "short", "static", "strictfp",
+	"super", "switch", "synchronized", "this", "throw", "throws", "transient", "try", "void",
+	"volatile", "while",
+}
+
+var javaLiterals = []string{
+	"true", "false", "null",
+}
+
 func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) (any, error) {
 	var p CompletionParams
 	if err := json.Unmarshal(params, &p); err != nil {
@@ -57,11 +70,11 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 
 	// Get members of the resolved type.
 	members := h.idx.MembersOfType(typeExpr.Sym)
-	prefix := strings.ToLower(cctx.Prefix)
+	query := cctx.Prefix
 
 	var items []CompletionItem
 	for _, m := range members {
-		if prefix != "" && !strings.HasPrefix(strings.ToLower(m.Name), prefix) {
+		if !index.FuzzyMatch(m.Name, query) {
 			continue
 		}
 		// Filter by static/instance context.
@@ -352,11 +365,24 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		}
 	}
 
+	// 5. Keywords and Literals (scope "8").
+	// Only suggest keywords in lexical completion.
+	for _, kw := range javaKeywords {
+		if matchPrefix(kw) {
+			addItem(kw, CompletionKindText, "keyword", "8")
+		}
+	}
+	for _, lit := range javaLiterals {
+		if matchPrefix(lit) {
+			addItem(lit, CompletionKindText, "literal", "8")
+		}
+	}
+
 	if len(items) >= 100 {
 		return items[:100]
 	}
 
-	// 5. Global type and symbol completion from the index.
+	// 6. Global type and symbol completion from the index.
 	symbols := h.idx.CompletionSymbols(fileURI, cctx.Prefix)
 	for _, s := range symbols {
 		if len(items) >= 100 {

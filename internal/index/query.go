@@ -186,13 +186,13 @@ func (idx *Index) SearchSymbols(query string) []Symbol {
 	return result
 }
 
-// CompletionSymbols returns symbols matching the given prefix for completion.
+// CompletionSymbols returns symbols matching the given query for completion.
 // Results from the same file are prioritized.
-func (idx *Index) CompletionSymbols(uri string, prefix string) []Symbol {
+func (idx *Index) CompletionSymbols(uri string, query string) []Symbol {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	prefix = strings.ToLower(prefix)
+	query = strings.ToLower(query)
 	relURI := idx.toRelativeURI(uri)
 
 	// Collect types and non-types separately so we can prioritize type names.
@@ -200,7 +200,7 @@ func (idx *Index) CompletionSymbols(uri string, prefix string) []Symbol {
 	var otherTypes, otherOther []Symbol
 	for _, defs := range idx.definitions {
 		for _, d := range defs {
-			if !strings.HasPrefix(strings.ToLower(d.Name), prefix) {
+			if !FuzzyMatch(d.Name, query) {
 				continue
 			}
 			isType := isTypeKind(d.Kind)
@@ -234,6 +234,22 @@ func (idx *Index) CompletionSymbols(uri string, prefix string) []Symbol {
 		result = result[:100]
 	}
 	return result
+}
+
+func FuzzyMatch(name, query string) bool {
+	if query == "" {
+		return true
+	}
+	name = strings.ToLower(name)
+	query = strings.ToLower(query)
+	ni, qi := 0, 0
+	for ni < len(name) && qi < len(query) {
+		if name[ni] == query[qi] {
+			qi++
+		}
+		ni++
+	}
+	return qi == len(query)
 }
 
 // SymbolSignature returns the method signature for the symbol at the given position.
