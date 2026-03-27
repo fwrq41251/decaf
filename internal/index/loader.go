@@ -406,19 +406,6 @@ func (idx *Index) removeDocument(uri string) {
 	}
 
 	// Remove typeBySimpleName entries.
-	for _, syms := range idx.typeBySimpleName {
-		filtered := syms[:0]
-		for _, s := range syms {
-			if s.URI != uri {
-				filtered = append(filtered, s)
-			}
-		}
-		// Note: We don't delete from the map here to avoid concurrent map iteration/mutation issues
-		// if we were iterating differently, but here we can't easily delete while iterating.
-		// However, we are iterating over the whole map which is slow.
-		// A better way would be to track which simple names are in this document.
-	}
-	// Correct way to clean up typeBySimpleName:
 	for _, s := range idx.fileSymbols[uri] {
 		if isTypeKind(s.Kind) {
 			name := strings.ToLower(s.Name)

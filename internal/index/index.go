@@ -2,7 +2,6 @@ package index
 
 import (
 	"log"
-	"path/filepath"
 	"sync"
 	"time"
 )
