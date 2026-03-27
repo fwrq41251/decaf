@@ -153,3 +153,57 @@ type Position struct {
 	Line      int `json:"line"`
 	Character int `json:"character"`
 }
+
+// LogMessageParams is sent by the build server for "build/logMessage".
+type LogMessageParams struct {
+	Type    MessageType `json:"type"`
+	Task    *TaskID     `json:"task,omitempty"`
+	Origin  string      `json:"origin,omitempty"`
+	Message string      `json:"message"`
+}
+
+type MessageType int
+
+const (
+	MTError   MessageType = 1
+	MTWarning MessageType = 2
+	MTInfo    MessageType = 3
+	MTLog     MessageType = 4
+)
+
+// TaskID identifies a build task.
+type TaskID struct {
+	ID     string  `json:"id"`
+	Parent string  `json:"parent,omitempty"`
+}
+
+// TaskStartParams is sent for "build/taskStart".
+type TaskStartParams struct {
+	TaskID      TaskID      `json:"taskId"`
+	EventTime   int64       `json:"eventTime,omitempty"`
+	Message     string      `json:"message,omitempty"`
+	DataKind    string      `json:"dataKind,omitempty"`
+	Data        interface{} `json:"data,omitempty"`
+}
+
+// TaskProgressParams is sent for "build/taskProgress".
+type TaskProgressParams struct {
+	TaskID      TaskID      `json:"taskId"`
+	EventTime   int64       `json:"eventTime,omitempty"`
+	Message     string      `json:"message,omitempty"`
+	Total       int64       `json:"total,omitempty"`
+	Progress    int64       `json:"progress,omitempty"`
+	Unit        string      `json:"unit,omitempty"`
+	DataKind    string      `json:"dataKind,omitempty"`
+	Data        interface{} `json:"data,omitempty"`
+}
+
+// TaskFinishParams is sent for "build/taskFinish".
+type TaskFinishParams struct {
+	TaskID      TaskID      `json:"taskId"`
+	EventTime   int64       `json:"eventTime,omitempty"`
+	Message     string      `json:"message,omitempty"`
+	Status      StatusCode  `json:"status"`
+	DataKind    string      `json:"dataKind,omitempty"`
+	Data        interface{} `json:"data,omitempty"`
+}

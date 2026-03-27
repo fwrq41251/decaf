@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,6 +49,10 @@ type Handler struct {
 
 	// indexReady is closed once the initial index load (and full build if needed) completes.
 	indexReady chan struct{}
+
+	// tasksMu protects activeTasks map.
+	tasksMu     sync.Mutex
+	activeTasks map[string]*progress
 }
 
 // NewHandler creates a new LSP handler.
@@ -59,12 +64,14 @@ func NewHandler(logger *log.Logger, transport *jsonrpc.Transport) *Handler {
 		docs:        newDocStore(),
 		diagnostics: make(map[string]map[string][]Diagnostic),
 		indexReady:  make(chan struct{}),
+		activeTasks: make(map[string]*progress),
 	}
 	h.bspClient = bsp.NewClient(logger, h.handleBSPDiagnostics, func() {
 		if !h.shutdown.Load() {
 			h.showMessage(MessageTypeError, "decaf: Bloop build server disconnected. Please restart your editor.")
 		}
 	})
+	h.bspClient.SetHandlers(h.handleBSPLogMessage, h.handleBSPTaskStart, h.handleBSPTaskProgress, h.handleBSPTaskFinish)
 	return h
 }
 
@@ -242,5 +249,76 @@ func (h *Handler) handleBSPDiagnostics(bspDiag bsp.PublishDiagnosticsParams) {
 
 	if err := h.transport.WriteRequest(notification); err != nil {
 		h.logger.Printf("failed to send diagnostics: %v", err)
+	}
+}
+
+func (h *Handler) handleBSPLogMessage(params bsp.LogMessageParams) {
+	notification, err := jsonrpc.NewNotification("window/logMessage", LogMessageParams{
+		Type:    int(params.Type),
+		Message: params.Message,
+	})
+	if err != nil {
+		return
+	}
+	_ = h.transport.WriteRequest(notification)
+}
+
+func (h *Handler) handleBSPTaskStart(params bsp.TaskStartParams) {
+	h.tasksMu.Lock()
+	defer h.tasksMu.Unlock()
+
+	// Title defaults to message or "bloop task"
+	title := params.Message
+	if title == "" {
+		title = "bloop task"
+	}
+
+	prog := h.beginProgress("decaf", title)
+	if prog != nil {
+		h.activeTasks[params.TaskID.ID] = prog
+	}
+}
+
+func (h *Handler) handleBSPTaskProgress(params bsp.TaskProgressParams) {
+	h.tasksMu.Lock()
+	prog, ok := h.activeTasks[params.TaskID.ID]
+	h.tasksMu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	var pct *int
+	if params.Total > 0 {
+		p := int(params.Progress * 100 / params.Total)
+		pct = &p
+	}
+	prog.report(params.Message, pct)
+}
+
+func (h *Handler) handleBSPTaskFinish(params bsp.TaskFinishParams) {
+	h.tasksMu.Lock()
+	prog, ok := h.activeTasks[params.TaskID.ID]
+	delete(h.activeTasks, params.TaskID.ID)
+	h.tasksMu.Unlock()
+
+	if ok {
+		msg := params.Message
+		if msg == "" {
+			if params.Status == bsp.StatusOK {
+				msg = "done"
+			} else {
+				msg = "failed"
+			}
+		}
+		prog.end(msg)
+	}
+
+	// If this was a compile task, trigger reindex.
+	// Note: We don't have perfect task mapping here, but reindexing is safe.
+	if strings.Contains(strings.ToLower(params.Message), "compile") ||
+		params.DataKind == "compile-report" {
+		h.logger.Printf("BSP task finished (%s), triggering reindex", params.TaskID.ID)
+		h.reindex()
 	}
 }

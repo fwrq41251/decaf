@@ -244,6 +244,12 @@ type ShowMessageParams struct {
 	Message string `json:"message"`
 }
 
+// LogMessageParams is sent from server to client to log a message.
+type LogMessageParams struct {
+	Type    int    `json:"type"`
+	Message string `json:"message"`
+}
+
 // MessageType constants.
 const (
 	MessageTypeError   = 1

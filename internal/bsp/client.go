@@ -20,6 +20,18 @@ import (
 // DiagnosticsHandler is called when the build server publishes diagnostics.
 type DiagnosticsHandler func(params PublishDiagnosticsParams)
 
+// LogMessageHandler is called when the build server sends a log message.
+type LogMessageHandler func(params LogMessageParams)
+
+// TaskStartHandler is called when a task starts.
+type TaskStartHandler func(params TaskStartParams)
+
+// TaskProgressHandler is called when a task makes progress.
+type TaskProgressHandler func(params TaskProgressParams)
+
+// TaskFinishHandler is called when a task finishes.
+type TaskFinishHandler func(params TaskFinishParams)
+
 // Client manages the connection to a BSP build server (Bloop).
 type Client struct {
 	logger        *log.Logger
@@ -30,6 +42,10 @@ type Client struct {
 	pending       map[int64]chan *jsonrpc.Response
 	pendingMu     sync.Mutex
 	onDiagnostics  DiagnosticsHandler
+	onLogMessage   LogMessageHandler
+	onTaskStart    TaskStartHandler
+	onTaskProgress TaskProgressHandler
+	onTaskFinish   TaskFinishHandler
 	onDisconnect   func()
 	targets        []BuildTarget
 	socketDir      string // temp directory containing the unix socket
@@ -386,6 +402,13 @@ func (c *Client) readLoop() {
 	}
 }
 
+func (c *Client) SetHandlers(onLog LogMessageHandler, onStart TaskStartHandler, onProgress TaskProgressHandler, onFinish TaskFinishHandler) {
+	c.onLogMessage = onLog
+	c.onTaskStart = onStart
+	c.onTaskProgress = onProgress
+	c.onTaskFinish = onFinish
+}
+
 func (c *Client) handleNotification(method string, body []byte) {
 	switch method {
 	case "build/publishDiagnostics":
@@ -400,6 +423,50 @@ func (c *Client) handleNotification(method string, body []byte) {
 			req.Params.TextDocument.URI, len(req.Params.Diagnostics), req.Params.Reset)
 		if c.onDiagnostics != nil {
 			c.onDiagnostics(req.Params)
+		}
+	case "build/logMessage":
+		var req struct {
+			Params LogMessageParams `json:"params"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			c.logger.Printf("bsp decode logMessage error: %v", err)
+			return
+		}
+		if c.onLogMessage != nil {
+			c.onLogMessage(req.Params)
+		}
+	case "build/taskStart":
+		var req struct {
+			Params TaskStartParams `json:"params"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			c.logger.Printf("bsp decode taskStart error: %v", err)
+			return
+		}
+		if c.onTaskStart != nil {
+			c.onTaskStart(req.Params)
+		}
+	case "build/taskProgress":
+		var req struct {
+			Params TaskProgressParams `json:"params"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			c.logger.Printf("bsp decode taskProgress error: %v", err)
+			return
+		}
+		if c.onTaskProgress != nil {
+			c.onTaskProgress(req.Params)
+		}
+	case "build/taskFinish":
+		var req struct {
+			Params TaskFinishParams `json:"params"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			c.logger.Printf("bsp decode taskFinish error: %v", err)
+			return
+		}
+		if c.onTaskFinish != nil {
+			c.onTaskFinish(req.Params)
 		}
 	default:
 		c.logger.Printf("bsp <- unhandled notification: %s", method)
