@@ -15,10 +15,18 @@ const (
 	CompletionDot
 )
 
+// VarInitializer holds info about a var declaration's initializer expression
+// for deferred type inference (requires index access).
+type VarInitializer struct {
+	Receiver   string // receiver class name, e.g. "List" for List.of()
+	MethodName string // method name, e.g. "of"
+}
+
 // ValueDecl represents a variable/field/parameter declaration with its type.
 type ValueDecl struct {
-	Name string
-	Type *index.TypeExpr // Changed from string to *index.TypeExpr
+	Name        string
+	Type        *index.TypeExpr
+	Initializer *VarInitializer // non-nil when type is "var" with a method call initializer
 }
 
 // CompletionCtx holds the parsed context for a completion request.
@@ -388,6 +396,19 @@ func extractLocals(cursorNode *slog.Node, content []byte, cursorOffset int, ctx 
 			break
 		}
 
+		// Extract variables introduced by enclosing control structures.
+		switch parent.Type() {
+		case "enhanced_for_statement":
+			// for (Type item : collection) { ... }
+			collectEnhancedForVar(parent, content, ctx)
+		case "catch_clause":
+			// catch (ExceptionType e) { ... }
+			collectCatchVar(parent, content, ctx)
+		case "try_with_resources_statement":
+			// try (Type res = ...) { ... }
+			collectResourceVars(parent, content, ctx)
+		}
+
 		// Collect all preceding siblings in this level.
 		for i := 0; i < int(parent.NamedChildCount()); i++ {
 			child := parent.NamedChild(i)
@@ -413,21 +434,191 @@ func extractLocals(cursorNode *slog.Node, content []byte, cursorOffset int, ctx 
 	}
 }
 
+// collectEnhancedForVar extracts the loop variable from an enhanced_for_statement.
+// Tree-sitter structure: enhanced_for_statement [ type_identifier, identifier, expression, block ]
+func collectEnhancedForVar(node *slog.Node, content []byte, ctx *CompletionCtx) {
+	var typeExpr *index.TypeExpr
+	var name string
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "type_identifier", "generic_type", "scoped_type_identifier":
+			typeExpr = extractType(child, content)
+		case "identifier":
+			if name == "" {
+				name = child.Content(content)
+			}
+		}
+	}
+	if name != "" {
+		ctx.Locals = append(ctx.Locals, ValueDecl{Name: name, Type: typeExpr})
+	}
+}
+
+// collectCatchVar extracts the exception variable from a catch_clause.
+// Tree-sitter structure: catch_clause [ catch_formal_parameter [ catch_type [ type_identifier ], identifier ] ]
+func collectCatchVar(node *slog.Node, content []byte, ctx *CompletionCtx) {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if child.Type() == "catch_formal_parameter" {
+			var typeExpr *index.TypeExpr
+			var name string
+			for j := 0; j < int(child.NamedChildCount()); j++ {
+				gc := child.NamedChild(j)
+				switch gc.Type() {
+				case "catch_type":
+					// catch_type may contain one or more type_identifiers (multi-catch).
+					// Use the first one for type resolution.
+					if gc.NamedChildCount() > 0 {
+						typeExpr = extractType(gc.NamedChild(0), content)
+					}
+				case "identifier":
+					name = gc.Content(content)
+				}
+			}
+			if name != "" {
+				ctx.Locals = append(ctx.Locals, ValueDecl{Name: name, Type: typeExpr})
+			}
+			return
+		}
+	}
+}
+
+// collectResourceVars extracts variables from try-with-resources.
+// Tree-sitter structure: try_with_resources_statement [ resource_specification [ resource [ type, identifier, expression ] ] ]
+func collectResourceVars(node *slog.Node, content []byte, ctx *CompletionCtx) {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if child.Type() == "resource_specification" {
+			for j := 0; j < int(child.NamedChildCount()); j++ {
+				res := child.NamedChild(j)
+				if res.Type() == "resource" {
+					var typeExpr *index.TypeExpr
+					var name string
+					for k := 0; k < int(res.NamedChildCount()); k++ {
+						gc := res.NamedChild(k)
+						switch gc.Type() {
+						case "type_identifier", "generic_type", "scoped_type_identifier":
+							typeExpr = extractType(gc, content)
+						case "identifier":
+							if name == "" {
+								name = gc.Content(content)
+							}
+						}
+					}
+					if name != "" {
+						ctx.Locals = append(ctx.Locals, ValueDecl{Name: name, Type: typeExpr})
+					}
+				}
+			}
+			return
+		}
+	}
+}
+
 // collectLocalDecls extracts variables from a single local_variable_declaration node.
 func collectLocalDecls(node *slog.Node, content []byte, ctx *CompletionCtx) {
 	if node.Type() == "local_variable_declaration" {
 		var typeExpr *index.TypeExpr
+		isVar := false
 		for j := 0; j < int(node.NamedChildCount()); j++ {
 			gc := node.NamedChild(j)
 			switch gc.Type() {
-			case "type_identifier", "primitive_type", "generic_type", "array_type",
+			case "type_identifier":
+				if gc.Content(content) == "var" {
+					isVar = true
+				} else {
+					typeExpr = extractType(gc, content)
+				}
+			case "primitive_type", "generic_type", "array_type",
 				"scoped_type_identifier", "void_type", "boolean_type":
 				typeExpr = extractType(gc, content)
 			}
 		}
+		// For "var" declarations, infer type from the initializer expression.
+		var init *VarInitializer
+		if isVar {
+			typeExpr, init = inferTypeFromDeclarator(node, content)
+		}
 		names := extractDeclarators(node, content)
 		for _, name := range names {
-			ctx.Locals = append(ctx.Locals, ValueDecl{Name: name, Type: typeExpr})
+			ctx.Locals = append(ctx.Locals, ValueDecl{Name: name, Type: typeExpr, Initializer: init})
 		}
 	}
+}
+
+// inferTypeFromDeclarator infers the type of a "var" declaration from its initializer.
+// Returns a directly-resolved TypeExpr for simple cases (new, cast, string literal),
+// or a VarInitializer for method calls that require index-based resolution.
+func inferTypeFromDeclarator(node *slog.Node, content []byte) (*index.TypeExpr, *VarInitializer) {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if child.Type() == "variable_declarator" {
+			// Find the initializer expression (the child after "=").
+			for j := 0; j < int(child.NamedChildCount()); j++ {
+				init := child.NamedChild(j)
+				switch init.Type() {
+				case "object_creation_expression":
+					// new ArrayList<String>() → extract type from the constructor.
+					return extractTypeFromNewExpr(init, content), nil
+				case "cast_expression":
+					// (MyClass) expr → extract the target type.
+					return extractTypeFromCast(init, content), nil
+				case "string_literal":
+					return &index.TypeExpr{Sym: "String"}, nil
+				case "method_invocation":
+					// List.of(...) → store receiver + method for deferred resolution.
+					if vi := extractMethodInvocationInfo(init, content); vi != nil {
+						return nil, vi
+					}
+				}
+			}
+		}
+	}
+	return nil, nil
+}
+
+// extractMethodInvocationInfo extracts receiver and method name from a method_invocation.
+// e.g. "List.of(...)" → VarInitializer{Receiver: "List", MethodName: "of"}
+// Only handles simple "Class.method(...)" patterns (static factory methods).
+func extractMethodInvocationInfo(node *slog.Node, content []byte) *VarInitializer {
+	obj := node.ChildByFieldName("object")
+	name := node.ChildByFieldName("name")
+	if obj == nil || name == nil {
+		return nil
+	}
+	// Only handle simple identifiers as receiver (e.g. "List", "Path", "Files").
+	if obj.Type() != "identifier" {
+		return nil
+	}
+	return &VarInitializer{
+		Receiver:   obj.Content(content),
+		MethodName: name.Content(content),
+	}
+}
+
+// extractTypeFromNewExpr extracts the type from an object_creation_expression node.
+// e.g. "new ArrayList<String>()" → TypeExpr{Sym: "ArrayList", Args: [{Sym: "String"}]}
+func extractTypeFromNewExpr(node *slog.Node, content []byte) *index.TypeExpr {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "type_identifier", "generic_type", "scoped_type_identifier":
+			return extractType(child, content)
+		}
+	}
+	return nil
+}
+
+// extractTypeFromCast extracts the target type from a cast_expression node.
+// e.g. "(MyClass) expr" → TypeExpr{Sym: "MyClass"}
+func extractTypeFromCast(node *slog.Node, content []byte) *index.TypeExpr {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "type_identifier", "generic_type", "scoped_type_identifier":
+			return extractType(child, content)
+		}
+	}
+	return nil
 }

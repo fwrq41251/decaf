@@ -275,6 +275,240 @@ public class MyClass {
 	}
 }
 
+func TestParseCompletionCtx_EnhancedForVariable(t *testing.T) {
+	src := []byte(`package com.example;
+import java.util.List;
+public class MyClass {
+    public void doSomething(List<String> list) {
+        for (String item : list) {
+            item.
+        }
+    }
+}`)
+	// cursor inside the for body at "item." — line 5, character 17
+	ctx := parseCompletionCtx(src, 5, 17)
+	if ctx.Kind != CompletionDot {
+		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
+	}
+	if ctx.Receiver != "item" {
+		t.Fatalf("expected receiver 'item', got %q", ctx.Receiver)
+	}
+	// "item" should appear in Locals with type String.
+	found := false
+	for _, l := range ctx.Locals {
+		if l.Name == "item" {
+			found = true
+			if l.Type == nil || l.Type.Sym != "String" {
+				t.Fatalf("expected type String, got %v", l.Type)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'item' in locals, got %+v", ctx.Locals)
+	}
+}
+
+func TestParseCompletionCtx_CatchVariable(t *testing.T) {
+	src := []byte(`package com.example;
+import java.io.IOException;
+public class MyClass {
+    public void doSomething() {
+        try {
+        } catch (IOException e) {
+            e.
+        }
+    }
+}`)
+	// cursor at "e." — line 6, character 14
+	ctx := parseCompletionCtx(src, 6, 14)
+	if ctx.Kind != CompletionDot {
+		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
+	}
+	if ctx.Receiver != "e" {
+		t.Fatalf("expected receiver 'e', got %q", ctx.Receiver)
+	}
+	found := false
+	for _, l := range ctx.Locals {
+		if l.Name == "e" {
+			found = true
+			if l.Type == nil || l.Type.Sym != "IOException" {
+				t.Fatalf("expected type IOException, got %v", l.Type)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'e' in locals, got %+v", ctx.Locals)
+	}
+}
+
+func TestParseCompletionCtx_TryWithResources(t *testing.T) {
+	src := []byte(`package com.example;
+import java.io.InputStream;
+public class MyClass {
+    public void doSomething() {
+        try (InputStream stream = null) {
+            stream.
+        }
+    }
+}`)
+	// cursor at "stream." — line 5, character 19
+	ctx := parseCompletionCtx(src, 5, 19)
+	if ctx.Kind != CompletionDot {
+		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
+	}
+	if ctx.Receiver != "stream" {
+		t.Fatalf("expected receiver 'stream', got %q", ctx.Receiver)
+	}
+	found := false
+	for _, l := range ctx.Locals {
+		if l.Name == "stream" {
+			found = true
+			if l.Type == nil || l.Type.Sym != "InputStream" {
+				t.Fatalf("expected type InputStream, got %v", l.Type)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'stream' in locals, got %+v", ctx.Locals)
+	}
+}
+
+func TestParseCompletionCtx_VarNewExpression(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var list = new ArrayList<String>();
+        list.
+    }
+}`)
+	// cursor at "list." — line 4, character 13
+	ctx := parseCompletionCtx(src, 4, 13)
+	if ctx.Kind != CompletionDot {
+		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
+	}
+	found := false
+	for _, l := range ctx.Locals {
+		if l.Name == "list" {
+			found = true
+			if l.Type == nil {
+				t.Fatal("expected type for 'list', got nil")
+			}
+			if l.Type.Sym != "ArrayList" {
+				t.Fatalf("expected type ArrayList, got %s", l.Type.Sym)
+			}
+			if len(l.Type.Args) != 1 || l.Type.Args[0].Sym != "String" {
+				t.Fatalf("expected type args [String], got %v", l.Type.Args)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'list' in locals, got %+v", ctx.Locals)
+	}
+}
+
+func TestParseCompletionCtx_VarStringLiteral(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var name = "hello";
+        name.
+    }
+}`)
+	ctx := parseCompletionCtx(src, 4, 13)
+	found := false
+	for _, l := range ctx.Locals {
+		if l.Name == "name" {
+			found = true
+			if l.Type == nil || l.Type.Sym != "String" {
+				t.Fatalf("expected type String, got %v", l.Type)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'name' in locals, got %+v", ctx.Locals)
+	}
+}
+
+func TestParseCompletionCtx_VarCastExpression(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var obj = (MyClass) something;
+        obj.
+    }
+}`)
+	ctx := parseCompletionCtx(src, 4, 12)
+	found := false
+	for _, l := range ctx.Locals {
+		if l.Name == "obj" {
+			found = true
+			if l.Type == nil || l.Type.Sym != "MyClass" {
+				t.Fatalf("expected type MyClass, got %v", l.Type)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'obj' in locals, got %+v", ctx.Locals)
+	}
+}
+
+func TestParseCompletionCtx_VarMethodInvocation(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var list = List.of("a", "b");
+        list.
+    }
+}`)
+	ctx := parseCompletionCtx(src, 4, 13)
+	found := false
+	for _, l := range ctx.Locals {
+		if l.Name == "list" {
+			found = true
+			// Type should be nil (deferred), Initializer should be set.
+			if l.Type != nil {
+				t.Fatalf("expected nil type for method invocation var, got %v", l.Type)
+			}
+			if l.Initializer == nil {
+				t.Fatal("expected Initializer to be set for method invocation var")
+			}
+			if l.Initializer.Receiver != "List" {
+				t.Fatalf("expected receiver 'List', got %q", l.Initializer.Receiver)
+			}
+			if l.Initializer.MethodName != "of" {
+				t.Fatalf("expected method 'of', got %q", l.Initializer.MethodName)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'list' in locals, got %+v", ctx.Locals)
+	}
+}
+
+func TestParseCompletionCtx_VarUnknownInitializer(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var num = 42;
+        num.
+    }
+}`)
+	ctx := parseCompletionCtx(src, 4, 12)
+	found := false
+	for _, l := range ctx.Locals {
+		if l.Name == "num" {
+			found = true
+			// Integer literal — type should be nil (can't infer).
+			if l.Type != nil {
+				t.Fatalf("expected nil type for int literal var, got %v", l.Type)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'num' in locals, got %+v", ctx.Locals)
+	}
+}
+
 func TestExtractReceiverFromAST(t *testing.T) {
 	tests := []struct {
 		name     string

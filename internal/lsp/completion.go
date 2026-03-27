@@ -158,7 +158,16 @@ func (h *Handler) resolveIdentifierTypeExpr(name string, cctx *CompletionCtx, re
 	// Search locals.
 	for i := len(cctx.Locals) - 1; i >= 0; i-- {
 		if cctx.Locals[i].Name == name {
-			return resolver.resolveParameterized(cctx.Locals[i].Type), false
+			if te := resolver.resolveParameterized(cctx.Locals[i].Type); te != nil {
+				return te, false
+			}
+			// Deferred var inference: resolve method return type via index.
+			if cctx.Locals[i].Initializer != nil {
+				if te := h.resolveVarInitializer(cctx.Locals[i].Initializer, resolver); te != nil {
+					return te, false
+				}
+			}
+			return nil, false
 		}
 	}
 	// Search params.
@@ -178,6 +187,16 @@ func (h *Handler) resolveIdentifierTypeExpr(name string, cctx *CompletionCtx, re
 		return &index.TypeExpr{Sym: sym}, true
 	}
 	return nil, false
+}
+
+// resolveVarInitializer resolves the return type of a static method call
+// used as an initializer for a "var" declaration. e.g. var list = List.of(...)
+func (h *Handler) resolveVarInitializer(vi *VarInitializer, resolver *typeResolver) *index.TypeExpr {
+	classSym := resolver.resolve(vi.Receiver)
+	if classSym == "" {
+		return nil
+	}
+	return h.resolveMemberTypeExpr(&index.TypeExpr{Sym: classSym}, vi.MethodName)
 }
 
 // resolveMemberTypeExpr resolves the type of a member on a given type,
