@@ -29,7 +29,17 @@ func (idx *Index) Definition(uri string, line, character int) []Symbol {
 	// If it's an internal symbol with definitions that have source locations, return them.
 	if len(defs) > 0 {
 		result := deduplicateSymbols(copySymbols(defs))
-		if len(result) > 0 {
+		// Only return results if at least one symbol has a valid range.
+		// ClassIndexer may have added symbols to definitions without ranges
+		// for completion/hover support; these should not block external resolution.
+		hasRange := false
+		for _, s := range result {
+			if s.Range != nil {
+				hasRange = true
+				break
+			}
+		}
+		if hasRange {
 			idx.mu.RUnlock()
 			return result
 		}
@@ -39,6 +49,7 @@ func (idx *Index) Definition(uri string, line, character int) []Symbol {
 	// (JDK source, dependency source JARs).
 	jdkRoot := idx.jdkSourceRoot
 	depSources := idx.dependencySources
+	idx.logger.Printf("No local definitions for %s. Probing external: jdkRoot=%s, depSources=%d", sym, jdkRoot, len(depSources))
 	idx.mu.RUnlock()
 
 	if jdkRoot != "" || len(depSources) > 0 {

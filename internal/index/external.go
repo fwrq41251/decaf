@@ -18,9 +18,10 @@ func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 
 	// Clean the symbol: strip trailing SemanticDB markers.
 	cleanSym := strings.TrimRight(sym, "#.:().")
-	if idx := strings.Index(cleanSym, "("); idx != -1 {
-		cleanSym = cleanSym[:idx]
+	if leftParenIdx := strings.Index(cleanSym, "("); leftParenIdx != -1 {
+		cleanSym = cleanSym[:leftParenIdx]
 	}
+	idx.logger.Printf("Cleaned symbol for resolution: %s", cleanSym)
 
 	// Iteratively probe for the source file by stripping segments from the end.
 	// This handles nested classes like java/util/Map.Entry (in Map.java) or
@@ -28,6 +29,7 @@ func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 	parts := strings.FieldsFunc(cleanSym, func(r rune) bool {
 		return r == '/' || r == '.' || r == '#'
 	})
+	idx.logger.Printf("Symbol parts: %v", parts)
 
 	// Read JDK root and dependency sources once.
 	idx.mu.RLock()
@@ -36,22 +38,23 @@ func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 	copy(depSources, idx.dependencySources)
 	idx.mu.RUnlock()
 
+	idx.logger.Printf("JDK root: %s, Dependency sources count: %d", jdkRoot, len(depSources))
+
 	// Probing from most specific (all parts) to least specific (at least one part).
-	// E.g., for com/example/Outer/Inner, try:
-	// 1. com/example/Outer/Inner.java
-	// 2. com/example/Outer.java
-	// 3. com.java (unlikely but safe)
 	for i := len(parts); i > 0; i-- {
 		relPath := strings.Join(parts[:i], "/") + ".java"
+		idx.logger.Printf("Probing relPath: %s", relPath)
 
 		// Check cache.
 		if cachedPath, ok := idx.externalCache.Load(relPath); ok {
+			idx.logger.Printf("Found in cache: %s -> %s", relPath, cachedPath)
 			return idx.createExternalSymbol(sym, cachedPath.(string))
 		}
 
 		// Search in JDK.
 		if jdkRoot != "" {
 			if s := idx.tryResolveFromContainer(jdkRoot, relPath, sym); s != nil {
+				idx.logger.Printf("Resolved from JDK: %s", relPath)
 				return s
 			}
 		}
@@ -59,28 +62,33 @@ func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 		// Search in dependencies.
 		for _, jar := range depSources {
 			if s := idx.tryResolveFromContainer(jar, relPath, sym); s != nil {
+				idx.logger.Printf("Resolved from dependency %s: %s", jar, relPath)
 				return s
 			}
 		}
 	}
 
+	idx.logger.Printf("Failed to resolve external symbol: %s", sym)
 	return nil
 }
 
 func (idx *Index) tryResolveFromContainer(container, relPath, originalSym string) *Symbol {
 	info, err := os.Stat(container)
 	if err != nil {
+		idx.logger.Printf("Container stat error: %s: %v", container, err)
 		return nil
 	}
 
 	if info.IsDir() {
 		foundPath := filepath.Join(container, relPath)
 		if _, err := os.Stat(foundPath); err == nil {
+			idx.logger.Printf("Found on disk: %s", foundPath)
 			idx.externalCache.Store(relPath, foundPath)
 			return idx.createExternalSymbol(originalSym, foundPath)
 		}
 	} else if strings.HasSuffix(container, ".zip") || strings.HasSuffix(container, ".jar") {
 		if foundPath := idx.findAndExtractFromJar(container, relPath); foundPath != "" {
+			idx.logger.Printf("Found in JAR/ZIP: %s!/%s -> %s", container, relPath, foundPath)
 			idx.externalCache.Store(relPath, foundPath)
 			return idx.createExternalSymbol(originalSym, foundPath)
 		}

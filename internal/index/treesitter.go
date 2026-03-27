@@ -44,13 +44,24 @@ func FindSymbolLocation(filePath, sym string) (int, int) {
 	}
 
 	rootNode := tree.RootNode()
-
-	// We use a simple recursive search for a node that looks like a declaration of 'name'.
-	return findNode(rootNode, name, content, isConstructor)
+	row, col := findNode(rootNode, name, content, isConstructor)
+	if row != -1 {
+		return row, col
 	}
 
-	func ExtractShortName(sym string) string {
+	// Fallback: simple text search if Tree-sitter fails to find a "declaration" node.
+	// This can happen for some complex symbols or if our findNode is too strict.
+	idx := strings.Index(string(content), name)
+	if idx != -1 {
+		// Calculate line/col from index.
+		lines := strings.Split(string(content[:idx]), "\n")
+		return len(lines) - 1, len(lines[len(lines)-1])
+	}
 
+	return -1, -1
+}
+
+func ExtractShortName(sym string) string {
 	// 1. Remove trailing SemanticDB markers.
 	sym = strings.TrimRight(sym, "#.:().")
 
