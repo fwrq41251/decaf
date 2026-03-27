@@ -150,9 +150,3 @@ func (idx *Index) intern(s string) string {
 	idx.internPool[s] = s
 	return s
 }
-
-// ExtractedSourceDir returns the path used for cached extracted sources.
-func ExtractedSourceDir() string {
-	home, _ := filepath.Abs("~")
-	return filepath.Join(home, ".cache", "decaf", "lib-src")
-}
