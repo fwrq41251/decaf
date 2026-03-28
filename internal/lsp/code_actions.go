@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/fwrq41251/decaf/internal/index"
+	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
 )
 
 func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) (any, error) {
@@ -93,7 +94,7 @@ func (h *Handler) handleRename(ctx context.Context, params json.RawMessage) (any
 		return nil, nil
 	}
 
-	_, occs := h.idx.RenameOccurrences(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	sym, occs := h.idx.RenameOccurrences(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	if len(occs) == 0 {
 		return nil, nil
 	}
@@ -112,6 +113,43 @@ func (h *Handler) handleRename(ctx context.Context, params json.RawMessage) (any
 
 	h.logger.Printf("rename at %s:%d:%d -> %d files affected",
 		p.TextDocument.URI, p.Position.Line, p.Position.Character, len(changes))
+
+	// Check if this is a top-level public class rename that requires a file rename.
+	if isTopLevelClass(sym) {
+		oldName := index.ExtractShortName(sym)
+		// Find the definition file URI.
+		var defURI string
+		for _, occ := range occs {
+			if occ.Role == sdb.SymbolOccurrence_DEFINITION {
+				defURI = h.toFileURI(occ.URI)
+				break
+			}
+		}
+		// Check if the file basename matches the old class name.
+		if defURI != "" {
+			lastSlash := strings.LastIndex(defURI, "/")
+			baseName := defURI[lastSlash+1:]
+			if baseName == oldName+".java" && clientSupportsRename(h.clientCaps) {
+				newURI := defURI[:lastSlash+1] + p.NewName + ".java"
+
+				var docChanges []DocumentChange
+				for fileURI, edits := range changes {
+					docChanges = append(docChanges, NewTextDocumentEditChange(TextDocumentEdit{
+						TextDocument: OptionalVersionedTextDocumentIdentifier{URI: fileURI},
+						Edits:        edits,
+					}))
+				}
+				docChanges = append(docChanges, NewRenameFileChange(RenameFile{
+					Kind:   "rename",
+					OldURI: defURI,
+					NewURI: newURI,
+				}))
+
+				return WorkspaceEdit{DocumentChanges: docChanges}, nil
+			}
+		}
+	}
+
 	return WorkspaceEdit{Changes: changes}, nil
 }
 
@@ -159,4 +197,24 @@ func extractMissingSymbolName(msg string) string {
 		return parts[0]
 	}
 	return ""
+}
+
+// isTopLevelClass returns true if sym is a SemanticDB top-level class symbol
+// (e.g. "com/example/Foo#" — exactly one '#' at the end, no nested '#').
+func isTopLevelClass(sym string) bool {
+	return strings.HasSuffix(sym, "#") && strings.Count(sym, "#") == 1
+}
+
+// clientSupportsRename checks whether the client advertises the "rename"
+// resource operation in its workspace edit capabilities.
+func clientSupportsRename(caps ClientCapabilities) bool {
+	if caps.Workspace == nil || caps.Workspace.WorkspaceEdit == nil {
+		return false
+	}
+	for _, op := range caps.Workspace.WorkspaceEdit.ResourceOperations {
+		if op == "rename" {
+			return true
+		}
+	}
+	return false
 }

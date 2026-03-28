@@ -1,5 +1,7 @@
 package lsp
 
+import "encoding/json"
+
 // InitializeParams is sent by the client in the "initialize" request.
 type InitializeParams struct {
 	ProcessID    *int               `json:"processId"`
@@ -10,6 +12,15 @@ type InitializeParams struct {
 // ClientCapabilities describes the client's capabilities.
 type ClientCapabilities struct {
 	TextDocument *TextDocumentClientCapabilities `json:"textDocument,omitempty"`
+	Workspace    *WorkspaceClientCapabilities    `json:"workspace,omitempty"`
+}
+
+type WorkspaceClientCapabilities struct {
+	WorkspaceEdit *WorkspaceEditClientCapabilities `json:"workspaceEdit,omitempty"`
+}
+
+type WorkspaceEditClientCapabilities struct {
+	ResourceOperations []string `json:"resourceOperations,omitempty"`
 }
 
 type TextDocumentClientCapabilities struct {
@@ -365,7 +376,47 @@ type RenameParams struct {
 
 // WorkspaceEdit is returned by textDocument/rename.
 type WorkspaceEdit struct {
-	Changes map[string][]TextEdit `json:"changes,omitempty"`
+	Changes         map[string][]TextEdit `json:"changes,omitempty"`
+	DocumentChanges []DocumentChange      `json:"documentChanges,omitempty"`
+}
+
+// DocumentChange is a union type: either a TextDocumentEdit or a resource operation.
+// We use json.RawMessage so we can marshal either kind.
+type DocumentChange struct {
+	raw json.RawMessage
+}
+
+func (dc DocumentChange) MarshalJSON() ([]byte, error) {
+	return dc.raw, nil
+}
+
+func NewTextDocumentEditChange(edit TextDocumentEdit) DocumentChange {
+	b, _ := json.Marshal(edit)
+	return DocumentChange{raw: b}
+}
+
+func NewRenameFileChange(rename RenameFile) DocumentChange {
+	b, _ := json.Marshal(rename)
+	return DocumentChange{raw: b}
+}
+
+// TextDocumentEdit represents edits to a single text document.
+type TextDocumentEdit struct {
+	TextDocument OptionalVersionedTextDocumentIdentifier `json:"textDocument"`
+	Edits        []TextEdit                              `json:"edits"`
+}
+
+// OptionalVersionedTextDocumentIdentifier identifies a text document with an optional version.
+type OptionalVersionedTextDocumentIdentifier struct {
+	URI     string `json:"uri"`
+	Version *int   `json:"version"`
+}
+
+// RenameFile is an LSP resource operation for renaming a file.
+type RenameFile struct {
+	Kind   string `json:"kind"`
+	OldURI string `json:"oldUri"`
+	NewURI string `json:"newUri"`
 }
 
 // TextEdit represents a text edit in a document.

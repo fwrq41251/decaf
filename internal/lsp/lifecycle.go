@@ -23,27 +23,30 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 	}
 
 	h.rootURI = p.RootURI
+	h.clientCaps = p.Capabilities
 	h.logger.Printf("initialize: rootURI=%s, processID=%v", p.RootURI, p.ProcessID)
 
-	return InitializeResult{
-		Capabilities: ServerCapabilities{
-			TextDocumentSync: &TextDocumentSyncOptions{
-				OpenClose: true,
-				Change:    SyncIncremental,
-				Save:      &SaveOptions{IncludeText: false},
-			},
-			DefinitionProvider:        true,
-			ReferencesProvider:        true,
-			HoverProvider:             true,
-			CompletionProvider:        &CompletionOptions{TriggerCharacters: []string{"."}},
-			SignatureHelpProvider:     &SignatureHelpOptions{TriggerCharacters: []string{"(", ","}},
-			RenameProvider:            &RenameOptions{PrepareProvider: true},
-			DocumentSymbolProvider:    true,
-			DocumentHighlightProvider: true,
-			ImplementationProvider:    true,
-			WorkspaceSymbolProvider:   true,
-			CodeActionProvider:        &CodeActionOptions{CodeActionKinds: []string{CodeActionSourceOrganizeImports, CodeActionQuickFix}},
+	caps := ServerCapabilities{
+		TextDocumentSync: &TextDocumentSyncOptions{
+			OpenClose: true,
+			Change:    SyncIncremental,
+			Save:      &SaveOptions{IncludeText: false},
 		},
+		DefinitionProvider:        true,
+		ReferencesProvider:        true,
+		HoverProvider:             true,
+		CompletionProvider:        &CompletionOptions{TriggerCharacters: []string{"."}},
+		SignatureHelpProvider:     &SignatureHelpOptions{TriggerCharacters: []string{"(", ","}},
+		RenameProvider:            &RenameOptions{PrepareProvider: true},
+		DocumentSymbolProvider:    true,
+		DocumentHighlightProvider: true,
+		ImplementationProvider:    true,
+		WorkspaceSymbolProvider:   true,
+		CodeActionProvider:        &CodeActionOptions{CodeActionKinds: []string{CodeActionSourceOrganizeImports, CodeActionQuickFix}},
+	}
+
+	return InitializeResult{
+		Capabilities: caps,
 		ServerInfo: &ServerInfo{
 			Name:    "decaf",
 			Version: "0.0.1",
@@ -97,7 +100,7 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 				}
 			}()
 		}
-		prog := h.beginProgress("decaf", "initializing…")
+		prog := h.beginProgress(ctx, "decaf", "initializing…")
 
 		if needsFullBuild {
 			h.logger.Println("No indexed files found, starting full setup and compilation...")

@@ -45,11 +45,7 @@ func (h *Handler) handleDidClose(_ context.Context, params json.RawMessage) (any
 		return nil, err
 	}
 	h.docs.Close(p.TextDocument.URI)
-
-	h.diagnosticsMu.Lock()
-	delete(h.diagnostics, p.TextDocument.URI)
-	h.diagnosticsMu.Unlock()
-
+	h.clearDiagnostics(p.TextDocument.URI)
 	h.logger.Printf("didClose: %s", p.TextDocument.URI)
 	return nil, nil
 }
@@ -73,8 +69,12 @@ func (h *Handler) handleDidChangeWatchedFiles(_ context.Context, params json.Raw
 
 	var uris []string
 	for _, e := range p.Changes {
-		if strings.HasSuffix(e.URI, ".java") {
-			uris = append(uris, e.URI)
+		if !strings.HasSuffix(e.URI, ".java") {
+			continue
+		}
+		uris = append(uris, e.URI)
+		if e.Type == FileChangeDeleted {
+			h.clearDiagnostics(e.URI)
 		}
 	}
 	h.logger.Printf("watched files changed: %d java file(s)", javaChanged)
@@ -120,7 +120,7 @@ func (h *Handler) scheduleCompile(uris ...string) {
 			return
 		}
 
-		prog := h.beginProgress("decaf", "compiling…")
+		prog := h.beginProgress(ctx, "decaf", "compiling…")
 
 		compiled := false
 		if len(changedURIs) > 0 {

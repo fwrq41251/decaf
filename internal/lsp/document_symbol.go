@@ -29,6 +29,9 @@ func buildDocumentSymbols(symbols []index.Symbol) []DocumentSymbol {
 			Range:          sdbRangeToLSP(s.Range),
 			SelectionRange: sdbRangeToLSP(s.Range),
 		}
+		if s.Signature != nil && s.Signature.Label != "" {
+			ds.Detail = s.Signature.Label
+		}
 
 		if isContainerKind(s.Kind) {
 			c := &container{sym: ds}

@@ -301,6 +301,175 @@ func TestPrepareRename(t *testing.T) {
 	}
 }
 
+func TestRenameTopLevelClass(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+	h.rootURI = "file://" + tmpDir
+
+	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	close(h.indexReady)
+	h.idx = idx
+
+	// Foo.java defines Foo and references it; Bar.java references Foo.
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{
+			{
+				Uri: "src/Foo.java",
+				Symbols: []*sdb.SymbolInformation{
+					{Symbol: "com/example/Foo#", DisplayName: "Foo", Kind: sdb.SymbolInformation_CLASS},
+				},
+				Occurrences: []*sdb.SymbolOccurrence{
+					{Symbol: "com/example/Foo#", Role: sdb.SymbolOccurrence_DEFINITION, Range: &sdb.Range{StartLine: 2, StartCharacter: 13, EndLine: 2, EndCharacter: 16}},
+					{Symbol: "com/example/Foo#", Role: sdb.SymbolOccurrence_REFERENCE, Range: &sdb.Range{StartLine: 5, StartCharacter: 8, EndLine: 5, EndCharacter: 11}},
+				},
+			},
+			{
+				Uri: "src/Bar.java",
+				Occurrences: []*sdb.SymbolOccurrence{
+					{Symbol: "com/example/Foo#", Role: sdb.SymbolOccurrence_REFERENCE, Range: &sdb.Range{StartLine: 3, StartCharacter: 4, EndLine: 3, EndCharacter: 7}},
+				},
+			},
+		},
+	}
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "Foo.java.semanticdb"), data, 0644)
+	idx.Load()
+
+	renameParams := RenameParams{
+		TextDocument: TextDocumentIdentifier{URI: "file://" + tmpDir + "/src/Foo.java"},
+		Position:     Position{Line: 2, Character: 14},
+		NewName:      "Baz",
+	}
+	rawParams, _ := json.Marshal(renameParams)
+
+	// Case 1: client does NOT support rename resource operations — fallback to Changes only.
+	h.clientCaps = ClientCapabilities{}
+	got, err := h.handleRename(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleRename failed: %v", err)
+	}
+	edit := got.(WorkspaceEdit)
+	if len(edit.DocumentChanges) != 0 {
+		t.Errorf("expected no DocumentChanges without client support, got %d", len(edit.DocumentChanges))
+	}
+	if len(edit.Changes) == 0 {
+		t.Fatal("expected Changes to be populated")
+	}
+	totalEdits := 0
+	for _, edits := range edit.Changes {
+		totalEdits += len(edits)
+	}
+	if totalEdits != 3 {
+		t.Errorf("expected 3 text edits, got %d", totalEdits)
+	}
+
+	// Case 2: client supports rename — should produce DocumentChanges with RenameFile.
+	h.clientCaps = ClientCapabilities{
+		Workspace: &WorkspaceClientCapabilities{
+			WorkspaceEdit: &WorkspaceEditClientCapabilities{
+				ResourceOperations: []string{"create", "rename", "delete"},
+			},
+		},
+	}
+	got, err = h.handleRename(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleRename failed: %v", err)
+	}
+	edit = got.(WorkspaceEdit)
+	if edit.Changes != nil {
+		t.Error("expected Changes to be nil when DocumentChanges is used")
+	}
+	if len(edit.DocumentChanges) == 0 {
+		t.Fatal("expected DocumentChanges to be populated")
+	}
+
+	// Verify there is exactly one RenameFile operation with correct URIs.
+	var renameOps []RenameFile
+	for _, dc := range edit.DocumentChanges {
+		raw, _ := dc.MarshalJSON()
+		var probe struct {
+			Kind string `json:"kind"`
+		}
+		json.Unmarshal(raw, &probe)
+		if probe.Kind == "rename" {
+			var rf RenameFile
+			json.Unmarshal(raw, &rf)
+			renameOps = append(renameOps, rf)
+		}
+	}
+	if len(renameOps) != 1 {
+		t.Fatalf("expected 1 RenameFile operation, got %d", len(renameOps))
+	}
+	if !strings.HasSuffix(renameOps[0].OldURI, "/src/Foo.java") {
+		t.Errorf("expected OldURI to end with /src/Foo.java, got %s", renameOps[0].OldURI)
+	}
+	if !strings.HasSuffix(renameOps[0].NewURI, "/src/Baz.java") {
+		t.Errorf("expected NewURI to end with /src/Baz.java, got %s", renameOps[0].NewURI)
+	}
+}
+
+func TestRenameInnerClassNoFileRename(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+	h.rootURI = "file://" + tmpDir
+	h.clientCaps = ClientCapabilities{
+		Workspace: &WorkspaceClientCapabilities{
+			WorkspaceEdit: &WorkspaceEditClientCapabilities{
+				ResourceOperations: []string{"rename"},
+			},
+		},
+	}
+
+	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	close(h.indexReady)
+	h.idx = idx
+
+	// Inner class: Outer#Inner# has two '#' — should NOT trigger file rename.
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{
+			{
+				Uri: "src/Outer.java",
+				Symbols: []*sdb.SymbolInformation{
+					{Symbol: "com/example/Outer#Inner#", DisplayName: "Inner", Kind: sdb.SymbolInformation_CLASS},
+				},
+				Occurrences: []*sdb.SymbolOccurrence{
+					{Symbol: "com/example/Outer#Inner#", Role: sdb.SymbolOccurrence_DEFINITION, Range: &sdb.Range{StartLine: 5, StartCharacter: 17, EndLine: 5, EndCharacter: 22}},
+				},
+			},
+		},
+	}
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "Outer.java.semanticdb"), data, 0644)
+	idx.Load()
+
+	renameParams := RenameParams{
+		TextDocument: TextDocumentIdentifier{URI: "file://" + tmpDir + "/src/Outer.java"},
+		Position:     Position{Line: 5, Character: 18},
+		NewName:      "InnerRenamed",
+	}
+	rawParams, _ := json.Marshal(renameParams)
+
+	got, err := h.handleRename(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleRename failed: %v", err)
+	}
+	edit := got.(WorkspaceEdit)
+	if len(edit.DocumentChanges) != 0 {
+		t.Errorf("inner class rename should not produce DocumentChanges, got %d", len(edit.DocumentChanges))
+	}
+	if len(edit.Changes) == 0 {
+		t.Error("expected text edits in Changes")
+	}
+}
+
 func TestDiagnosticsClearing(t *testing.T) {
 	var output bytes.Buffer
 	logger := log.New(&bytes.Buffer{}, "[test] ", 0)

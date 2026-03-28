@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,6 +24,7 @@ type Handler struct {
 	rootURI     string
 	bspClient   *bsp.Client
 	transport   *jsonrpc.Transport
+	dispatcher  *jsonrpc.Dispatcher
 	idx         *index.Index
 
 	// docs stores in-memory overlay of open document contents.
@@ -53,6 +53,9 @@ type Handler struct {
 	// tasksMu protects activeTasks map.
 	tasksMu     sync.Mutex
 	activeTasks map[string]*progress
+
+	// clientCaps stores the client capabilities received during initialization.
+	clientCaps ClientCapabilities
 }
 
 // NewHandler creates a new LSP handler.
@@ -102,6 +105,7 @@ func (h *Handler) Close(ctx context.Context) {
 
 // RegisterAll registers all LSP handlers on the dispatcher.
 func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
+	h.dispatcher = d
 	// Lifecycle — must run sequentially.
 	d.Register("initialize", h.handleInitialize)
 	d.Register("initialized", h.handleInitialized)
@@ -252,6 +256,28 @@ func (h *Handler) handleBSPDiagnostics(bspDiag bsp.PublishDiagnosticsParams) {
 	}
 }
 
+// clearDiagnostics removes stored diagnostics for a URI and publishes an empty
+// diagnostic list to the client so stale markers are cleared.
+func (h *Handler) clearDiagnostics(uri string) {
+	h.diagnosticsMu.Lock()
+	_, exists := h.diagnostics[uri]
+	delete(h.diagnostics, uri)
+	h.diagnosticsMu.Unlock()
+
+	if !exists {
+		return
+	}
+
+	notification, err := jsonrpc.NewNotification("textDocument/publishDiagnostics", PublishDiagnosticsParams{
+		URI:         uri,
+		Diagnostics: []Diagnostic{},
+	})
+	if err != nil {
+		return
+	}
+	_ = h.transport.WriteRequest(notification)
+}
+
 func (h *Handler) handleBSPLogMessage(params bsp.LogMessageParams) {
 	notification, err := jsonrpc.NewNotification("window/logMessage", LogMessageParams{
 		Type:    int(params.Type),
@@ -264,18 +290,25 @@ func (h *Handler) handleBSPLogMessage(params bsp.LogMessageParams) {
 }
 
 func (h *Handler) handleBSPTaskStart(params bsp.TaskStartParams) {
-	h.tasksMu.Lock()
-	defer h.tasksMu.Unlock()
-
 	// Title defaults to message or "bloop task"
 	title := params.Message
 	if title == "" {
 		title = "bloop task"
 	}
 
-	prog := h.beginProgress("decaf", title)
+	h.bgMu.Lock()
+	ctx := h.backgroundCtx
+	h.bgMu.Unlock()
+	if ctx == nil {
+		return
+	}
+
+	// Create progress outside the lock to avoid holding it during network I/O.
+	prog := h.beginProgress(ctx, "decaf", title)
 	if prog != nil {
+		h.tasksMu.Lock()
 		h.activeTasks[params.TaskID.ID] = prog
+		h.tasksMu.Unlock()
 	}
 }
 
@@ -315,10 +348,8 @@ func (h *Handler) handleBSPTaskFinish(params bsp.TaskFinishParams) {
 	}
 
 	// If this was a compile task, trigger reindex.
-	// Note: We don't have perfect task mapping here, but reindexing is safe.
-	if strings.Contains(strings.ToLower(params.Message), "compile") ||
-		params.DataKind == "compile-report" {
-		h.logger.Printf("BSP task finished (%s), triggering reindex", params.TaskID.ID)
+	if params.DataKind == "compile-report" {
+		h.logger.Printf("BSP compile task finished (%s), triggering reindex", params.TaskID.ID)
 		h.reindex()
 	}
 }
