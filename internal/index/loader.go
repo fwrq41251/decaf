@@ -443,12 +443,17 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 	// Index symbol definitions.
 	for _, sym := range doc.Symbols {
 		symStr := idx.intern(sym.Symbol)
+		var doc string
+		if sym.Documentation != nil {
+			doc = sym.Documentation.Message
+		}
 		s := &Symbol{
 			Name:      sym.DisplayName,
 			Symbol:    symStr,
 			Kind:      sym.Kind,
 			URI:       uri,
 			Signature: buildSignatureInfo(sym.DisplayName, sym.Signature),
+			Doc:       doc,
 			IsStatic:  sym.Properties&int32(sdb.SymbolInformation_STATIC) != 0,
 		}
 		idx.definitions[symStr] = append(idx.definitions[symStr], s)

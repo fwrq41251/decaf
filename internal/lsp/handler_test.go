@@ -470,6 +470,109 @@ func TestRenameInnerClassNoFileRename(t *testing.T) {
 	}
 }
 
+func TestSignatureHelp_UncompiledCode(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+
+	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	close(h.indexReady)
+	h.idx = idx
+	h.rootURI = "file://" + tmpDir
+
+	// Index a class Foo with an overloaded method "bar":
+	//   bar(int x) and bar(int x, String y)
+	// No occurrences for the call site — simulating uncompiled code.
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Foo.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "com/example/Foo#", DisplayName: "Foo", Kind: sdb.SymbolInformation_CLASS},
+				{
+					Symbol: "com/example/Foo#bar().", DisplayName: "bar", Kind: sdb.SymbolInformation_METHOD,
+					Signature: &sdb.Signature{
+						SealedValue: &sdb.Signature_MethodSignature{
+							MethodSignature: &sdb.MethodSignature{
+								ReturnType: &sdb.Type{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "scala/Unit#"}}},
+								ParameterLists: []*sdb.Scope{{
+									Hardlinks: []*sdb.SymbolInformation{
+										{DisplayName: "x", Signature: &sdb.Signature{SealedValue: &sdb.Signature_ValueSignature{ValueSignature: &sdb.ValueSignature{Tpe: &sdb.Type{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "scala/Int#"}}}}}}},
+									},
+								}},
+							},
+						},
+					},
+				},
+				{
+					Symbol: "com/example/Foo#bar().", DisplayName: "bar", Kind: sdb.SymbolInformation_METHOD,
+					Signature: &sdb.Signature{
+						SealedValue: &sdb.Signature_MethodSignature{
+							MethodSignature: &sdb.MethodSignature{
+								ReturnType: &sdb.Type{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "scala/Unit#"}}},
+								ParameterLists: []*sdb.Scope{{
+									Hardlinks: []*sdb.SymbolInformation{
+										{DisplayName: "x", Signature: &sdb.Signature{SealedValue: &sdb.Signature_ValueSignature{ValueSignature: &sdb.ValueSignature{Tpe: &sdb.Type{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "scala/Int#"}}}}}}},
+										{DisplayName: "y", Signature: &sdb.Signature{SealedValue: &sdb.Signature_ValueSignature{ValueSignature: &sdb.ValueSignature{Tpe: &sdb.Type{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "java/lang/String#"}}}}}}},
+									},
+								}},
+							},
+						},
+					},
+				},
+			},
+		}},
+	}
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "Foo.java.semanticdb"), data, 0644)
+	idx.Load()
+
+	// Open a file with uncompiled code that calls foo.bar(|).
+	// No SemanticDB occurrence exists for this call site.
+	callerURI := "file://" + tmpDir + "/src/Caller.java"
+	callerContent := `package com.example;
+public class Caller {
+    void test() {
+        Foo foo = new Foo();
+        foo.bar();
+    }
+}`
+	h.docs.Open(callerURI, callerContent)
+
+	// Cursor inside bar() at line 4, character 17 (between the parens).
+	params := SignatureHelpParams{
+		TextDocumentPositionParams: TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: callerURI},
+			Position:     Position{Line: 4, Character: 17},
+		},
+	}
+	rawParams, _ := json.Marshal(params)
+
+	got, err := h.handleSignatureHelp(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleSignatureHelp failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil SignatureHelp result")
+	}
+
+	sh := got.(SignatureHelp)
+	if len(sh.Signatures) != 2 {
+		t.Fatalf("expected 2 signatures (overloads), got %d", len(sh.Signatures))
+	}
+
+	// First overload: bar(int x)
+	if len(sh.Signatures[0].Parameters) != 1 {
+		t.Errorf("first overload: expected 1 param, got %d", len(sh.Signatures[0].Parameters))
+	}
+	// Second overload: bar(int x, String y)
+	if len(sh.Signatures[1].Parameters) != 2 {
+		t.Errorf("second overload: expected 2 params, got %d", len(sh.Signatures[1].Parameters))
+	}
+}
+
 func TestDiagnosticsClearing(t *testing.T) {
 	var output bytes.Buffer
 	logger := log.New(&bytes.Buffer{}, "[test] ", 0)

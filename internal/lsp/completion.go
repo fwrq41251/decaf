@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/fwrq41251/decaf/internal/index"
@@ -73,6 +74,7 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 	query := cctx.Prefix
 
 	var items []CompletionItem
+	seen := make(map[string]int) // name -> index in items (for dedup of overloads)
 	for _, m := range members {
 		if !index.FuzzyMatch(m.Name, query) {
 			continue
@@ -95,7 +97,19 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 			kindOrder = "0" // fields first
 		}
 		sortText := sortPrefix + kindOrder + m.Name
-		item := methodCompletionItem(m.Name, kind, m.Signature, sortText)
+
+		// Merge overloaded methods: keep one item per name, update detail for overloads.
+		if idx, ok := seen[m.Name]; ok {
+			if items[idx].Detail != "" && !strings.Contains(items[idx].Detail, " (+") {
+				items[idx].Detail += " (+1 overload)"
+			} else if strings.Contains(items[idx].Detail, " (+") {
+				items[idx].Detail = overloadDetail(items[idx].Detail)
+			}
+			continue
+		}
+
+		item := methodCompletionItem(m.Name, kind, m.Signature, sortText, m.Doc)
+		seen[m.Name] = len(items)
 		items = append(items, item)
 		if len(items) >= 100 {
 			break
@@ -437,6 +451,9 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			SortText:   casePrefix(s.Name) + scopeOrder + s.Name,
 			FilterText: s.Name,
 		}
+		if s.Doc != "" {
+			item.Documentation = &MarkupContent{Kind: "markdown", Value: s.Doc}
+		}
 
 		// Auto-import for type symbols from other packages.
 		if s.Kind == sdb.SymbolInformation_CLASS || s.Kind == sdb.SymbolInformation_INTERFACE {
@@ -456,7 +473,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 
 // methodCompletionItem builds a CompletionItem for a member (method or field).
 // Methods get snippet format with parentheses; fields get plain text.
-func methodCompletionItem(name string, kind int, sig *index.SignatureInfo, sortText string) CompletionItem {
+func methodCompletionItem(name string, kind int, sig *index.SignatureInfo, sortText, doc string) CompletionItem {
 	item := CompletionItem{
 		Label:      name,
 		Kind:       kind,
@@ -467,6 +484,9 @@ func methodCompletionItem(name string, kind int, sig *index.SignatureInfo, sortT
 	if sig != nil {
 		item.Detail = sig.Label
 	}
+	if doc != "" {
+		item.Documentation = &MarkupContent{Kind: "markdown", Value: doc}
+	}
 	if kind == CompletionKindMethod || kind == CompletionKindConstructor {
 		if sig != nil && len(sig.Params) > 0 {
 			item.InsertText = name + "($1)$0"
@@ -476,6 +496,34 @@ func methodCompletionItem(name string, kind int, sig *index.SignatureInfo, sortT
 		item.InsertTextFormat = InsertTextFormatSnippet
 	}
 	return item
+}
+
+// overloadDetail increments the overload count in a detail string like "void foo(int) (+1 overload)".
+func overloadDetail(detail string) string {
+	// Parse existing count from " (+N overload)" or " (+N overloads)" suffix.
+	idx := strings.Index(detail, " (+")
+	if idx < 0 {
+		return detail
+	}
+	base := detail[:idx]
+	suffix := detail[idx+3:] // after " (+"
+	end := strings.Index(suffix, " ")
+	if end < 0 {
+		return detail
+	}
+	n := 0
+	for _, c := range suffix[:end] {
+		if c < '0' || c > '9' {
+			return detail
+		}
+		n = n*10 + int(c-'0')
+	}
+	n++
+	noun := "overloads"
+	if n == 1 {
+		noun = "overload"
+	}
+	return fmt.Sprintf("%s (+%d %s)", base, n, noun)
 }
 
 func isTypeCompletionKind(kind int) bool {
@@ -492,21 +540,42 @@ func (h *Handler) handleSignatureHelp(ctx context.Context, params json.RawMessag
 		return nil, nil
 	}
 
-	sym := h.idx.SymbolSignature(p.TextDocument.URI, p.Position.Line, p.Position.Character)
-	if sym == nil || sym.Signature == nil {
+	syms := h.idx.SymbolSignatures(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+
+	// Fallback: when SemanticDB has no occurrence (uncompiled code),
+	// use Tree-sitter to find the enclosing method call and resolve signatures.
+	if len(syms) == 0 {
+		syms = h.resolveSignatureFromAST(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	}
+	if len(syms) == 0 {
 		return nil, nil
 	}
 
-	sigInfo := formatSignatureHelp(sym)
-	if sigInfo == nil {
+	var sigs []SignatureInformation
+	for i := range syms {
+		si := formatSignatureHelp(&syms[i])
+		if si != nil {
+			sigs = append(sigs, *si)
+		}
+	}
+	if len(sigs) == 0 {
 		return nil, nil
 	}
 
 	activeParam := h.countActiveParameter(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 
+	// Pick the best overload: first signature whose param count >= activeParam+1.
+	activeSig := 0
+	for i, sig := range sigs {
+		if len(sig.Parameters) >= activeParam+1 {
+			activeSig = i
+			break
+		}
+	}
+
 	return SignatureHelp{
-		Signatures:      []SignatureInformation{*sigInfo},
-		ActiveSignature: 0,
+		Signatures:      sigs,
+		ActiveSignature: activeSig,
 		ActiveParameter: activeParam,
 	}, nil
 }
@@ -535,6 +604,99 @@ func (h *Handler) wordPrefixAt(fileURI string, line, character int) string {
 	}
 
 	return string(contentBytes[start:byteOff])
+}
+
+// resolveSignatureFromAST uses Tree-sitter to find the enclosing method call
+// and resolves its signatures via the index, enabling signature help for
+// uncompiled code that lacks SemanticDB occurrences.
+func (h *Handler) resolveSignatureFromAST(fileURI string, line, character int) []index.Symbol {
+	content := h.getFileContent(fileURI)
+	if content == "" {
+		return nil
+	}
+
+	src := []byte(content)
+	tree, err := getTree(src)
+	if err != nil {
+		return nil
+	}
+
+	node := nodeAtPosition(tree.RootNode(), line, character)
+	if node == nil {
+		return nil
+	}
+
+	// Walk up to find the enclosing method_invocation or object_creation_expression.
+	callNode := node
+	for callNode != nil {
+		switch callNode.Type() {
+		case "method_invocation", "object_creation_expression":
+			goto found
+		}
+		callNode = callNode.Parent()
+	}
+	return nil
+
+found:
+	// Parse completion context at the call site for type resolution.
+	cctx := parseCompletionCtx(src, line, character)
+	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
+
+	if callNode.Type() == "object_creation_expression" {
+		// new Foo(...) → look up constructors of Foo.
+		te := extractTypeFromNewExpr(callNode, src)
+		if te == nil {
+			return nil
+		}
+		if sym := resolver.resolve(te.Sym); sym != "" {
+			return h.findMembersByName(sym, te.Sym)
+		}
+		return nil
+	}
+
+	// method_invocation: extract receiver (object) and method name.
+	nameNode := callNode.ChildByFieldName("name")
+	if nameNode == nil {
+		return nil
+	}
+	methodName := nameNode.Content(src)
+
+	objNode := callNode.ChildByFieldName("object")
+	if objNode == nil {
+		// Simple call without receiver (e.g. "doWork(...)") → search enclosing class.
+		if cctx.EnclosingClass == "" {
+			return nil
+		}
+		classSym := resolver.resolve(cctx.EnclosingClass)
+		if classSym == "" {
+			return nil
+		}
+		return h.findMembersByName(classSym, methodName)
+	}
+
+	// Has a receiver: build a fake CompletionCtx to reuse receiver resolution.
+	recvText := exprToReceiver(objNode, src)
+	if recvText == "" {
+		return nil
+	}
+	cctx.Receiver = recvText
+	typeExpr, _ := h.resolveReceiverTypeExpr(cctx, resolver)
+	if typeExpr == nil {
+		return nil
+	}
+	return h.findMembersByName(typeExpr.Sym, methodName)
+}
+
+// findMembersByName returns all members of a type matching the given name.
+func (h *Handler) findMembersByName(typeSym, name string) []index.Symbol {
+	members := h.idx.MembersOfType(typeSym)
+	var result []index.Symbol
+	for _, m := range members {
+		if m.Name == name {
+			result = append(result, m)
+		}
+	}
+	return result
 }
 
 // countActiveParameter uses the Tree-sitter AST to find the enclosing

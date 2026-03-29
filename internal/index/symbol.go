@@ -19,6 +19,7 @@ type Symbol struct {
 	URI       string // relative URI from SemanticDB
 	Range     *sdb.Range
 	Signature *SignatureInfo
+	Doc       string // Javadoc/Scaladoc documentation text
 	IsStatic  bool
 	SameFile  bool
 }

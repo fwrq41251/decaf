@@ -27,10 +27,9 @@ func formatHover(sym *index.Symbol) string {
 
 	b.WriteString("\n```")
 
-	if sym.Symbol != "" {
-		b.WriteString("\n\n---\n`")
-		b.WriteString(sym.Symbol)
-		b.WriteString("`")
+	if sym.Doc != "" {
+		b.WriteString("\n\n---\n")
+		b.WriteString(sym.Doc)
 	}
 
 	return b.String()

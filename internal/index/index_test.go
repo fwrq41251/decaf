@@ -485,3 +485,77 @@ func TestIncrementalIndex(t *testing.T) {
 		t.Fatalf("expected FooRenamed, got %s", idx.AllSymbols()[0].Name)
 	}
 }
+
+func TestSymbolSignatures_Overloads(t *testing.T) {
+	tmpDir := t.TempDir()
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Foo.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "com/example/Foo#", DisplayName: "Foo", Kind: sdb.SymbolInformation_CLASS},
+				{
+					Symbol: "com/example/Foo#add().", DisplayName: "add", Kind: sdb.SymbolInformation_METHOD,
+					Signature: &sdb.Signature{
+						SealedValue: &sdb.Signature_MethodSignature{
+							MethodSignature: &sdb.MethodSignature{
+								ParameterLists: []*sdb.Scope{{
+									Symlinks: []string{"com/example/Foo#add().(x)"},
+								}},
+							},
+						},
+					},
+				},
+				{
+					Symbol: "com/example/Foo#add().", DisplayName: "add", Kind: sdb.SymbolInformation_METHOD,
+					Signature: &sdb.Signature{
+						SealedValue: &sdb.Signature_MethodSignature{
+							MethodSignature: &sdb.MethodSignature{
+								ParameterLists: []*sdb.Scope{{
+									Symlinks: []string{"com/example/Foo#add().(x)", "com/example/Foo#add().(y)"},
+								}},
+							},
+						},
+					},
+				},
+			},
+			Occurrences: []*sdb.SymbolOccurrence{
+				{
+					Symbol: "com/example/Foo#add().",
+					Role:   sdb.SymbolOccurrence_REFERENCE,
+					Range:  &sdb.Range{StartLine: 10, StartCharacter: 4, EndLine: 10, EndCharacter: 7},
+				},
+			},
+		}},
+	}
+	writeSDB(t, filepath.Join(sdbDir, "Foo.java.semanticdb"), docs)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	if err := idx.Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	uri := "file://" + tmpDir + "/src/Foo.java"
+
+	// SymbolSignatures should return both overloads.
+	sigs := idx.SymbolSignatures(uri, 10, 5)
+	if len(sigs) != 2 {
+		t.Fatalf("expected 2 signatures, got %d", len(sigs))
+	}
+	for _, s := range sigs {
+		if s.Name != "add" {
+			t.Errorf("expected name 'add', got %q", s.Name)
+		}
+	}
+
+	// SymbolSignature (singular) should return the first one.
+	sig := idx.SymbolSignature(uri, 10, 5)
+	if sig == nil {
+		t.Fatal("expected non-nil SymbolSignature")
+	}
+	if sig.Name != "add" {
+		t.Errorf("expected name 'add', got %q", sig.Name)
+	}
+}

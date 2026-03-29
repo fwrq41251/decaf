@@ -265,6 +265,15 @@ func FuzzyMatch(name, query string) bool {
 
 // SymbolSignature returns the method signature for the symbol at the given position.
 func (idx *Index) SymbolSignature(uri string, line, character int) *Symbol {
+	sigs := idx.SymbolSignatures(uri, line, character)
+	if len(sigs) == 0 {
+		return nil
+	}
+	return &sigs[0]
+}
+
+// SymbolSignatures returns all overloaded method signatures for the symbol at the given position.
+func (idx *Index) SymbolSignatures(uri string, line, character int) []Symbol {
 	idx.mu.RLock()
 
 	relURI := idx.toRelativeURI(uri)
@@ -276,16 +285,19 @@ func (idx *Index) SymbolSignature(uri string, line, character int) *Symbol {
 
 	defs := idx.definitions[sym]
 	if len(defs) > 0 {
-		result := *defs[0]
+		result := make([]Symbol, len(defs))
+		for i, d := range defs {
+			result[i] = *d
+		}
 		idx.mu.RUnlock()
-		return &result
+		return result
 	}
 
 	idx.mu.RUnlock()
 
 	// Fallback for external symbols (JDK/Dependencies).
 	if ext := idx.resolveExternalSymbol(sym); ext != nil {
-		return ext
+		return []Symbol{*ext}
 	}
 	return nil
 }
@@ -324,6 +336,8 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 }
 
 // OccurrenceAt returns the SemanticDB occurrence at the given position.
+// Occurrences are sorted by start position, so we use binary search to find
+// the neighborhood and then check containment.
 func (idx *Index) OccurrenceAt(uri string, line, character int) *Occurrence {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
@@ -333,13 +347,32 @@ func (idx *Index) OccurrenceAt(uri string, line, character int) *Occurrence {
 	if !ok {
 		return nil
 	}
-	for _, occ := range occs {
-		r := occ.Range
+
+	line32, char32 := int32(line), int32(character)
+
+	// Binary search: find the first occurrence that starts after (line, character).
+	i := sort.Search(len(occs), func(i int) bool {
+		r := occs[i].Range
+		if r == nil {
+			return false
+		}
+		if r.StartLine != line32 {
+			return r.StartLine > line32
+		}
+		return r.StartCharacter > char32
+	})
+
+	// Walk backwards from i to find an occurrence that contains the position.
+	for j := i - 1; j >= 0; j-- {
+		r := occs[j].Range
 		if r == nil {
 			continue
 		}
+		if r.EndLine < line32 {
+			break
+		}
 		if containsPosition(r, line, character) {
-			return occ
+			return occs[j]
 		}
 	}
 	return nil
