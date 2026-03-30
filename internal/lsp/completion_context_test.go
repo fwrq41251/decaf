@@ -596,3 +596,91 @@ func TestExtractReceiverFromAST(t *testing.T) {
 		})
 	}
 }
+
+func TestParseCompletionCtx_CallContext_MethodInvocation(t *testing.T) {
+	src := []byte(`package com.example;
+
+public class MyClass {
+    public void test() {
+        String name = "hello";
+        int count = 42;
+        obj.doWork(na)
+    }
+}`)
+	// Cursor at "na" inside doWork() - line 6, character 20
+	ctx := parseCompletionCtx(src, 6, 20)
+	if ctx.Call == nil {
+		t.Fatal("expected CallContext to be non-nil")
+	}
+	if ctx.Call.Receiver != "obj" {
+		t.Errorf("CallContext.Receiver = %q, want %q", ctx.Call.Receiver, "obj")
+	}
+	if ctx.Call.MethodName != "doWork" {
+		t.Errorf("CallContext.MethodName = %q, want %q", ctx.Call.MethodName, "doWork")
+	}
+	if ctx.Call.ParamIndex != 0 {
+		t.Errorf("CallContext.ParamIndex = %d, want 0", ctx.Call.ParamIndex)
+	}
+	if ctx.Call.IsNewExpr {
+		t.Error("expected IsNewExpr to be false")
+	}
+}
+
+func TestParseCompletionCtx_CallContext_SecondParam(t *testing.T) {
+	src := []byte(`package com.example;
+
+public class MyClass {
+    public void test() {
+        String name = "hello";
+        foo("first", na)
+    }
+}`)
+	// Cursor at "na" as second param - line 5, character 24
+	ctx := parseCompletionCtx(src, 5, 24)
+	if ctx.Call == nil {
+		t.Fatal("expected CallContext to be non-nil")
+	}
+	if ctx.Call.MethodName != "foo" {
+		t.Errorf("CallContext.MethodName = %q, want %q", ctx.Call.MethodName, "foo")
+	}
+	if ctx.Call.ParamIndex != 1 {
+		t.Errorf("CallContext.ParamIndex = %d, want 1", ctx.Call.ParamIndex)
+	}
+}
+
+func TestParseCompletionCtx_CallContext_NewExpression(t *testing.T) {
+	src := []byte(`package com.example;
+
+public class MyClass {
+    public void test() {
+        String name = "hello";
+        new ArrayList(na)
+    }
+}`)
+	// Cursor at "na" inside new ArrayList() - line 5, character 24
+	ctx := parseCompletionCtx(src, 5, 24)
+	if ctx.Call == nil {
+		t.Fatal("expected CallContext to be non-nil")
+	}
+	if !ctx.Call.IsNewExpr {
+		t.Error("expected IsNewExpr to be true")
+	}
+	if ctx.Call.Constructor != "ArrayList" {
+		t.Errorf("CallContext.Constructor = %q, want %q", ctx.Call.Constructor, "ArrayList")
+	}
+}
+
+func TestParseCompletionCtx_CallContext_NoCallContext(t *testing.T) {
+	src := []byte(`package com.example;
+
+public class MyClass {
+    public void test() {
+        String na
+    }
+}`)
+	// Cursor at "na" outside any call - line 4, character 17
+	ctx := parseCompletionCtx(src, 4, 17)
+	if ctx.Call != nil {
+		t.Errorf("expected CallContext to be nil, got %+v", ctx.Call)
+	}
+}

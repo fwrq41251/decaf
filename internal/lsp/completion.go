@@ -328,6 +328,9 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		return nil
 	}
 
+	// Resolve expected parameter type if cursor is inside a method call.
+	expectedType := h.resolveExpectedType(cctx)
+
 	seen := make(map[string]struct{})
 	var items []CompletionItem
 
@@ -344,12 +347,17 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			return
 		}
 		seen[name] = struct{}{}
+		// Type-aware boost: prepend "0" for type-matching candidates, "1" otherwise.
+		typePrefix := "1"
+		if expectedType != "" && typeMatchesExpected(detail, expectedType) {
+			typePrefix = "0"
+		}
 		items = append(items, CompletionItem{
 			Label:      name,
 			Kind:       kind,
 			InsertText: name,
 			Detail:     detail,
-			SortText:   casePrefix(name) + scopeOrder + name,
+			SortText:   typePrefix + casePrefix(name) + scopeOrder + name,
 			FilterText: name,
 		})
 	}
@@ -392,7 +400,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 				Kind:             SymbolKindMethod,
 				InsertText:       m + "($1)$0",
 				InsertTextFormat: InsertTextFormatSnippet,
-				SortText:         casePrefix(m) + "3" + m,
+				SortText:         "1" + casePrefix(m) + "3" + m,
 				FilterText:       m,
 			})
 		}
@@ -448,7 +456,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			Kind:       sdbKindToCompletionKind(s.Kind),
 			InsertText: s.Name,
 			Detail:     detail,
-			SortText:   casePrefix(s.Name) + scopeOrder + s.Name,
+			SortText:   "1" + casePrefix(s.Name) + scopeOrder + s.Name,
 			FilterText: s.Name,
 		}
 		if s.Doc != "" {
@@ -469,6 +477,113 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	}
 
 	return items
+}
+
+// resolveExpectedType resolves the expected parameter type at the cursor position.
+// Returns a simple type name (e.g. "String", "int") or "" if unknown.
+func (h *Handler) resolveExpectedType(cctx *CompletionCtx) string {
+	if cctx.Call == nil {
+		return ""
+	}
+
+	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
+
+	var syms []index.Symbol
+	if cctx.Call.IsNewExpr {
+		// new Foo(...) → look up constructors.
+		if sym := resolver.resolve(cctx.Call.Constructor); sym != "" {
+			syms = h.findMembersByName(sym, cctx.Call.Constructor)
+		}
+	} else if cctx.Call.Receiver != "" {
+		// obj.method(...) → resolve receiver type, find method.
+		fakeCctx := &CompletionCtx{
+			Receiver:       cctx.Call.Receiver,
+			Locals:         cctx.Locals,
+			Params:         cctx.Params,
+			ClassFields:    cctx.ClassFields,
+			Imports:        cctx.Imports,
+			Package:        cctx.Package,
+			EnclosingClass: cctx.EnclosingClass,
+		}
+		typeExpr, _ := h.resolveReceiverTypeExpr(fakeCctx, resolver)
+		if typeExpr != nil {
+			syms = h.findMembersByName(typeExpr.Sym, cctx.Call.MethodName)
+		}
+	} else {
+		// Unqualified call: search enclosing class.
+		if cctx.EnclosingClass != "" {
+			classSym := resolver.resolve(cctx.EnclosingClass)
+			if classSym != "" {
+				syms = h.findMembersByName(classSym, cctx.Call.MethodName)
+			}
+		}
+	}
+
+	if len(syms) == 0 {
+		return ""
+	}
+
+	// Find the best matching overload and extract param type at the given index.
+	paramIdx := cctx.Call.ParamIndex
+	for _, sym := range syms {
+		if sym.Signature == nil {
+			continue
+		}
+		if paramIdx < len(sym.Signature.Params) {
+			return extractParamTypeName(sym.Signature.Params[paramIdx])
+		}
+	}
+	return ""
+}
+
+// extractParamTypeName extracts the type name from a parameter label like "String arg" or "int x".
+func extractParamTypeName(paramLabel string) string {
+	// Parameter labels are formatted as "Type name", e.g. "String[] args", "int x".
+	// The type is everything before the last space.
+	lastSpace := strings.LastIndex(paramLabel, " ")
+	if lastSpace <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(paramLabel[:lastSpace])
+}
+
+// typeMatchesExpected checks if a candidate's type (detail string) matches the expected type.
+func typeMatchesExpected(candidateType, expectedType string) bool {
+	if candidateType == "" || expectedType == "" {
+		return false
+	}
+	// Strip generic arguments for comparison (e.g. "List<String>" → "List").
+	candidateBase := stripGenerics(candidateType)
+	expectedBase := stripGenerics(expectedType)
+
+	// Exact match.
+	if candidateBase == expectedBase {
+		return true
+	}
+
+	// Match simplified names: "java/lang/String#" matches "String".
+	candidateSimple := simplifyTypeName(candidateBase)
+	expectedSimple := simplifyTypeName(expectedBase)
+	return candidateSimple == expectedSimple
+}
+
+// stripGenerics removes generic type arguments: "List<String>" → "List".
+func stripGenerics(name string) string {
+	if idx := strings.IndexByte(name, '<'); idx >= 0 {
+		return name[:idx]
+	}
+	return name
+}
+
+// simplifyTypeName extracts the simple class name from a potentially qualified name.
+// e.g. "java/lang/String#" → "String", "java.util.List" → "List"
+func simplifyTypeName(name string) string {
+	name = strings.TrimSuffix(name, "#")
+	name = strings.TrimSuffix(name, ".")
+	if idx := strings.LastIndexAny(name, "/."); idx >= 0 {
+		return name[idx+1:]
+	}
+	return name
 }
 
 // methodCompletionItem builds a CompletionItem for a member (method or field).

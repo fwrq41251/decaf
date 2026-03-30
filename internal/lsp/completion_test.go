@@ -65,3 +65,48 @@ func TestMethodCompletionItem(t *testing.T) {
 		t.Errorf("field: InsertTextFormat = %d, want 0", item3.InsertTextFormat)
 	}
 }
+
+func TestExtractParamTypeName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"String name", "String"},
+		{"int x", "int"},
+		{"String[] args", "String[]"},
+		{"List<String> items", "List<String>"},
+		{"Map<String, Integer> map", "Map<String, Integer>"},
+		{"", ""},
+		{"x", ""},
+	}
+	for _, tt := range tests {
+		got := extractParamTypeName(tt.input)
+		if got != tt.want {
+			t.Errorf("extractParamTypeName(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestTypeMatchesExpected(t *testing.T) {
+	tests := []struct {
+		candidate string
+		expected  string
+		want      bool
+	}{
+		{"String", "String", true},
+		{"int", "int", true},
+		{"String", "int", false},
+		{"java/lang/String#", "String", true},
+		{"String", "java/lang/String#", true},
+		{"List<String>", "List", true},
+		{"List<String>", "List<Integer>", true}, // base type match
+		{"", "String", false},
+		{"String", "", false},
+	}
+	for _, tt := range tests {
+		got := typeMatchesExpected(tt.candidate, tt.expected)
+		if got != tt.want {
+			t.Errorf("typeMatchesExpected(%q, %q) = %v, want %v", tt.candidate, tt.expected, got, tt.want)
+		}
+	}
+}

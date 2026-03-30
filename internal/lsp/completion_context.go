@@ -29,18 +29,29 @@ type ValueDecl struct {
 	Initializer *VarInitializer // non-nil when type is "var" with a method call initializer
 }
 
+// CallContext holds information about an enclosing method call at the cursor,
+// used for type-aware completion ranking.
+type CallContext struct {
+	Receiver    string // receiver expression text (empty for unqualified calls)
+	MethodName  string // method name being called
+	ParamIndex  int    // 0-based index of the parameter the cursor is in
+	IsNewExpr   bool   // true if this is a "new Foo(...)" expression
+	Constructor string // type name for new-expression (e.g. "Foo")
+}
+
 // CompletionCtx holds the parsed context for a completion request.
 type CompletionCtx struct {
 	Kind           CompletionKind
-	Receiver       string      // the text before the dot (for dot completion)
-	Prefix         string      // the identifier prefix being typed
-	Locals         []ValueDecl // local variables visible at cursor
-	Params         []ValueDecl // method parameters
-	ClassFields    []ValueDecl // fields of enclosing class
-	ClassMethods   []string    // method names of enclosing class
+	Receiver       string       // the text before the dot (for dot completion)
+	Prefix         string       // the identifier prefix being typed
+	Locals         []ValueDecl  // local variables visible at cursor
+	Params         []ValueDecl  // method parameters
+	ClassFields    []ValueDecl  // fields of enclosing class
+	ClassMethods   []string     // method names of enclosing class
 	Imports        []ImportSpec
 	Package        string
-	EnclosingClass string // simple name of the enclosing class
+	EnclosingClass string       // simple name of the enclosing class
+	Call           *CallContext // non-nil when cursor is inside method call arguments
 }
 
 var _ = javaParserPool
@@ -94,6 +105,9 @@ func parseCompletionCtx(content []byte, line, character int) *CompletionCtx {
 
 		// 8. Extract local variables from current scope.
 		extractLocals(cursorNode, content, cursorOffset, ctx)
+
+		// 9. Detect if cursor is inside a method call's argument list.
+		ctx.Call = extractCallContext(cursorNode, content, cursorOffset)
 	}
 
 	return ctx
@@ -620,5 +634,67 @@ func extractTypeFromCast(node *slog.Node, content []byte) *index.TypeExpr {
 			return extractType(child, content)
 		}
 	}
+	return nil
+}
+
+// extractCallContext detects if the cursor is inside a method call's argument list
+// and extracts the receiver, method name, and active parameter index.
+func extractCallContext(cursorNode *slog.Node, content []byte, cursorOffset int) *CallContext {
+	// Walk up to find the enclosing argument_list.
+	argList := cursorNode
+	for argList != nil && argList.Type() != "argument_list" {
+		argList = argList.Parent()
+	}
+	if argList == nil {
+		return nil
+	}
+
+	// Count which argument the cursor is in (0-based).
+	paramIndex := 0
+	for i := 0; i < int(argList.NamedChildCount()); i++ {
+		child := argList.NamedChild(i)
+		if int(child.StartByte()) >= cursorOffset {
+			break
+		}
+		paramIndex = i
+	}
+	// If cursor is before the first argument or argList has no named children,
+	// paramIndex stays 0.
+	if argList.NamedChildCount() == 0 {
+		paramIndex = 0
+	}
+
+	callNode := argList.Parent()
+	if callNode == nil {
+		return nil
+	}
+
+	switch callNode.Type() {
+	case "method_invocation":
+		nameNode := callNode.ChildByFieldName("name")
+		if nameNode == nil {
+			return nil
+		}
+		cc := &CallContext{
+			MethodName: nameNode.Content(content),
+			ParamIndex: paramIndex,
+		}
+		if objNode := callNode.ChildByFieldName("object"); objNode != nil {
+			cc.Receiver = exprToReceiver(objNode, content)
+		}
+		return cc
+
+	case "object_creation_expression":
+		te := extractTypeFromNewExpr(callNode, content)
+		if te == nil {
+			return nil
+		}
+		return &CallContext{
+			IsNewExpr:   true,
+			Constructor: te.Sym,
+			ParamIndex:  paramIndex,
+		}
+	}
+
 	return nil
 }
