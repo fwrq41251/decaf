@@ -41,7 +41,7 @@ func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) 
 	}
 
 	// Parse completion context using Tree-sitter.
-	cctx := parseCompletionCtx([]byte(content), p.Position.Line, p.Position.Character)
+	cctx := parseCompletionCtx(h.logger, []byte(content), p.Position.Line, p.Position.Character)
 
 	var items []CompletionItem
 
@@ -169,8 +169,8 @@ func (h *Handler) resolveReceiverTypeExpr(cctx *CompletionCtx, resolver *typeRes
 // then falls back to class name resolution (static access).
 // Returns the resolved type and whether this is a static access (class name, not a variable).
 func (h *Handler) resolveIdentifierTypeExpr(name string, cctx *CompletionCtx, resolver *typeResolver) (*index.TypeExpr, bool) {
-	// Search locals.
-	for i := len(cctx.Locals) - 1; i >= 0; i-- {
+	// Search locals (innermost first).
+	for i := 0; i < len(cctx.Locals); i++ {
 		if cctx.Locals[i].Name == name {
 			if te := resolver.resolveParameterized(cctx.Locals[i].Type); te != nil {
 				return te, false
@@ -181,7 +181,6 @@ func (h *Handler) resolveIdentifierTypeExpr(name string, cctx *CompletionCtx, re
 					return te, false
 				}
 			}
-			return nil, false
 		}
 	}
 	// Search params.
@@ -755,7 +754,7 @@ func (h *Handler) resolveSignatureFromAST(fileURI string, line, character int) [
 
 found:
 	// Parse completion context at the call site for type resolution.
-	cctx := parseCompletionCtx(src, line, character)
+	cctx := parseCompletionCtx(h.logger, src, line, character)
 	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
 
 	if callNode.Type() == "object_creation_expression" {

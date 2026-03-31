@@ -103,27 +103,18 @@ func (r *typeResolver) resolve(name string) string {
 		return r.resolve(baseName)
 	}
 
-	// 1. If it's already an FQN (contains dots), convert to symbol and check index.
-	if strings.Contains(name, ".") {
-		sym := fqnToSymbol(name)
-		// Check if this symbol exists in our index.
-		if def := r.idx.SymbolDefinition(sym); def != nil {
-			return sym
-		}
-		// Also handle case where it's a simple name but with array suffix "com.foo.Bar[]"
-		base := strings.TrimSuffix(name, "[]")
-		if strings.Contains(base, ".") {
-			sym = fqnToSymbol(base)
-			if def := r.idx.SymbolDefinition(sym); def != nil {
-				return sym
-			}
-		}
-	}
-
 	// Strip array suffix for resolution.
 	arrayBase := strings.TrimSuffix(name, "[]")
 	if arrayBase == "" || isPrimitive(arrayBase) {
 		return ""
+	}
+
+	// 1. If it's already an FQN (contains dots), convert to symbol and check index.
+	if strings.Contains(arrayBase, ".") {
+		sym := fqnToSymbol(arrayBase)
+		if def := r.idx.SymbolDefinition(sym); def != nil {
+			return sym
+		}
 	}
 
 	// 1. Explicit imports: look for "import java.util.List" matching "List".
@@ -131,7 +122,6 @@ func (r *typeResolver) resolve(name string) string {
 		if imp.Static || imp.Wildcard {
 			continue
 		}
-		// Extract simple name from import path.
 		if idx := strings.LastIndex(imp.Path, "."); idx >= 0 {
 			importSimple := imp.Path[idx+1:]
 			if importSimple == arrayBase {

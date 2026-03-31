@@ -23,7 +23,7 @@ public class MyClass {
     public void otherMethod() {}
 }`)
 	// "items." is on line 12 (0-indexed), character 14 (after the dot)
-	ctx := parseCompletionCtx(src, 12, 14)
+	ctx := parseCompletionCtx(nil, src, 12, 14)
 	if ctx.Kind != CompletionDot {
 		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
 	}
@@ -46,7 +46,7 @@ public class MyClass {
     }
 }`)
 	// "items.ge" on line 6, character 16 (after "ge")
-	ctx := parseCompletionCtx(src, 6, 16)
+	ctx := parseCompletionCtx(nil, src, 6, 16)
 	if ctx.Kind != CompletionDot {
 		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
 	}
@@ -67,7 +67,7 @@ public class MyClass {
     }
 }`)
 	// "pri" on line 4, character 11 (after "pri")
-	ctx := parseCompletionCtx(src, 4, 11)
+	ctx := parseCompletionCtx(nil, src, 4, 11)
 	if ctx.Kind != CompletionLexical {
 		t.Fatalf("expected CompletionLexical, got %d", ctx.Kind)
 	}
@@ -87,7 +87,7 @@ public class MyClass {
     }
 }`)
 	// cursor at blank line 6, character 8
-	ctx := parseCompletionCtx(src, 6, 8)
+	ctx := parseCompletionCtx(nil, src, 6, 8)
 	if len(ctx.Locals) != 2 {
 		t.Fatalf("expected 2 locals, got %d: %+v", len(ctx.Locals), ctx.Locals)
 	}
@@ -110,7 +110,7 @@ public class MyClass {
     }
 }`)
 	// cursor at line 6, character 8
-	ctx := parseCompletionCtx(src, 6, 8)
+	ctx := parseCompletionCtx(nil, src, 6, 8)
 	if len(ctx.Params) != 2 {
 		t.Fatalf("expected 2 params, got %d: %+v", len(ctx.Params), ctx.Params)
 	}
@@ -134,7 +134,7 @@ public class MyClass {
     }
 }`)
 	// cursor at line 7, character 8
-	ctx := parseCompletionCtx(src, 7, 8)
+	ctx := parseCompletionCtx(nil, src, 7, 8)
 	if len(ctx.ClassFields) != 2 {
 		t.Fatalf("expected 2 class fields, got %d: %+v", len(ctx.ClassFields), ctx.ClassFields)
 	}
@@ -158,7 +158,7 @@ public class MyClass {
     public String getName() { return ""; }
 }`)
 	// cursor at line 4, character 8
-	ctx := parseCompletionCtx(src, 4, 8)
+	ctx := parseCompletionCtx(nil, src, 4, 8)
 	if len(ctx.ClassMethods) != 3 {
 		t.Fatalf("expected 3 class methods, got %d: %v", len(ctx.ClassMethods), ctx.ClassMethods)
 	}
@@ -184,7 +184,7 @@ public class MyClass {
     }
 }`)
 	// cursor at line 9, character 8
-	ctx := parseCompletionCtx(src, 9, 8)
+	ctx := parseCompletionCtx(nil, src, 9, 8)
 	if len(ctx.Imports) != 4 {
 		t.Fatalf("expected 4 imports, got %d: %+v", len(ctx.Imports), ctx.Imports)
 	}
@@ -214,7 +214,7 @@ public class MyClass {
         
     }
 }`)
-	ctx := parseCompletionCtx(src, 4, 8)
+	ctx := parseCompletionCtx(nil, src, 4, 8)
 	if ctx.Package != "com.example" {
 		t.Fatalf("expected package 'com.example', got %q", ctx.Package)
 	}
@@ -228,7 +228,7 @@ public class MyClass {
         
     }
 }`)
-	ctx := parseCompletionCtx(src, 4, 8)
+	ctx := parseCompletionCtx(nil, src, 4, 8)
 	if ctx.EnclosingClass != "MyClass" {
 		t.Fatalf("expected enclosing class 'MyClass', got %q", ctx.EnclosingClass)
 	}
@@ -245,7 +245,7 @@ public class MyClass {
     }
 }`)
 	// "this." on line 6, character 13 (after the dot)
-	ctx := parseCompletionCtx(src, 6, 13)
+	ctx := parseCompletionCtx(nil, src, 6, 13)
 	if ctx.Kind != CompletionDot {
 		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
 	}
@@ -263,7 +263,7 @@ public class MyClass {
     }
 }`)
 	// "foo.bar." on line 4, character 16 (after the last dot)
-	ctx := parseCompletionCtx(src, 4, 16)
+	ctx := parseCompletionCtx(nil, src, 4, 16)
 	if ctx.Kind != CompletionDot {
 		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
 	}
@@ -286,7 +286,7 @@ public class MyClass {
     }
 }`)
 	// cursor inside the for body at "item." — line 5, character 17
-	ctx := parseCompletionCtx(src, 5, 17)
+	ctx := parseCompletionCtx(nil, src, 5, 17)
 	if ctx.Kind != CompletionDot {
 		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
 	}
@@ -320,7 +320,7 @@ public class MyClass {
     }
 }`)
 	// cursor at "e." — line 6, character 14
-	ctx := parseCompletionCtx(src, 6, 14)
+	ctx := parseCompletionCtx(nil, src, 6, 14)
 	if ctx.Kind != CompletionDot {
 		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
 	}
@@ -352,7 +352,7 @@ public class MyClass {
     }
 }`)
 	// cursor at "stream." — line 5, character 19
-	ctx := parseCompletionCtx(src, 5, 19)
+	ctx := parseCompletionCtx(nil, src, 5, 19)
 	if ctx.Kind != CompletionDot {
 		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
 	}
@@ -382,7 +382,7 @@ public class MyClass {
     }
 }`)
 	// cursor at "list." — line 4, character 13
-	ctx := parseCompletionCtx(src, 4, 13)
+	ctx := parseCompletionCtx(nil, src, 4, 13)
 	if ctx.Kind != CompletionDot {
 		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
 	}
@@ -414,7 +414,7 @@ public class MyClass {
         name.
     }
 }`)
-	ctx := parseCompletionCtx(src, 4, 13)
+	ctx := parseCompletionCtx(nil, src, 4, 13)
 	found := false
 	for _, l := range ctx.Locals {
 		if l.Name == "name" {
@@ -437,7 +437,7 @@ public class MyClass {
         obj.
     }
 }`)
-	ctx := parseCompletionCtx(src, 4, 12)
+	ctx := parseCompletionCtx(nil, src, 4, 12)
 	found := false
 	for _, l := range ctx.Locals {
 		if l.Name == "obj" {
@@ -460,7 +460,7 @@ public class MyClass {
         list.
     }
 }`)
-	ctx := parseCompletionCtx(src, 4, 13)
+	ctx := parseCompletionCtx(nil, src, 4, 13)
 	found := false
 	for _, l := range ctx.Locals {
 		if l.Name == "list" {
@@ -493,7 +493,7 @@ public class MyClass {
         num.
     }
 }`)
-	ctx := parseCompletionCtx(src, 4, 12)
+	ctx := parseCompletionCtx(nil, src, 4, 12)
 	found := false
 	for _, l := range ctx.Locals {
 		if l.Name == "num" {
@@ -586,7 +586,7 @@ func TestExtractReceiverFromAST(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			content := []byte(tt.src)
-			ctx := parseCompletionCtx(content, tt.line, tt.char)
+			ctx := parseCompletionCtx(nil, content, tt.line, tt.char)
 			if ctx.Kind != CompletionDot {
 				t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
 			}
@@ -608,7 +608,7 @@ public class MyClass {
     }
 }`)
 	// Cursor at "na" inside doWork() - line 6, character 20
-	ctx := parseCompletionCtx(src, 6, 20)
+	ctx := parseCompletionCtx(nil, src, 6, 20)
 	if ctx.Call == nil {
 		t.Fatal("expected CallContext to be non-nil")
 	}
@@ -636,7 +636,7 @@ public class MyClass {
     }
 }`)
 	// Cursor at "na" as second param - line 5, character 24
-	ctx := parseCompletionCtx(src, 5, 24)
+	ctx := parseCompletionCtx(nil, src, 5, 24)
 	if ctx.Call == nil {
 		t.Fatal("expected CallContext to be non-nil")
 	}
@@ -658,7 +658,7 @@ public class MyClass {
     }
 }`)
 	// Cursor at "na" inside new ArrayList() - line 5, character 24
-	ctx := parseCompletionCtx(src, 5, 24)
+	ctx := parseCompletionCtx(nil, src, 5, 24)
 	if ctx.Call == nil {
 		t.Fatal("expected CallContext to be non-nil")
 	}
@@ -679,7 +679,7 @@ public class MyClass {
     }
 }`)
 	// Cursor at "na" outside any call - line 4, character 17
-	ctx := parseCompletionCtx(src, 4, 17)
+	ctx := parseCompletionCtx(nil, src, 4, 17)
 	if ctx.Call != nil {
 		t.Errorf("expected CallContext to be nil, got %+v", ctx.Call)
 	}

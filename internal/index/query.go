@@ -520,9 +520,9 @@ func (idx *Index) TypeBySimpleName(name string) []Symbol {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	name = strings.ToLower(name)
+	lowerName := strings.ToLower(name)
 	var result []Symbol
-	for _, d := range idx.typeBySimpleName[name] {
+	for _, d := range idx.typeBySimpleName[lowerName] {
 		result = append(result, *d)
 	}
 	return result

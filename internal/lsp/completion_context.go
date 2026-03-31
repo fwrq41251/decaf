@@ -2,6 +2,9 @@ package lsp
 
 import (
 	"context"
+	"log"
+	"runtime/debug"
+	"strings"
 
 	"github.com/fwrq41251/decaf/internal/index"
 	slog "github.com/smacker/go-tree-sitter"
@@ -58,7 +61,17 @@ var _ = javaParserPool
 
 // parseCompletionCtx parses the buffer content with Tree-sitter and extracts
 // completion context at the given cursor position (0-indexed line and character).
-func parseCompletionCtx(content []byte, line, character int) *CompletionCtx {
+func parseCompletionCtx(logger *log.Logger, content []byte, line, character int) (ctx *CompletionCtx) {
+	defer func() {
+		if r := recover(); r != nil {
+			if logger != nil {
+				logger.Printf("panic in parseCompletionCtx: %v\n%s", r, debug.Stack())
+			}
+			// Return an empty context if parsing or extraction panics.
+			ctx = &CompletionCtx{}
+		}
+	}()
+
 	parser := javaParserPool.Get().(*slog.Parser)
 	defer javaParserPool.Put(parser)
 
@@ -68,7 +81,7 @@ func parseCompletionCtx(content []byte, line, character int) *CompletionCtx {
 	}
 	root := tree.RootNode()
 
-	ctx := &CompletionCtx{}
+	ctx = &CompletionCtx{}
 
 	// 1. Determine cursor byte offset.
 	cursorOffset := PositionToByteOffset(content, line, character)
@@ -164,6 +177,8 @@ func extractReceiverFromAST(root *slog.Node, content []byte, dotBytePos int) str
 		}
 	}
 
+	// For debugging, we can't easily log here without h.logger.
+	// We'll trust the caller (handleCompletion) to log the resulting receiver string.
 	return exprToReceiver(node, content)
 }
 
@@ -266,7 +281,13 @@ func extractType(node *slog.Node, content []byte) *index.TypeExpr {
 	}
 	switch node.Type() {
 	case "type_identifier", "primitive_type", "void_type", "boolean_type":
-		return &index.TypeExpr{Sym: node.Content(content)}
+		// Only extract the content if it's a simple identifier/keyword.
+		// If it contains dots or spaces, Tree-sitter probably merged nodes due to an ERROR.
+		c := node.Content(content)
+		if strings.ContainsAny(c, ". \n\t") {
+			return nil
+		}
+		return &index.TypeExpr{Sym: c}
 	case "generic_type":
 		// generic_type has a base type and type_arguments.
 		var base *index.TypeExpr
@@ -298,9 +319,19 @@ func extractType(node *slog.Node, content []byte) *index.TypeExpr {
 			}
 		}
 	case "scoped_type_identifier":
-		return &index.TypeExpr{Sym: node.Content(content)}
+		c := node.Content(content)
+		// For scoped identifiers (e.g. "java.util.List"), we allow dots but not whitespace.
+		if strings.ContainsAny(c, " \n\t") {
+			return nil
+		}
+		return &index.TypeExpr{Sym: c}
 	}
-	return &index.TypeExpr{Sym: node.Content(content)}
+	// Fallback to content if it's not a complex node.
+	c := node.Content(content)
+	if strings.ContainsAny(c, " \n\t") {
+		return nil
+	}
+	return &index.TypeExpr{Sym: c}
 }
 
 // extractDeclarators extracts variable names from variable_declarator children.
@@ -446,6 +477,17 @@ func extractLocals(cursorNode *slog.Node, content []byte, cursorOffset int, ctx 
 			}
 		}
 	}
+
+	// Deduplicate by name (keeping the first one found, which is innermost).
+	seen := make(map[string]struct{})
+	var deduped []ValueDecl
+	for _, l := range ctx.Locals {
+		if _, ok := seen[l.Name]; !ok {
+			deduped = append(deduped, l)
+			seen[l.Name] = struct{}{}
+		}
+	}
+	ctx.Locals = deduped
 }
 
 // collectEnhancedForVar extracts the loop variable from an enhanced_for_statement.
