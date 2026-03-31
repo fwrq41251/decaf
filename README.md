@@ -17,26 +17,28 @@ Editor (Neovim/Zed)
                                               │
                                               ▼
                                         SemanticDB Index
+                                 (Lazy indexing for JARs/JDK)
 ```
 
 ## Features
 
-- **Diagnostics**: Compilation errors/warnings forwarded from Bloop in real-time
-- **Goto Definition**: Jump to symbol definitions via SemanticDB index
-- **Find References**: Find all usages of a symbol via SemanticDB index
-- **Hover**: Display type signatures and symbol information
-- **Completion**: Code completion suggestions from indexed symbols
+- **Diagnostics**: Real-time compilation errors/warnings forwarded from Bloop
+- **Goto Definition**: Jump to symbol definitions in your project, external libraries, and the JDK (lazy indexed)
+- **Find References**: Find all usages of a symbol across the workspace
+- **Hover**: Display type signatures, symbol info, and **Javadoc documentation**
+- **Completion**: Type-aware completion ranking with support for overloaded methods
 - **Signature Help**: Method signature display with parameter tracking
-- **Rename**: Project-wide symbol renaming via SemanticDB references
+- **Rename**: Project-wide renaming, including automatic file renaming for top-level classes
 - **Document Symbol**: Outline view with class/method hierarchy
 - **Document Highlight**: Highlight all occurrences of a symbol in the current file
 - **Implementation**: Find classes implementing an interface or extending a class
 - **Workspace Symbol**: Fuzzy search across all indexed symbols
-- **Compile on Save**: Automatic incremental compilation when files are saved
+- **Compile on Save**: Automatic incremental compilation and index updates
+- **Progress Tracking**: Real-time feedback via LSP workDoneProgress during setup and compilation
 
 ## Prerequisites
 
-- **Go 1.21+** (to build decaf)
+- **Go 1.25+** (to build decaf)
 - **Bloop** — install via [coursier](https://get-coursier.io/):
   ```sh
   cs install bloop
@@ -124,11 +126,10 @@ didSave → Bloop compile (with semanticdb-javac) → .semanticdb generated → 
 
 When you request "Go to Definition":
 
-```
-Cursor position → Find symbol in SemanticDB index → Return definition location
-```
+- **Project Symbol**: Found in the local SemanticDB index.
+- **External/JDK Symbol**: decaf lazily indexes the relevant JAR or `jmod` on-demand to locate the source/binary definition.
 
-decaf never parses Java source code directly. All semantic information comes from the `.semanticdb` files produced by the `semanticdb-javac` compiler plugin during Bloop compilation.
+decaf never parses Java source code for semantic analysis. All information comes from `.semanticdb` files or compiled bytecode, ensuring consistency with the actual compiler.
 
 ## Project Structure
 
@@ -137,12 +138,14 @@ decaf/
 ├── cmd/decaf/main.go              # Entry point
 ├── proto/semanticdb.proto         # SemanticDB protobuf schema
 ├── internal/
+│   ├── bsp/                       # BSP client (Bloop connection)
+│   ├── index/                     # SemanticDB & classfile indexer
 │   ├── jsonrpc/                   # JSON-RPC transport + dispatcher
 │   ├── lsp/                       # LSP protocol handlers + types
-│   ├── bsp/                       # BSP client (Bloop connection)
-│   ├── index/                     # SemanticDB index (definition/references)
 │   ├── semanticdb/                # Generated protobuf Go code
-│   └── server/                    # Server orchestration
+│   ├── server/                    # Server orchestration
+│   ├── setup/                     # Project discovery and Bloop configuration
+│   └── uri/                       # URI handling utilities
 └── go.mod
 ```
 
