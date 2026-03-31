@@ -88,7 +88,7 @@ func TestIndexLoadAndQuery(t *testing.T) {
 	if defs[0].Name != "Main" {
 		t.Fatalf("expected definition name 'Main', got %q", defs[0].Name)
 	}
-	if defs[0].Range == nil {
+	if defs[0].Range.IsEmpty() {
 		t.Fatal("expected definition to have a range")
 	}
 	if defs[0].Range.StartLine != 2 || defs[0].Range.StartCharacter != 13 {
@@ -104,7 +104,7 @@ func TestIndexLoadAndQuery(t *testing.T) {
 	}
 	found := false
 	for _, r := range refs {
-		if r.Range != nil && r.Range.StartLine == 10 {
+		if !r.Range.IsEmpty() && r.Range.StartLine == 10 {
 			found = true
 		}
 	}

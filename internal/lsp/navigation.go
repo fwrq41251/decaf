@@ -28,7 +28,7 @@ func (h *Handler) handleDefinition(ctx context.Context, params json.RawMessage) 
 	defs := h.idx.Definition(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	locations := make([]LSPLocation, 0, len(defs))
 	for _, d := range defs {
-		if d.Range == nil {
+		if d.Range.IsEmpty() {
 			continue
 		}
 		locations = append(locations, LSPLocation{
@@ -61,7 +61,7 @@ func (h *Handler) handleReferences(ctx context.Context, params json.RawMessage) 
 	if p.Context.IncludeDeclaration {
 		defs := h.idx.Definition(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 		for _, d := range defs {
-			if d.Range == nil {
+			if d.Range.IsEmpty() {
 				continue
 			}
 			// Convert Symbol to Occurrence-like structure for the loop below.
@@ -79,7 +79,7 @@ func (h *Handler) handleReferences(ctx context.Context, params json.RawMessage) 
 	locations := make([]LSPLocation, 0, len(refs))
 	seen := make(map[string]bool)
 	for _, r := range refs {
-		if r.Range == nil {
+		if r.Range.IsEmpty() {
 			continue
 		}
 		loc := LSPLocation{
@@ -158,7 +158,7 @@ func (h *Handler) handleDocumentHighlight(ctx context.Context, params json.RawMe
 	occs := h.idx.FileOccurrencesOf(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	highlights := make([]DocumentHighlight, 0, len(occs))
 	for _, occ := range occs {
-		if occ.Range == nil {
+		if occ.Range.IsEmpty() {
 			continue
 		}
 		highlights = append(highlights, DocumentHighlight{
@@ -183,7 +183,7 @@ func (h *Handler) handleImplementation(ctx context.Context, params json.RawMessa
 	impls := h.idx.Implementations(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	locations := make([]LSPLocation, 0, len(impls))
 	for _, d := range impls {
-		if d.Range == nil {
+		if d.Range.IsEmpty() {
 			continue
 		}
 		locations = append(locations, LSPLocation{
@@ -208,7 +208,7 @@ func (h *Handler) handleWorkspaceSymbol(ctx context.Context, params json.RawMess
 	symbols := h.idx.SearchSymbols(p.Query)
 	result := make([]SymbolInformation, 0, len(symbols))
 	for _, s := range symbols {
-		if s.Range == nil {
+		if s.Range.IsEmpty() {
 			continue
 		}
 		result = append(result, SymbolInformation{

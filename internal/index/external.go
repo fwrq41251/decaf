@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
 	"github.com/fwrq41251/decaf/internal/uri"
 )
 
@@ -93,7 +92,7 @@ func (idx *Index) createExternalSymbol(sym, path string) *Symbol {
 	}
 
 	if line != -1 {
-		s.Range = &sdb.Range{
+		s.Range = Range{
 			StartLine:      int32(line),
 			StartCharacter: int32(col),
 			EndLine:        int32(line),

@@ -522,15 +522,15 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			Symbol: occSym,
 			Role:   occ.Role,
 			URI:    uri,
-			Range:  occ.Range,
+			Range:  FromSDB(occ.Range),
 		}
 
 		if occ.Role == sdb.SymbolOccurrence_DEFINITION {
 			// Update the definition's range if we have it from occurrences.
 			if defs, ok := idx.definitions[occSym]; ok {
 				for _, d := range defs {
-					if d.URI == uri && d.Range == nil {
-						d.Range = occ.Range
+					if d.URI == uri && d.Range.IsEmpty() {
+						d.Range = FromSDB(occ.Range)
 					}
 				}
 			}
@@ -549,8 +549,8 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 	occs := idx.fileOccurrences[uri]
 	sort.Slice(occs, func(i, j int) bool {
 		ri, rj := occs[i].Range, occs[j].Range
-		if ri == nil || rj == nil {
-			return ri != nil
+		if ri.IsEmpty() || rj.IsEmpty() {
+			return !ri.IsEmpty()
 		}
 		if ri.StartLine != rj.StartLine {
 			return ri.StartLine < rj.StartLine

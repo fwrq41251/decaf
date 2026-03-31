@@ -430,7 +430,7 @@ func formatMethodSignature(name, desc string) *SignatureInfo {
 	b.WriteString(")")
 
 	return &SignatureInfo{
-		Label:  b.String(),
-		Params: paramLabels,
+		Label:     b.String(),
+		HasParams: len(paramLabels) > 0,
 	}
 }

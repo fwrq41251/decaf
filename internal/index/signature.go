@@ -49,8 +49,8 @@ func buildMethodSignatureInfo(name string, sig *sdb.MethodSignature) *SignatureI
 	b.WriteString(")")
 
 	return &SignatureInfo{
-		Label:  b.String(),
-		Params: params,
+		Label:     b.String(),
+		HasParams: len(params) > 0,
 	}
 }
 

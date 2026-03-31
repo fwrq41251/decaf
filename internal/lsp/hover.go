@@ -60,12 +60,17 @@ func symbolKindLabel(kind sdb.SymbolInformation_Kind) string {
 
 // formatSignatureHelp produces a SignatureInformation for signatureHelp.
 func formatSignatureHelp(sym *index.Symbol) *SignatureInformation {
-	if sym.Signature == nil || len(sym.Signature.Params) == 0 {
+	if sym.Signature == nil || !sym.Signature.HasParams {
 		return nil
 	}
 
-	params := make([]ParameterInformation, len(sym.Signature.Params))
-	for i, p := range sym.Signature.Params {
+	parsed := sym.Signature.ParseParams()
+	if len(parsed) == 0 {
+		return nil
+	}
+
+	params := make([]ParameterInformation, len(parsed))
+	for i, p := range parsed {
 		params[i] = ParameterInformation{Label: p}
 	}
 

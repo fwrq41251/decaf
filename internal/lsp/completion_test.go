@@ -33,8 +33,8 @@ func TestOverloadDetail(t *testing.T) {
 func TestMethodCompletionItem(t *testing.T) {
 	// Method with params: snippet with tabstop inside parens.
 	sig := &index.SignatureInfo{
-		Label:  "void doWork(String name)",
-		Params: []string{"String name"},
+		Label:     "void doWork(String name)",
+		HasParams: true,
 	}
 	item := methodCompletionItem("doWork", CompletionKindMethod, sig, "", "")
 	if item.InsertText != "doWork($1)$0" {

@@ -12,11 +12,15 @@ import (
 
 // Definition returns the definition locations for a symbol at the given position.
 func (idx *Index) Definition(uri string, line, character int) []Symbol {
-	idx.mu.RLock()
-
-	// Find the symbol at the given position.
 	relURI := idx.toRelativeURI(uri)
+
+	idx.mu.RLock()
 	sym := idx.symbolAt(relURI, line, character)
+	idx.mu.RUnlock()
+
+	idx.ensureMembersOf(sym)
+
+	idx.mu.RLock()
 	idx.logger.Printf("Definition request: uri=%s, relURI=%s, symbolAt=%s", uri, relURI, sym)
 
 	if sym == "" {
@@ -34,7 +38,7 @@ func (idx *Index) Definition(uri string, line, character int) []Symbol {
 		// for completion/hover support; these should not block external resolution.
 		hasRange := false
 		for _, s := range result {
-			if s.Range != nil {
+			if !s.Range.IsEmpty() {
 				hasRange = true
 				break
 			}
@@ -77,10 +81,15 @@ func (idx *Index) References(uri string, line, character int) []Occurrence {
 
 // Hover returns the symbol information at the given position (for hover).
 func (idx *Index) Hover(uri string, line, character int) *Symbol {
-	idx.mu.RLock()
-
 	relURI := idx.toRelativeURI(uri)
+
+	idx.mu.RLock()
 	sym := idx.symbolAt(relURI, line, character)
+	idx.mu.RUnlock()
+
+	idx.ensureMembersOf(sym)
+
+	idx.mu.RLock()
 	if sym == "" {
 		idx.mu.RUnlock()
 		return nil
@@ -126,7 +135,7 @@ func (idx *Index) symbolAt(uri string, line, character int) string {
 	// Binary search: find the first occurrence that starts after (line, character).
 	i := sort.Search(len(occs), func(i int) bool {
 		r := occs[i].Range
-		if r == nil {
+		if r.IsEmpty() {
 			return false
 		}
 		if r.StartLine != line32 {
@@ -139,7 +148,7 @@ func (idx *Index) symbolAt(uri string, line, character int) string {
 	// Walk backwards from i to find an occurrence that contains the position.
 	for j := i - 1; j >= 0; j-- {
 		r := occs[j].Range
-		if r == nil {
+		if r.IsEmpty() {
 			continue
 		}
 		// Stop early: if this occurrence ends before our line, no earlier one can contain us.
@@ -317,7 +326,7 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 
 	// Collect definition occurrences.
 	for _, d := range idx.definitions[sym] {
-		if d.Range != nil {
+		if !d.Range.IsEmpty() {
 			result = append(result, Occurrence{
 				Symbol: d.Symbol,
 				Role:   sdb.SymbolOccurrence_DEFINITION,
@@ -353,7 +362,7 @@ func (idx *Index) OccurrenceAt(uri string, line, character int) *Occurrence {
 	// Binary search: find the first occurrence that starts after (line, character).
 	i := sort.Search(len(occs), func(i int) bool {
 		r := occs[i].Range
-		if r == nil {
+		if r.IsEmpty() {
 			return false
 		}
 		if r.StartLine != line32 {
@@ -365,7 +374,7 @@ func (idx *Index) OccurrenceAt(uri string, line, character int) *Occurrence {
 	// Walk backwards from i to find an occurrence that contains the position.
 	for j := i - 1; j >= 0; j-- {
 		r := occs[j].Range
-		if r == nil {
+		if r.IsEmpty() {
 			continue
 		}
 		if r.EndLine < line32 {
@@ -447,6 +456,7 @@ func (idx *Index) Implementations(uri string, line, character int) []Symbol {
 // MembersOfType returns all direct member symbols of a type,
 // plus inherited members from parent types.
 func (idx *Index) MembersOfType(typeSym string) []Symbol {
+	idx.ensureHierarchyIndexed(typeSym)
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
@@ -472,9 +482,34 @@ func (idx *Index) collectMembers(typeSym string, seen map[string]struct{}, resul
 	}
 }
 
+// ensureHierarchyIndexed recursively ensures a class and its parents are indexed.
+// It is safe to call because it releases the lock between levels.
+func (idx *Index) ensureHierarchyIndexed(typeSym string) {
+	seen := make(map[string]struct{})
+	idx.ensureHierarchyIndexedRec(typeSym, seen)
+}
+
+func (idx *Index) ensureHierarchyIndexedRec(typeSym string, seen map[string]struct{}) {
+	if _, ok := seen[typeSym]; ok {
+		return
+	}
+	seen[typeSym] = struct{}{}
+
+	idx.ensureMembersIndexed(typeSym)
+
+	idx.mu.RLock()
+	parents := idx.childToParents[typeSym]
+	idx.mu.RUnlock()
+
+	for _, p := range parents {
+		idx.ensureHierarchyIndexedRec(p, seen)
+	}
+}
+
 // TypeOfSymbol returns the type symbol for a given symbol.
 // For fields: the declared type. For methods: the return type.
 func (idx *Index) TypeOfSymbol(sym string) string {
+	idx.ensureMembersOf(sym)
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return idx.symbolType[sym]
@@ -531,7 +566,17 @@ func isTypeKind(kind sdb.SymbolInformation_Kind) bool {
 	}
 }
 
-func containsPosition(r *sdb.Range, line, character int) bool {
+// ensureMembersOf triggers lazy indexing of the class containing the given symbol.
+func (idx *Index) ensureMembersOf(sym string) {
+	if owner := extractOwner(sym); owner != "" {
+		idx.ensureMembersIndexed(owner)
+	} else if strings.HasSuffix(sym, "#") {
+		idx.ensureMembersIndexed(sym)
+	}
+}
+
+
+func containsPosition(r Range, line, character int) bool {
 	if int(r.StartLine) > line || int(r.EndLine) < line {
 		return false
 	}
@@ -573,7 +618,7 @@ func deduplicateSymbols(symbols []Symbol) []Symbol {
 	seen := make(map[string]bool)
 	var result []Symbol
 	for _, s := range symbols {
-		if s.Range == nil {
+		if s.Range.IsEmpty() {
 			continue
 		}
 		if !seen[s.URI] {
@@ -591,7 +636,7 @@ func deduplicateOccurrences(occs []Occurrence) []Occurrence {
 	seen := make(map[string]bool)
 	var result []Occurrence
 	for _, o := range occs {
-		if o.Range == nil {
+		if o.Range.IsEmpty() {
 			continue
 		}
 		key := fmt.Sprintf("%s:%d:%d-%d:%d", o.URI, o.Range.StartLine, o.Range.StartCharacter, o.Range.EndLine, o.Range.EndCharacter)

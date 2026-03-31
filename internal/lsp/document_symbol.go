@@ -19,7 +19,7 @@ func buildDocumentSymbols(symbols []index.Symbol) []DocumentSymbol {
 	var orphans []DocumentSymbol
 
 	for _, s := range symbols {
-		if s.Range == nil {
+		if s.Range.IsEmpty() {
 			continue
 		}
 
@@ -125,7 +125,7 @@ func sdbKindToCompletionKind(kind sdb.SymbolInformation_Kind) int {
 	}
 }
 
-func sdbRangeToLSP(r *sdb.Range) Range {
+func sdbRangeToLSP(r index.Range) Range {
 	return Range{
 		Start: Position{Line: int(r.StartLine), Character: int(r.StartCharacter)},
 		End:   Position{Line: int(r.EndLine), Character: int(r.EndCharacter)},

@@ -101,7 +101,7 @@ func (h *Handler) handleRename(ctx context.Context, params json.RawMessage) (any
 
 	changes := make(map[string][]TextEdit)
 	for _, occ := range occs {
-		if occ.Range == nil {
+		if occ.Range.IsEmpty() {
 			continue
 		}
 		uri := h.toFileURI(occ.URI)
@@ -164,7 +164,7 @@ func (h *Handler) handlePrepareRename(ctx context.Context, params json.RawMessag
 	}
 
 	occ := h.idx.OccurrenceAt(p.TextDocument.URI, p.Position.Line, p.Position.Character)
-	if occ == nil || occ.Range == nil {
+	if occ == nil || occ.Range.IsEmpty() {
 		return nil, nil
 	}
 

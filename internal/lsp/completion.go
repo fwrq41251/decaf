@@ -529,8 +529,9 @@ func (h *Handler) resolveExpectedType(cctx *CompletionCtx) string {
 		if sym.Signature == nil {
 			continue
 		}
-		if paramIdx < len(sym.Signature.Params) {
-			return extractParamTypeName(sym.Signature.Params[paramIdx])
+		params := sym.Signature.ParseParams()
+		if paramIdx < len(params) {
+			return extractParamTypeName(params[paramIdx])
 		}
 	}
 	return ""
@@ -603,7 +604,7 @@ func methodCompletionItem(name string, kind int, sig *index.SignatureInfo, sortT
 		item.Documentation = &MarkupContent{Kind: "markdown", Value: doc}
 	}
 	if kind == CompletionKindMethod || kind == CompletionKindConstructor {
-		if sig != nil && len(sig.Params) > 0 {
+		if sig != nil && sig.HasParams {
 			item.InsertText = name + "($1)$0"
 		} else {
 			item.InsertText = name + "()$0"

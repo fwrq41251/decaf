@@ -61,7 +61,7 @@ public class Outer {
 				t.Errorf("failed to resolve %s", tt.sym)
 				return
 			}
-			if s.Range == nil {
+			if s.Range.IsEmpty() {
 				t.Errorf("no range for %s", tt.sym)
 				return
 			}

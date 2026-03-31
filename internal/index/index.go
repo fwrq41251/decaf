@@ -72,32 +72,43 @@ type Index struct {
 
 	// set of classpath JARs already indexed by the class indexer
 	indexedJARs map[string]struct{}
+
+	// Lazy indexing state for third-party classes.
+	// class symbol -> path to JAR/jmod containing it
+	classToJAR map[string]string
+	// class symbol -> entry name within the JAR (e.g. "java/util/ArrayList.class")
+	classToEntryName map[string]string
+	// set of class symbols whose members have been indexed
+	fullyIndexedClasses map[string]struct{}
 }
 
 // NewIndex creates a new empty index.
 func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 	return &Index{
-		logger:            logger,
-		sourceRoot:        sourceRoot,
-		definitions:       make(map[string][]*Symbol),
-		references:        make(map[string][]*Occurrence),
-		fileOccurrences:   make(map[string][]*Occurrence),
-		fileSymbols:       make(map[string][]*Symbol),
-		implementors:      make(map[string][]string),
-		uriRefSymbols:     make(map[string]map[string]struct{}),
-		childToParents:    make(map[string][]string),
-		typeBySimpleName:  make(map[string][]*Symbol),
-		ownerMembers:      make(map[string][]*Symbol),
-		symbolType:        make(map[string]string),
-		symbolDeclType:    make(map[string]*TypeExpr),
-		classTypeParams:   make(map[string][]string),
-		parentTypes:       make(map[string][]*TypeExpr),
-		internPool:        make(map[string]string),
-		modTimes:          make(map[string]time.Time),
-		sdbToURIs:         make(map[string][]string),
-		dependencySources: []string{},
-		depSourcesSet:     make(map[string]struct{}),
-		indexedJARs:       make(map[string]struct{}),
+		logger:              logger,
+		sourceRoot:          sourceRoot,
+		definitions:         make(map[string][]*Symbol),
+		references:          make(map[string][]*Occurrence),
+		fileOccurrences:     make(map[string][]*Occurrence),
+		fileSymbols:         make(map[string][]*Symbol),
+		implementors:        make(map[string][]string),
+		uriRefSymbols:       make(map[string]map[string]struct{}),
+		childToParents:      make(map[string][]string),
+		typeBySimpleName:    make(map[string][]*Symbol),
+		ownerMembers:        make(map[string][]*Symbol),
+		symbolType:          make(map[string]string),
+		symbolDeclType:      make(map[string]*TypeExpr),
+		classTypeParams:     make(map[string][]string),
+		parentTypes:         make(map[string][]*TypeExpr),
+		internPool:          make(map[string]string),
+		modTimes:            make(map[string]time.Time),
+		sdbToURIs:           make(map[string][]string),
+		dependencySources:   []string{},
+		depSourcesSet:       make(map[string]struct{}),
+		indexedJARs:         make(map[string]struct{}),
+		classToJAR:          make(map[string]string),
+		classToEntryName:    make(map[string]string),
+		fullyIndexedClasses: make(map[string]struct{}),
 	}
 }
 

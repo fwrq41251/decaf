@@ -226,8 +226,12 @@ func TestFormatMethodSignature(t *testing.T) {
 	if sig.Label != "boolean add(Object)" {
 		t.Errorf("label = %q, want %q", sig.Label, "boolean add(Object)")
 	}
-	if len(sig.Params) != 1 || sig.Params[0] != "Object" {
-		t.Errorf("params = %v, want [Object]", sig.Params)
+	if !sig.HasParams {
+		t.Error("expected HasParams = true")
+	}
+	params := sig.ParseParams()
+	if len(params) != 1 || params[0] != "Object" {
+		t.Errorf("ParseParams() = %v, want [Object]", params)
 	}
 
 	sig2 := formatMethodSignature("main", "([Ljava/lang/String;)V")
@@ -254,7 +258,7 @@ func TestConvertClassFile(t *testing.T) {
 		},
 	}
 
-	cs := convertClassFile(cf)
+	cs := convertClassFile(cf, true)
 
 	if cs.classSym != "com/example/Foo#" {
 		t.Errorf("classSym = %q", cs.classSym)
@@ -361,6 +365,9 @@ func TestIndexClasspathJARs(t *testing.T) {
 
 	idx.IndexClasspathJARs([]string{jarPath})
 
+	// Trigger lazy indexing.
+	idx.MembersOfType("com/example/Foo#")
+
 	// Check that Foo is indexed.
 	fooDefs := idx.definitions["com/example/Foo#"]
 	if len(fooDefs) == 0 {
@@ -456,6 +463,7 @@ func TestIndexClasspathJARs_MergesWithSemanticDB(t *testing.T) {
 	f.Close()
 
 	idx.IndexClasspathJARs([]string{jarPath})
+	idx.MembersOfType("com/example/Foo#")
 
 	// After merge, ownerMembers should have all 3 methods:
 	// the 1 from SemanticDB + 2 new from classfile (getValue is deduped).
@@ -513,6 +521,7 @@ func TestIndexClasspathJARs_StaticFlag(t *testing.T) {
 	defer idx.Close()
 
 	idx.IndexClasspathJARs([]string{jarPath})
+	idx.MembersOfType("com/example/Foo#")
 
 	members := idx.ownerMembers["com/example/Foo#"]
 	staticMap := make(map[string]bool)

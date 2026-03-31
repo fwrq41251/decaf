@@ -36,7 +36,7 @@ public class Lib {
 	if s.Symbol != sym {
 		t.Errorf("got symbol %q, want %q", s.Symbol, sym)
 	}
-	if s.Range == nil {
+	if s.Range.IsEmpty() {
 		t.Fatal("expected range to be set")
 	}
 	if s.Range.StartLine != 2 { // line 3 in file (0-indexed is 2)
