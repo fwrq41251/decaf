@@ -3,13 +3,14 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/fwrq41251/decaf/internal/bsp"
 	"github.com/fwrq41251/decaf/internal/index"
 	"github.com/fwrq41251/decaf/internal/jsonrpc"
 	"github.com/fwrq41251/decaf/internal/setup"
@@ -149,14 +150,14 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 		}
 
 		var classpathJARs []string
+		var discoveredJavaHome string
 		if envs, err := h.bspClient.JvmRunEnvironment(ctx); err == nil && len(envs) > 0 {
 			for _, env := range envs {
 				if env.JavaHome != "" {
-					javaHome := uri.ToPath(env.JavaHome)
-					if jdkSrc := setupHelper.DiscoverJDKSource(javaHome); jdkSrc != "" {
+					discoveredJavaHome = uri.ToPath(env.JavaHome)
+					if jdkSrc := setupHelper.DiscoverJDKSource(discoveredJavaHome); jdkSrc != "" {
 						h.logger.Printf("Refined JDK source from BSP: %s", jdkSrc)
 						h.idx.SetJdkSourceRoot(jdkSrc)
-						break
 					}
 				}
 				for _, cp := range env.Classpath {
@@ -167,8 +168,13 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 				}
 			}
 		}
+
+		if discoveredJavaHome == "" {
+			discoveredJavaHome = setupHelper.DiscoverJavaHome("")
+		}
+
 		// Collect JDK jmod files for indexing (JDK 9+).
-		classpathJARs = append(classpathJARs, discoverJDKJmods(h.logger, sourceRoot)...)
+		classpathJARs = append(classpathJARs, discoverJDKJmods(h.logger, discoveredJavaHome)...)
 
 		if ctx.Err() != nil {
 			prog.end("cancelled")
@@ -185,7 +191,12 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 			// Step 3: Full Compile.
 			prog.report("compiling…", intPtr(70))
 			if err := h.bspClient.Compile(ctx); err != nil {
-				h.showMessage(MessageTypeWarning, fmt.Sprintf("decaf: compilation failed: %v", err))
+				var ce *bsp.CompileError
+				if errors.As(err, &ce) {
+					h.showMessage(MessageTypeWarning, "decaf: initial compilation failed (check your code for errors)")
+				} else {
+					h.showMessage(MessageTypeError, fmt.Sprintf("decaf: BSP infrastructure error: %v", err))
+				}
 			}
 			if ctx.Err() != nil {
 				prog.end("cancelled")
@@ -261,16 +272,8 @@ func (h *Handler) registerFileWatchers() {
 	h.logger.Println("registered file watcher for **/*.java")
 }
 
-// discoverJDKJmods finds JDK jmod files (JDK 9+) by detecting JAVA_HOME.
-func discoverJDKJmods(logger *log.Logger, sourceRoot string) []string {
-	javaHome := os.Getenv("JAVA_HOME")
-	if javaHome == "" {
-		if path, err := exec.LookPath("java"); err == nil {
-			if realPath, err := filepath.EvalSymlinks(path); err == nil {
-				javaHome = filepath.Dir(filepath.Dir(realPath))
-			}
-		}
-	}
+// discoverJDKJmods finds JDK jmod files (JDK 9+) in the given JAVA_HOME.
+func discoverJDKJmods(logger *log.Logger, javaHome string) []string {
 	if javaHome == "" {
 		return nil
 	}

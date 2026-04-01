@@ -62,6 +62,15 @@ const (
 	StatusCancelled StatusCode = 3
 )
 
+// CompileError represents a failure in the compilation process (user code errors).
+type CompileError struct {
+	StatusCode StatusCode
+}
+
+func (e *CompileError) Error() string {
+	return "compilation failed"
+}
+
 // WorkspaceBuildTargetsResult is returned by "workspace/buildTargets".
 type WorkspaceBuildTargetsResult struct {
 	Targets []BuildTarget `json:"targets"`

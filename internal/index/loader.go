@@ -435,6 +435,7 @@ func (idx *Index) removeDocument(uri string) {
 			delete(idx.internPool, sym)
 		}
 	}
+	delete(idx.internPool, uri)
 }
 
 func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {

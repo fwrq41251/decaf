@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -351,5 +352,14 @@ func (h *Handler) handleBSPTaskFinish(params bsp.TaskFinishParams) {
 	if params.DataKind == "compile-report" {
 		h.logger.Printf("BSP compile task finished (%s), triggering reindex", params.TaskID.ID)
 		h.reindex()
+	}
+}
+
+func (h *Handler) logCompileError(msg string, err error) {
+	var ce *bsp.CompileError
+	if errors.As(err, &ce) {
+		h.logger.Printf("%s: compilation failed (user code error)", msg)
+	} else {
+		h.logger.Printf("%s: infrastructure error: %v", msg, err)
 	}
 }

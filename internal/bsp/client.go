@@ -183,7 +183,7 @@ func (c *Client) CompileTargets(ctx context.Context, targets []BuildTargetIdenti
 	}
 	c.logger.Printf("compile finished: statusCode=%d (%d targets)", result.StatusCode, len(targets))
 	if result.StatusCode != StatusOK {
-		return fmt.Errorf("compilation failed with status code: %d", result.StatusCode)
+		return &CompileError{StatusCode: result.StatusCode}
 	}
 	return nil
 }

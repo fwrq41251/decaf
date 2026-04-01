@@ -132,7 +132,7 @@ func (h *Handler) scheduleCompile(uris ...string) {
 				err := h.bspClient.CompileTargets(ctx, targets)
 				h.logger.Printf("[timing] CompileTargets took %v", time.Since(t1))
 				if err != nil {
-					h.logger.Printf("compile on file change failed: %v", err)
+					h.logCompileError("compile on file change", err)
 				}
 				compiled = true
 			}
@@ -142,7 +142,7 @@ func (h *Handler) scheduleCompile(uris ...string) {
 		if !compiled {
 			t1 := time.Now()
 			if err := h.bspClient.Compile(ctx); err != nil {
-				h.logger.Printf("compile on file change failed: %v", err)
+				h.logCompileError("full compile on file change", err)
 			}
 			h.logger.Printf("[timing] full Compile took %v", time.Since(t1))
 		}
