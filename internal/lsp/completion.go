@@ -428,10 +428,6 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		if len(items) >= 100 {
 			break
 		}
-		detail := ""
-		if s.Signature != nil {
-			detail = s.Signature.Label
-		}
 		if _, ok := seen[s.Name]; ok {
 			continue
 		}
@@ -450,17 +446,9 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			}
 		}
 
-		item := CompletionItem{
-			Label:      s.Name,
-			Kind:       sdbKindToCompletionKind(s.Kind),
-			InsertText: s.Name,
-			Detail:     detail,
-			SortText:   "1" + casePrefix(s.Name) + scopeOrder + s.Name,
-			FilterText: s.Name,
-		}
-		if s.Doc != "" {
-			item.Documentation = &MarkupContent{Kind: "markdown", Value: s.Doc}
-		}
+		kind := sdbKindToCompletionKind(s.Kind)
+		sortText := "1" + casePrefix(s.Name) + scopeOrder + s.Name
+		item := methodCompletionItem(s.Name, kind, s.Signature, sortText, s.Doc)
 
 		// Auto-import for type symbols from other packages.
 		if s.Kind == sdb.SymbolInformation_CLASS || s.Kind == sdb.SymbolInformation_INTERFACE {
@@ -845,15 +833,17 @@ func (h *Handler) countActiveParameter(fileURI string, line, character int) int 
 		return 0
 	}
 
-	// Count named children (arguments) that end before or contain the cursor.
+	// Count commas before the cursor to determine the active parameter index.
 	cursorByte := PositionToByteOffset(src, line, character)
 	active := 0
-	for i := 0; i < int(argList.NamedChildCount()); i++ {
-		child := argList.NamedChild(i)
+	for i := 0; i < int(argList.ChildCount()); i++ {
+		child := argList.Child(i)
 		if int(child.StartByte()) >= cursorByte {
 			break
 		}
-		active = i
+		if child.Type() == "," {
+			active++
+		}
 	}
 	return active
 }

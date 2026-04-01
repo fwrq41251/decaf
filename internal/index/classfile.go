@@ -51,6 +51,7 @@ type classFile struct {
 	Interfaces  []string // e.g. ["java/util/List", "java/io/Serializable"]
 	Fields      []classMember
 	Methods     []classMember
+	Signature   string // generic signature from Signature attribute (JVM §4.7.9)
 }
 
 // classMember represents a field or method parsed from a .class file.
@@ -58,6 +59,7 @@ type classMember struct {
 	AccessFlags uint16
 	Name        string // e.g. "size", "add"
 	Descriptor  string // e.g. "I", "(Ljava/lang/Object;)Z"
+	Signature   string // generic signature from Signature attribute
 }
 
 // parseClassFile parses a Java .class file from r, extracting the class
@@ -154,6 +156,30 @@ func parseClassFile(r io.Reader) (*classFile, error) {
 		return nil, fmt.Errorf("reading methods: %w", err)
 	}
 
+	// Class attributes.
+	classAttrCount, err := read16()
+	if err != nil {
+		return nil, err
+	}
+	var classSig string
+	for i := 0; i < int(classAttrCount); i++ {
+		attrNameIdx, attrLen, err := readAttributeHeader(r)
+		if err != nil {
+			return nil, err
+		}
+		if cp.utf8(int(attrNameIdx)) == "Signature" && attrLen == 2 {
+			var sigIdx uint16
+			if err := binary.Read(r, binary.BigEndian, &sigIdx); err != nil {
+				return nil, err
+			}
+			classSig = cp.utf8(int(sigIdx))
+		} else {
+			if _, err := io.CopyN(io.Discard, r, int64(attrLen)); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	return &classFile{
 		AccessFlags: accessFlags,
 		ThisClass:   thisClass,
@@ -161,6 +187,7 @@ func parseClassFile(r io.Reader) (*classFile, error) {
 		Interfaces:  interfaces,
 		Fields:      fields,
 		Methods:     methods,
+		Signature:   classSig,
 	}, nil
 }
 
@@ -278,10 +305,22 @@ func readMembers(r io.Reader, cp *constantPool) ([]classMember, error) {
 			return nil, err
 		}
 
-		// Skip attributes.
+		var sig string
 		for j := 0; j < int(attrCount); j++ {
-			if err := skipAttribute(r); err != nil {
+			attrNameIdx, attrLen, err := readAttributeHeader(r)
+			if err != nil {
 				return nil, err
+			}
+			if cp.utf8(int(attrNameIdx)) == "Signature" && attrLen == 2 {
+				var sigIdx uint16
+				if err := binary.Read(r, binary.BigEndian, &sigIdx); err != nil {
+					return nil, err
+				}
+				sig = cp.utf8(int(sigIdx))
+			} else {
+				if _, err := io.CopyN(io.Discard, r, int64(attrLen)); err != nil {
+					return nil, err
+				}
 			}
 		}
 
@@ -289,9 +328,19 @@ func readMembers(r io.Reader, cp *constantPool) ([]classMember, error) {
 			AccessFlags: flags,
 			Name:        cp.utf8(int(nameIdx)),
 			Descriptor:  cp.utf8(int(descIdx)),
+			Signature:   sig,
 		})
 	}
 	return members, nil
+}
+
+// readAttributeHeader reads the attribute_name_index (u2) and length (u4) of an attribute_info.
+func readAttributeHeader(r io.Reader) (nameIdx uint16, length uint32, err error) {
+	if err = binary.Read(r, binary.BigEndian, &nameIdx); err != nil {
+		return
+	}
+	err = binary.Read(r, binary.BigEndian, &length)
+	return
 }
 
 // skipAttribute skips a single attribute_info structure.

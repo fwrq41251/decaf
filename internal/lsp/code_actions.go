@@ -174,29 +174,58 @@ func (h *Handler) handlePrepareRename(ctx context.Context, params json.RawMessag
 	}, nil
 }
 
-// extractMissingSymbolName extracts the class/type name from a "cannot find symbol"
-// diagnostic message. Typical format:
+// extractMissingSymbolName extracts a type/class name from a compiler diagnostic
+// message that can be fixed by adding an import statement.
+//
+// Supported formats:
 //
 //	"cannot find symbol\n  symbol:   class Foo"
 //	"cannot find symbol: class Foo"
+//	"Foo cannot be resolved to a type"            (Eclipse ecj)
+//	"Foo cannot be resolved"                      (Eclipse ecj)
 func extractMissingSymbolName(msg string) string {
-	if !strings.Contains(msg, "cannot find symbol") {
+	// javac: "cannot find symbol" with "symbol: class/variable Foo"
+	if strings.Contains(msg, "cannot find symbol") {
+		idx := strings.Index(msg, "symbol:")
+		if idx < 0 {
+			return ""
+		}
+		rest := strings.TrimSpace(msg[idx+len("symbol:"):])
+		parts := strings.Fields(rest)
+		if len(parts) >= 2 {
+			return parts[1]
+		}
+		if len(parts) == 1 {
+			return parts[0]
+		}
 		return ""
 	}
-	idx := strings.Index(msg, "symbol:")
-	if idx < 0 {
-		return ""
+
+	// Eclipse ecj: "Foo cannot be resolved to a type" or "Foo cannot be resolved"
+	if idx := strings.Index(msg, " cannot be resolved"); idx > 0 {
+		name := strings.TrimSpace(msg[:idx])
+		if len(name) > 0 && isJavaIdentifier(name) {
+			return name
+		}
 	}
-	rest := strings.TrimSpace(msg[idx+len("symbol:"):])
-	// Skip the kind keyword (class, interface, variable, etc.)
-	parts := strings.Fields(rest)
-	if len(parts) >= 2 {
-		return parts[1]
-	}
-	if len(parts) == 1 {
-		return parts[0]
-	}
+
 	return ""
+}
+
+// isJavaIdentifier returns true if s is a valid Java simple identifier (no dots/spaces).
+func isJavaIdentifier(s string) bool {
+	for i, c := range s {
+		if i == 0 {
+			if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '$') {
+				return false
+			}
+		} else {
+			if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '$') {
+				return false
+			}
+		}
+	}
+	return len(s) > 0
 }
 
 // isTopLevelClass returns true if sym is a SemanticDB top-level class symbol

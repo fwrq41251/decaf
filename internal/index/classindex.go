@@ -68,6 +68,10 @@ type classSymbols struct {
 	// Parent types (super class + interfaces).
 	parents []string // SemanticDB symbols
 
+	// Generic type information parsed from Signature attributes.
+	typeParams     []string     // type parameter symbols, e.g. ["java/util/List#[E]"]
+	parentTypesGen []*TypeExpr  // parent types with generic args
+
 	// Members.
 	members []memberSymbol
 
@@ -82,6 +86,7 @@ type memberSymbol struct {
 	name      string // e.g. "add"
 	kind      sdb.SymbolInformation_Kind
 	typeSym   string         // return type / field type as SemanticDB symbol
+	declType  *TypeExpr      // declared type preserving generics (from Signature attribute)
 	signature *SignatureInfo // human-readable signature
 	isStatic  bool
 }
@@ -198,13 +203,27 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 		kind = sdb.SymbolInformation_CLASS // enum is a special class
 	}
 
-	// Parents.
+	// Parents (non-generic, from descriptor).
 	var parents []string
 	if cf.SuperClass != "" && cf.SuperClass != "java/lang/Object" {
 		parents = append(parents, cf.SuperClass+"#")
 	}
 	for _, iface := range cf.Interfaces {
 		parents = append(parents, iface+"#")
+	}
+
+	// Parse class-level generic signature if present.
+	var typeParamSyms []string
+	var typeParamNames []string
+	var parentTypesGen []*TypeExpr
+	if cf.Signature != "" {
+		if ginfo := parseClassGenericSig(cf.Signature, classSym); ginfo != nil {
+			typeParamNames = ginfo.typeParams
+			for _, name := range ginfo.typeParams {
+				typeParamSyms = append(typeParamSyms, classSym+"["+name+"]")
+			}
+			parentTypesGen = ginfo.parents
+		}
 	}
 
 	// Members: only public/protected.
@@ -223,7 +242,7 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 			fieldSym := cf.ThisClass + "#" + f.Name + "."
 			typeSym := descriptorToSymbol(f.Descriptor)
 
-			members = append(members, memberSymbol{
+			ms := memberSymbol{
 				sym:      fieldSym,
 				name:     f.Name,
 				kind:     sdb.SymbolInformation_FIELD,
@@ -232,7 +251,16 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 				signature: &SignatureInfo{
 					Label: fmt.Sprintf("%s: %s", f.Name, descriptorToSimpleName(f.Descriptor)),
 				},
-			})
+			}
+
+			// Parse field generic signature for type-parameterized fields.
+			if f.Signature != "" {
+				if finfo := parseFieldGenericSig(f.Signature, classSym, typeParamNames); finfo != nil && finfo.returnType != nil {
+					ms.declType = finfo.returnType
+				}
+			}
+
+			members = append(members, ms)
 		}
 
 		for _, m := range cf.Methods {
@@ -261,14 +289,23 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 			methodSym := cf.ThisClass + "#" + m.Name + "()."
 			sig := formatMethodSignature(methodName, m.Descriptor)
 
-			members = append(members, memberSymbol{
+			ms := memberSymbol{
 				sym:       methodSym,
 				name:      methodName,
 				kind:      methodKind,
 				typeSym:   retSym,
 				isStatic:  m.AccessFlags&accStatic != 0,
 				signature: sig,
-			})
+			}
+
+			// Parse method generic signature for return type with generics.
+			if m.Signature != "" {
+				if minfo := parseMethodGenericSig(m.Signature, classSym, typeParamNames); minfo != nil && minfo.returnType != nil {
+					ms.declType = minfo.returnType
+				}
+			}
+
+			members = append(members, ms)
 		}
 	}
 
@@ -277,6 +314,8 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 		className:      className,
 		classKind:      kind,
 		parents:        parents,
+		typeParams:     typeParamSyms,
+		parentTypesGen: parentTypesGen,
 		members:        members,
 		membersScanned: includeMembers,
 	}
@@ -321,6 +360,14 @@ func (idx *Index) mergeClassSymbols(cs classSymbols) bool {
 		}
 	}
 
+	// Merge generic type information if not already set.
+	if len(cs.typeParams) > 0 && len(idx.classTypeParams[classSym]) == 0 {
+		idx.classTypeParams[classSym] = cs.typeParams
+	}
+	if len(cs.parentTypesGen) > 0 && len(idx.parentTypes[classSym]) == 0 {
+		idx.parentTypes[classSym] = cs.parentTypesGen
+	}
+
 	// Merge members from classfile. SemanticDB may have already added some
 	// members (only those referenced by project code), so we deduplicate
 	// by member name to avoid duplicates while ensuring the full method list
@@ -347,6 +394,9 @@ func (idx *Index) mergeClassSymbols(cs classSymbols) bool {
 
 			if m.typeSym != "" {
 				idx.symbolType[memberSym] = idx.intern(m.typeSym)
+			}
+			if m.declType != nil {
+				idx.symbolDeclType[memberSym] = m.declType
 			}
 		}
 	}

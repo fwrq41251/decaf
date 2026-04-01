@@ -13,7 +13,30 @@ import (
 )
 
 // writeClass builds a minimal .class file in memory for testing.
+// writeClassOpts holds options for writing a .class file with optional generic signatures.
+type writeClassOpts struct {
+	thisClass   string
+	superClass  string
+	accessFlags uint16
+	interfaces  []string
+	fields      []classMember
+	methods     []classMember
+	classSig    string // class-level Signature attribute
+}
+
 func writeClass(t *testing.T, thisClass, superClass string, accessFlags uint16, interfaces []string, fields, methods []classMember) []byte {
+	t.Helper()
+	return writeClassWithSig(t, writeClassOpts{
+		thisClass:   thisClass,
+		superClass:  superClass,
+		accessFlags: accessFlags,
+		interfaces:  interfaces,
+		fields:      fields,
+		methods:     methods,
+	})
+}
+
+func writeClassWithSig(t *testing.T, opts writeClassOpts) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	w := &buf
@@ -21,11 +44,10 @@ func writeClass(t *testing.T, thisClass, superClass string, accessFlags uint16, 
 	// Magic.
 	binary.Write(w, binary.BigEndian, uint32(classMagic))
 	// Version.
-	binary.Write(w, binary.BigEndian, uint16(0)) // minor
+	binary.Write(w, binary.BigEndian, uint16(0))  // minor
 	binary.Write(w, binary.BigEndian, uint16(52)) // major (Java 8)
 
 	// Build constant pool entries.
-	// We need UTF8 entries for class names, field/method names, descriptors.
 	type cpEntry struct {
 		tag  byte
 		data []byte
@@ -57,11 +79,11 @@ func writeClass(t *testing.T, thisClass, superClass string, accessFlags uint16, 
 	}
 
 	// Pre-register all needed strings and classes.
-	thisIdx := classIndex(thisClass)
-	superIdx := classIndex(superClass)
+	thisIdx := classIndex(opts.thisClass)
+	superIdx := classIndex(opts.superClass)
 
 	var ifaceIdxs []uint16
-	for _, iface := range interfaces {
+	for _, iface := range opts.interfaces {
 		ifaceIdxs = append(ifaceIdxs, classIndex(iface))
 	}
 
@@ -70,11 +92,33 @@ func writeClass(t *testing.T, thisClass, superClass string, accessFlags uint16, 
 		descIdx uint16
 	}
 	var fieldIdxs, methodIdxs []memberIdx
-	for _, f := range fields {
+	for _, f := range opts.fields {
 		fieldIdxs = append(fieldIdxs, memberIdx{utf8Index(f.Name), utf8Index(f.Descriptor)})
 	}
-	for _, m := range methods {
+	for _, m := range opts.methods {
 		methodIdxs = append(methodIdxs, memberIdx{utf8Index(m.Name), utf8Index(m.Descriptor)})
+	}
+
+	// Pre-register "Signature" attribute name and signature values.
+	sigAttrNameIdx := utf8Index("Signature")
+	var classSigIdx uint16
+	if opts.classSig != "" {
+		classSigIdx = utf8Index(opts.classSig)
+	}
+	var fieldSigIdxs, methodSigIdxs []uint16
+	for _, f := range opts.fields {
+		if f.Signature != "" {
+			fieldSigIdxs = append(fieldSigIdxs, utf8Index(f.Signature))
+		} else {
+			fieldSigIdxs = append(fieldSigIdxs, 0)
+		}
+	}
+	for _, m := range opts.methods {
+		if m.Signature != "" {
+			methodSigIdxs = append(methodSigIdxs, utf8Index(m.Signature))
+		} else {
+			methodSigIdxs = append(methodSigIdxs, 0)
+		}
 	}
 
 	// Write constant pool.
@@ -85,7 +129,7 @@ func writeClass(t *testing.T, thisClass, superClass string, accessFlags uint16, 
 	}
 
 	// Access flags, this, super.
-	binary.Write(w, binary.BigEndian, accessFlags)
+	binary.Write(w, binary.BigEndian, opts.accessFlags)
 	binary.Write(w, binary.BigEndian, thisIdx)
 	binary.Write(w, binary.BigEndian, superIdx)
 
@@ -95,26 +139,45 @@ func writeClass(t *testing.T, thisClass, superClass string, accessFlags uint16, 
 		binary.Write(w, binary.BigEndian, idx)
 	}
 
+	// Helper to write member attributes (Signature if present).
+	writeMemberAttrs := func(sigIdx uint16) {
+		if sigIdx != 0 {
+			binary.Write(w, binary.BigEndian, uint16(1)) // 1 attribute
+			binary.Write(w, binary.BigEndian, sigAttrNameIdx)
+			binary.Write(w, binary.BigEndian, uint32(2))
+			binary.Write(w, binary.BigEndian, sigIdx)
+		} else {
+			binary.Write(w, binary.BigEndian, uint16(0)) // no attributes
+		}
+	}
+
 	// Fields.
-	binary.Write(w, binary.BigEndian, uint16(len(fields)))
-	for i, f := range fields {
+	binary.Write(w, binary.BigEndian, uint16(len(opts.fields)))
+	for i, f := range opts.fields {
 		binary.Write(w, binary.BigEndian, f.AccessFlags)
 		binary.Write(w, binary.BigEndian, fieldIdxs[i].nameIdx)
 		binary.Write(w, binary.BigEndian, fieldIdxs[i].descIdx)
-		binary.Write(w, binary.BigEndian, uint16(0)) // no attributes
+		writeMemberAttrs(fieldSigIdxs[i])
 	}
 
 	// Methods.
-	binary.Write(w, binary.BigEndian, uint16(len(methods)))
-	for i, m := range methods {
+	binary.Write(w, binary.BigEndian, uint16(len(opts.methods)))
+	for i, m := range opts.methods {
 		binary.Write(w, binary.BigEndian, m.AccessFlags)
 		binary.Write(w, binary.BigEndian, methodIdxs[i].nameIdx)
 		binary.Write(w, binary.BigEndian, methodIdxs[i].descIdx)
-		binary.Write(w, binary.BigEndian, uint16(0)) // no attributes
+		writeMemberAttrs(methodSigIdxs[i])
 	}
 
 	// Class attributes.
-	binary.Write(w, binary.BigEndian, uint16(0))
+	if classSigIdx != 0 {
+		binary.Write(w, binary.BigEndian, uint16(1)) // 1 attribute
+		binary.Write(w, binary.BigEndian, sigAttrNameIdx)
+		binary.Write(w, binary.BigEndian, uint32(2))
+		binary.Write(w, binary.BigEndian, classSigIdx)
+	} else {
+		binary.Write(w, binary.BigEndian, uint16(0))
+	}
 
 	return buf.Bytes()
 }
@@ -126,14 +189,14 @@ func TestParseClassFile(t *testing.T) {
 		accPublic,
 		[]string{"java/io/Serializable"},
 		[]classMember{
-			{accPublic, "name", "Ljava/lang/String;"},
-			{accPrivate, "count", "I"},
+			{accPublic, "name", "Ljava/lang/String;", ""},
+			{accPrivate, "count", "I", ""},
 		},
 		[]classMember{
-			{accPublic, "<init>", "()V"},
-			{accPublic, "getName", "()Ljava/lang/String;"},
-			{accPublic, "setName", "(Ljava/lang/String;)V"},
-			{accPrivate, "validate", "()Z"},
+			{accPublic, "<init>", "()V", ""},
+			{accPublic, "getName", "()Ljava/lang/String;", ""},
+			{accPublic, "setName", "(Ljava/lang/String;)V", ""},
+			{accPrivate, "validate", "()Z", ""},
 		},
 	)
 
@@ -247,14 +310,14 @@ func TestConvertClassFile(t *testing.T) {
 		SuperClass:  "com/example/Base",
 		Interfaces:  []string{"java/io/Serializable"},
 		Fields: []classMember{
-			{accPublic, "name", "Ljava/lang/String;"},
-			{accPrivate, "secret", "I"},
+			{accPublic, "name", "Ljava/lang/String;", ""},
+			{accPrivate, "secret", "I", ""},
 		},
 		Methods: []classMember{
-			{accPublic, "<init>", "()V"},
-			{accPublic, "getName", "()Ljava/lang/String;"},
-			{accPrivate, "validate", "()Z"},
-			{accPublic | accStatic, "<clinit>", "()V"},
+			{accPublic, "<init>", "()V", ""},
+			{accPublic, "getName", "()Ljava/lang/String;", ""},
+			{accPrivate, "validate", "()Z", ""},
+			{accPublic | accStatic, "<clinit>", "()V", ""},
 		},
 	}
 
@@ -317,11 +380,11 @@ func TestIndexClasspathJARs(t *testing.T) {
 		accPublic,
 		nil,
 		[]classMember{
-			{accPublic, "value", "I"},
+			{accPublic, "value", "I", ""},
 		},
 		[]classMember{
-			{accPublic, "getValue", "()I"},
-			{accPublic, "setValue", "(I)V"},
+			{accPublic, "getValue", "()I", ""},
+			{accPublic, "setValue", "(I)V", ""},
 		},
 	)
 
@@ -332,7 +395,7 @@ func TestIndexClasspathJARs(t *testing.T) {
 		[]string{"java/io/Serializable"},
 		nil,
 		[]classMember{
-			{accPublic, "doWork", "(Ljava/lang/String;)Ljava/lang/String;"},
+			{accPublic, "doWork", "(Ljava/lang/String;)Ljava/lang/String;", ""},
 		},
 	)
 
@@ -447,9 +510,9 @@ func TestIndexClasspathJARs_MergesWithSemanticDB(t *testing.T) {
 		nil,
 		nil,
 		[]classMember{
-			{accPublic, "getValue", "()I"},
-			{accPublic, "setValue", "(I)V"},
-			{accPublic, "reset", "()V"},
+			{accPublic, "getValue", "()I", ""},
+			{accPublic, "setValue", "(I)V", ""},
+			{accPublic, "reset", "()V", ""},
 		},
 	)
 	f, err := os.Create(jarPath)
@@ -497,12 +560,12 @@ func TestIndexClasspathJARs_StaticFlag(t *testing.T) {
 		accPublic,
 		nil,
 		[]classMember{
-			{accPublic | accStatic, "CONSTANT", "I"},
-			{accPublic, "value", "I"},
+			{accPublic | accStatic, "CONSTANT", "I", ""},
+			{accPublic, "value", "I", ""},
 		},
 		[]classMember{
-			{accPublic | accStatic, "create", "()Lcom/example/Foo;"},
-			{accPublic, "getValue", "()I"},
+			{accPublic | accStatic, "create", "()Lcom/example/Foo;", ""},
+			{accPublic, "getValue", "()I", ""},
 		},
 	)
 
@@ -576,5 +639,84 @@ func TestIndexClasspathJARs_ProjectTakesPriority(t *testing.T) {
 	defs := idx.definitions["com/example/Foo#"]
 	if len(defs) != 1 || defs[0].URI != "src/Foo.java" {
 		t.Errorf("project definition was overwritten: %+v", defs)
+	}
+}
+
+func TestIndexClasspathJARs_GenericSignatures(t *testing.T) {
+	// Build a generic class: MyList<E> extends AbstractList<E> implements List<E>
+	// with a method E get(int) that has Signature "(I)TE;"
+	tmpDir := t.TempDir()
+	jarPath := filepath.Join(tmpDir, "lib.jar")
+
+	listClass := writeClassWithSig(t, writeClassOpts{
+		thisClass:   "com/example/MyList",
+		superClass:  "java/util/AbstractList",
+		accessFlags: accPublic,
+		interfaces:  []string{"java/util/List"},
+		classSig:    "<E:Ljava/lang/Object;>Ljava/util/AbstractList<TE;>;Ljava/util/List<TE;>;",
+		methods: []classMember{
+			{accPublic, "get", "(I)Ljava/lang/Object;", "(I)TE;"},
+			{accPublic, "add", "(Ljava/lang/Object;)Z", "(TE;)Z"},
+			{accPublic, "size", "()I", ""},
+		},
+		fields: []classMember{
+			{accPublic, "data", "[Ljava/lang/Object;", "[TE;"},
+		},
+	})
+
+	f, err := os.Create(jarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, _ := zw.Create("com/example/MyList.class")
+	w.Write(listClass)
+	zw.Close()
+	f.Close()
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	defer idx.Close()
+
+	idx.IndexClasspathJARs([]string{jarPath})
+	idx.MembersOfType("com/example/MyList#")
+
+	// Verify classTypeParams.
+	typeParams := idx.ClassTypeParams("com/example/MyList#")
+	if len(typeParams) != 1 {
+		t.Fatalf("classTypeParams count = %d, want 1", len(typeParams))
+	}
+	if typeParams[0] != "com/example/MyList#[E]" {
+		t.Errorf("classTypeParams[0] = %q, want %q", typeParams[0], "com/example/MyList#[E]")
+	}
+
+	// Verify parentTypes has generic args.
+	parentTypes := idx.ParentTypesOf("com/example/MyList#")
+	if len(parentTypes) < 2 {
+		t.Fatalf("parentTypes count = %d, want >= 2", len(parentTypes))
+	}
+	// AbstractList<E>
+	if parentTypes[0].Sym != "java/util/AbstractList#" {
+		t.Errorf("parentTypes[0].Sym = %q, want java/util/AbstractList#", parentTypes[0].Sym)
+	}
+	if len(parentTypes[0].Args) != 1 || parentTypes[0].Args[0].Sym != "com/example/MyList#[E]" {
+		t.Errorf("parentTypes[0].Args = %v, want [{Sym: com/example/MyList#[E]}]", parentTypes[0].Args)
+	}
+
+	// Verify symbolDeclType for get() returns E (type param ref).
+	getSym := "com/example/MyList#get()."
+	getDeclType := idx.DeclTypeOf(getSym)
+	if getDeclType == nil {
+		t.Fatal("DeclTypeOf(get) is nil")
+	}
+	if getDeclType.Sym != "com/example/MyList#[E]" {
+		t.Errorf("DeclTypeOf(get).Sym = %q, want %q", getDeclType.Sym, "com/example/MyList#[E]")
+	}
+
+	// Verify size() has no declType (primitive return, no generic signature).
+	sizeSym := "com/example/MyList#size()."
+	sizeDeclType := idx.DeclTypeOf(sizeSym)
+	if sizeDeclType != nil {
+		t.Errorf("DeclTypeOf(size) = %v, want nil (primitive return has no declType)", sizeDeclType)
 	}
 }

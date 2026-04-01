@@ -691,19 +691,16 @@ func extractCallContext(cursorNode *slog.Node, content []byte, cursorOffset int)
 		return nil
 	}
 
-	// Count which argument the cursor is in (0-based).
+	// Count which argument the cursor is in (0-based) by counting commas before cursor.
 	paramIndex := 0
-	for i := 0; i < int(argList.NamedChildCount()); i++ {
-		child := argList.NamedChild(i)
+	for i := 0; i < int(argList.ChildCount()); i++ {
+		child := argList.Child(i)
 		if int(child.StartByte()) >= cursorOffset {
 			break
 		}
-		paramIndex = i
-	}
-	// If cursor is before the first argument or argList has no named children,
-	// paramIndex stays 0.
-	if argList.NamedChildCount() == 0 {
-		paramIndex = 0
+		if child.Type() == "," {
+			paramIndex++
+		}
 	}
 
 	callNode := argList.Parent()

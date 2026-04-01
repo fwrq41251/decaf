@@ -118,17 +118,27 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 		return importSortKey(kept[i]) < importSortKey(kept[j])
 	})
 
+	// Filter static imports: keep only those whose member name appears in the source.
+	usedIdents := collectIdentifiers(root, content)
+	var keptStatic []string
+	for _, imp := range block.staticImports {
+		member := simpleNameFromImport(imp)
+		if member == "*" || usedIdents[member] {
+			keptStatic = append(keptStatic, imp)
+		}
+	}
+
 	// Build the replacement text.
-	if len(kept) == 0 && len(block.imports) == 0 && len(block.staticImports) == 0 {
+	if len(kept) == 0 && len(block.imports) == 0 && len(block.staticImports) == 0 && len(keptStatic) == 0 {
 		return nil
 	}
 
 	var sb strings.Builder
 
-	// Emit static imports first (preserved as-is, sorted).
-	if len(block.staticImports) > 0 {
-		sorted := make([]string, len(block.staticImports))
-		copy(sorted, block.staticImports)
+	// Emit static imports first (filtered and sorted).
+	if len(keptStatic) > 0 {
+		sorted := make([]string, len(keptStatic))
+		copy(sorted, keptStatic)
 		sort.Strings(sorted)
 		for _, imp := range sorted {
 			sb.WriteString("import static ")
@@ -478,6 +488,27 @@ func computeImportEdit(content []byte, imports []ImportSpec, pkg string, fqn str
 		Range:   Range{Start: Position{Line: insertLine, Character: 0}, End: Position{Line: insertLine, Character: 0}},
 		NewText: newText,
 	}
+}
+
+// collectIdentifiers walks the AST and returns a set of all identifier texts
+// (excluding import declarations) used in the file. This is used to detect
+// whether a statically-imported member name is actually referenced.
+func collectIdentifiers(root *slog.Node, content []byte) map[string]bool {
+	idents := make(map[string]bool)
+	var walk func(n *slog.Node)
+	walk = func(n *slog.Node) {
+		if n.Type() == "import_declaration" {
+			return
+		}
+		if n.Type() == "identifier" {
+			idents[n.Content(content)] = true
+		}
+		for i := 0; i < int(n.ChildCount()); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	return idents
 }
 
 func findChildByType(n *slog.Node, nodeType string) *slog.Node {

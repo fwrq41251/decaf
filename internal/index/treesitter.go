@@ -35,7 +35,8 @@ func FindSymbolLocation(filePath, sym string) (int, int) {
 		return -1, -1
 	}
 
-	isConstructor := strings.Contains(sym, "#`<init>`(")
+	// Determine the expected symbol kind from the SemanticDB symbol string.
+	symKind := classifySymbol(sym)
 
 	// Extract the short name from the symbol.
 	name := ExtractShortName(sym)
@@ -44,7 +45,7 @@ func FindSymbolLocation(filePath, sym string) (int, int) {
 	}
 
 	rootNode := tree.RootNode()
-	row, col := findNode(rootNode, name, content, isConstructor)
+	row, col := findNode(rootNode, name, content, symKind)
 	if row != -1 {
 		return row, col
 	}
@@ -90,19 +91,70 @@ func ExtractShortName(sym string) string {
 	return name
 }
 
-func findNode(n *slog.Node, name string, content []byte, isConstructor bool) (int, int) {
-	// Check if this node is a declaration of 'name'.
+// symbolKind classifies the expected declaration type for a SemanticDB symbol.
+type symbolKind int
+
+const (
+	symbolKindType        symbolKind = iota // class, interface, enum
+	symbolKindMethod                        // method
+	symbolKindConstructor                   // constructor (<init>)
+	symbolKindField                         // field, variable
+	symbolKindUnknown                       // fallback: match any declaration
+)
+
+// classifySymbol determines the expected declaration kind from a SemanticDB symbol string.
+// Examples:
+//
+//	"com/example/Foo#"             → symbolKindType      (trailing #)
+//	"com/example/Foo#bar()."       → symbolKindMethod    (contains "()" before trailing .)
+//	"com/example/Foo#`<init>`()."  → symbolKindConstructor
+//	"com/example/Foo#baz."         → symbolKindField     (trailing . without "()")
+func classifySymbol(sym string) symbolKind {
+	if strings.Contains(sym, "#`<init>`(") {
+		return symbolKindConstructor
+	}
+	if strings.HasSuffix(sym, "#") {
+		return symbolKindType
+	}
+	// Method symbols contain parentheses before the trailing period.
+	if strings.Contains(sym, "(") {
+		return symbolKindMethod
+	}
+	if strings.HasSuffix(sym, ".") {
+		return symbolKindField
+	}
+	return symbolKindUnknown
+}
+
+// nodeTypesForKind returns the set of Tree-sitter node types to match for a given symbol kind.
+func nodeTypesForKind(kind symbolKind) []string {
+	switch kind {
+	case symbolKindType:
+		return []string{"class_declaration", "interface_declaration", "enum_declaration"}
+	case symbolKindMethod:
+		return []string{"method_declaration"}
+	case symbolKindConstructor:
+		return []string{"constructor_declaration"}
+	case symbolKindField:
+		return []string{"field_declaration", "variable_declarator"}
+	default:
+		// Unknown: match any declaration type.
+		return []string{"class_declaration", "interface_declaration", "enum_declaration",
+			"method_declaration", "constructor_declaration",
+			"field_declaration", "variable_declarator"}
+	}
+}
+
+func findNode(n *slog.Node, name string, content []byte, kind symbolKind) (int, int) {
 	nodeType := n.Type()
-	
-	// If we are looking for a constructor, only match constructor_declaration.
-	// If not, avoid constructor_declaration to prevent class vs constructor confusion.
+
+	allowed := nodeTypesForKind(kind)
 	match := false
-	if isConstructor {
-		match = nodeType == "constructor_declaration"
-	} else {
-		match = nodeType == "class_declaration" || nodeType == "interface_declaration" || 
-		        nodeType == "enum_declaration" || nodeType == "method_declaration" || 
-				nodeType == "field_declaration" || nodeType == "variable_declarator"
+	for _, t := range allowed {
+		if nodeType == t {
+			match = true
+			break
+		}
 	}
 
 	if match {
@@ -119,7 +171,7 @@ func findNode(n *slog.Node, name string, content []byte, isConstructor bool) (in
 
 	// Recurse.
 	for i := 0; i < int(n.NamedChildCount()); i++ {
-		row, col := findNode(n.NamedChild(i), name, content, isConstructor)
+		row, col := findNode(n.NamedChild(i), name, content, kind)
 		if row != -1 {
 			return row, col
 		}
