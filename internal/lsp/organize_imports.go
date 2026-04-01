@@ -339,6 +339,23 @@ func addImportEdit(fileURI string, overlay string, fqn string) *WorkspaceEdit {
 		}
 	}
 
+	// Calculate the insertion.
+	insertLine, newText := calculateImportInsert(root, content, block, fqn)
+
+	editRange := Range{
+		Start: Position{Line: insertLine, Character: 0},
+		End:   Position{Line: insertLine, Character: 0},
+	}
+
+	return &WorkspaceEdit{
+		Changes: map[string][]TextEdit{
+			fileURI: {{Range: editRange, NewText: newText}},
+		},
+	}
+}
+
+// calculateImportInsert determines the line and text for inserting a new import.
+func calculateImportInsert(root *slog.Node, content []byte, block importBlock, fqn string) (int, string) {
 	// Find the correct insertion point within the existing imports.
 	newKey := importSortKey(fqn)
 	insertIdx := len(block.imports)
@@ -394,17 +411,7 @@ func addImportEdit(fileURI string, overlay string, fqn string) *WorkspaceEdit {
 			}
 		}
 	}
-
-	editRange := Range{
-		Start: Position{Line: insertLine, Character: 0},
-		End:   Position{Line: insertLine, Character: 0},
-	}
-
-	return &WorkspaceEdit{
-		Changes: map[string][]TextEdit{
-			fileURI: {{Range: editRange, NewText: newText}},
-		},
-	}
+	return insertLine, newText
 }
 
 // computeImportEdit returns a TextEdit that inserts an import statement for the
@@ -435,54 +442,8 @@ func computeImportEdit(content []byte, imports []ImportSpec, pkg string, fqn str
 	root := tree.RootNode()
 	block := parseImportBlock(root, content)
 
-	// Find the correct insertion point.
-	newKey := importSortKey(fqn)
-	insertIdx := len(block.imports)
-	for i, imp := range block.imports {
-		if importSortKey(imp) > newKey {
-			insertIdx = i
-			break
-		}
-	}
-
-	importLine := "import " + fqn + ";\n"
-
-	var newText string
-	if len(block.imports) == 0 && len(block.staticImports) == 0 {
-		newText = "\n" + importLine
-	} else {
-		newGroup := importGroup(fqn)
-		var sb strings.Builder
-		if insertIdx > 0 && importGroup(block.imports[insertIdx-1]) != newGroup {
-			sb.WriteByte('\n')
-		}
-		sb.WriteString(importLine)
-		if insertIdx < len(block.imports) && importGroup(block.imports[insertIdx]) != newGroup {
-			sb.WriteByte('\n')
-		}
-		newText = sb.String()
-	}
-
-	var insertLine int
-	if len(block.imports) == 0 && len(block.staticImports) == 0 {
-		insertLine = block.startLine
-	} else {
-		regularIdx := 0
-		insertLine = block.endLine
-		for i := 0; i < int(root.NamedChildCount()); i++ {
-			child := root.NamedChild(i)
-			if child.Type() == "import_declaration" {
-				spec := parseImport(child, content)
-				if !spec.Static && spec.Path != "" {
-					if regularIdx == insertIdx {
-						insertLine = int(child.StartPoint().Row)
-						break
-					}
-					regularIdx++
-				}
-			}
-		}
-	}
+	// Calculate the insertion.
+	insertLine, newText := calculateImportInsert(root, content, block, fqn)
 
 	return &TextEdit{
 		Range:   Range{Start: Position{Line: insertLine, Character: 0}, End: Position{Line: insertLine, Character: 0}},
