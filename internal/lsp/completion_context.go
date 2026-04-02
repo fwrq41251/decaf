@@ -21,8 +21,8 @@ const (
 // VarInitializer holds info about a var declaration's initializer expression
 // for deferred type inference (requires index access).
 type VarInitializer struct {
-	Receiver   string // receiver class name, e.g. "List" for List.of()
-	MethodName string // method name, e.g. "of"
+	Receiver   string // receiver expression, e.g. "List" for List.of(), "builder.name" for builder.name().build()
+	MethodName string // method name, e.g. "of", "build"
 }
 
 // ValueDecl represents a variable/field/parameter declaration with its type.
@@ -604,7 +604,7 @@ func collectLocalDecls(node *slog.Node, content []byte, ctx *CompletionCtx) {
 }
 
 // inferTypeFromDeclarator infers the type of a "var" declaration from its initializer.
-// Returns a directly-resolved TypeExpr for simple cases (new, cast, string literal),
+// Returns a directly-resolved TypeExpr for simple cases (new, cast, literals),
 // or a VarInitializer for method calls that require index-based resolution.
 func inferTypeFromDeclarator(node *slog.Node, content []byte) (*index.TypeExpr, *VarInitializer) {
 	for i := 0; i < int(node.NamedChildCount()); i++ {
@@ -613,20 +613,9 @@ func inferTypeFromDeclarator(node *slog.Node, content []byte) (*index.TypeExpr, 
 			// Find the initializer expression (the child after "=").
 			for j := 0; j < int(child.NamedChildCount()); j++ {
 				init := child.NamedChild(j)
-				switch init.Type() {
-				case "object_creation_expression":
-					// new ArrayList<String>() → extract type from the constructor.
-					return extractTypeFromNewExpr(init, content), nil
-				case "cast_expression":
-					// (MyClass) expr → extract the target type.
-					return extractTypeFromCast(init, content), nil
-				case "string_literal":
-					return &index.TypeExpr{Sym: "String"}, nil
-				case "method_invocation":
-					// List.of(...) → store receiver + method for deferred resolution.
-					if vi := extractMethodInvocationInfo(init, content); vi != nil {
-						return nil, vi
-					}
+				te, vi := inferTypeFromExpr(init, content)
+				if te != nil || vi != nil {
+					return te, vi
 				}
 			}
 		}
@@ -634,21 +623,62 @@ func inferTypeFromDeclarator(node *slog.Node, content []byte) (*index.TypeExpr, 
 	return nil, nil
 }
 
+// inferTypeFromExpr infers the type from an expression node.
+func inferTypeFromExpr(node *slog.Node, content []byte) (*index.TypeExpr, *VarInitializer) {
+	switch node.Type() {
+	case "object_creation_expression":
+		return extractTypeFromNewExpr(node, content), nil
+	case "cast_expression":
+		return extractTypeFromCast(node, content), nil
+	case "string_literal":
+		return &index.TypeExpr{Sym: "String"}, nil
+	case "integer_literal", "decimal_integer_literal", "hex_integer_literal",
+		"octal_integer_literal", "binary_integer_literal":
+		text := node.Content(content)
+		if strings.HasSuffix(text, "L") || strings.HasSuffix(text, "l") {
+			return &index.TypeExpr{Sym: "long"}, nil
+		}
+		return &index.TypeExpr{Sym: "int"}, nil
+	case "decimal_floating_point_literal", "floating_point_literal":
+		text := node.Content(content)
+		if strings.HasSuffix(text, "f") || strings.HasSuffix(text, "F") {
+			return &index.TypeExpr{Sym: "float"}, nil
+		}
+		return &index.TypeExpr{Sym: "double"}, nil
+	case "true", "false":
+		return &index.TypeExpr{Sym: "boolean"}, nil
+	case "character_literal":
+		return &index.TypeExpr{Sym: "char"}, nil
+	case "null_literal":
+		return nil, nil
+	case "array_creation_expression":
+		return extractTypeFromArrayCreation(node, content), nil
+	case "method_invocation":
+		if vi := extractMethodInvocationInfo(node, content); vi != nil {
+			return nil, vi
+		}
+	}
+	return nil, nil
+}
+
 // extractMethodInvocationInfo extracts receiver and method name from a method_invocation.
-// e.g. "List.of(...)" → VarInitializer{Receiver: "List", MethodName: "of"}
-// Only handles simple "Class.method(...)" patterns (static factory methods).
+// Handles both simple patterns (List.of(...)) and chained calls (builder.name("a").build()).
+// Uses exprToReceiver to flatten the receiver expression into a dot-separated string.
 func extractMethodInvocationInfo(node *slog.Node, content []byte) *VarInitializer {
-	obj := node.ChildByFieldName("object")
 	name := node.ChildByFieldName("name")
-	if obj == nil || name == nil {
+	if name == nil {
 		return nil
 	}
-	// Only handle simple identifiers as receiver (e.g. "List", "Path", "Files").
-	if obj.Type() != "identifier" {
+	obj := node.ChildByFieldName("object")
+	if obj == nil {
+		return nil
+	}
+	recv := exprToReceiver(obj, content)
+	if recv == "" {
 		return nil
 	}
 	return &VarInitializer{
-		Receiver:   obj.Content(content),
+		Receiver:   recv,
 		MethodName: name.Content(content),
 	}
 }
@@ -674,6 +704,22 @@ func extractTypeFromCast(node *slog.Node, content []byte) *index.TypeExpr {
 		switch child.Type() {
 		case "type_identifier", "generic_type", "scoped_type_identifier":
 			return extractType(child, content)
+		}
+	}
+	return nil
+}
+
+// extractTypeFromArrayCreation extracts the element type from an array_creation_expression.
+// e.g. "new int[]{1,2,3}" → TypeExpr{Sym: "int"}, "new String[10]" → TypeExpr{Sym: "String"}
+func extractTypeFromArrayCreation(node *slog.Node, content []byte) *index.TypeExpr {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "type_identifier", "generic_type", "scoped_type_identifier":
+			return extractType(child, content)
+		case "primitive_type", "boolean_type", "void_type",
+			"integral_type", "floating_point_type":
+			return &index.TypeExpr{Sym: child.Content(content)}
 		}
 	}
 	return nil

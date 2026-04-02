@@ -111,8 +111,7 @@ func (r *typeResolver) resolve(name string) string {
 
 	// 1. If it's already an FQN (contains dots), convert to symbol and check index.
 	if strings.Contains(arrayBase, ".") {
-		sym := fqnToSymbol(arrayBase)
-		if def := r.idx.SymbolDefinition(sym); def != nil {
+		if sym := r.resolveInnerClassFQN(arrayBase); sym != "" {
 			return sym
 		}
 	}
@@ -125,6 +124,9 @@ func (r *typeResolver) resolve(name string) string {
 		if idx := strings.LastIndex(imp.Path, "."); idx >= 0 {
 			importSimple := imp.Path[idx+1:]
 			if importSimple == arrayBase {
+				if sym := r.resolveInnerClassFQN(imp.Path); sym != "" {
+					return sym
+				}
 				return fqnToSymbol(imp.Path)
 			}
 		}
@@ -133,11 +135,12 @@ func (r *typeResolver) resolve(name string) string {
 	// 2. Same package: look for "com.example.Foo" if current package is "com.example".
 	if r.pkg != "" {
 		fqn := r.pkg + "." + arrayBase
-		sym := fqnToSymbol(fqn)
 		if syms := r.idx.TypeBySimpleName(arrayBase); len(syms) > 0 {
-			for _, s := range syms {
-				if s.Symbol == sym {
-					return sym
+			for _, candidate := range fqnToSymbolVariants(fqn) {
+				for _, s := range syms {
+					if s.Symbol == candidate {
+						return candidate
+					}
 				}
 			}
 		}
@@ -160,18 +163,19 @@ func (r *typeResolver) resolve(name string) string {
 		}
 		pkg := strings.TrimSuffix(imp.Path, ".*")
 		fqn := pkg + "." + arrayBase
-		sym := fqnToSymbol(fqn)
 		if syms := r.idx.TypeBySimpleName(arrayBase); len(syms) > 0 {
-			for _, s := range syms {
-				if s.Symbol == sym {
-					return sym
+			for _, candidate := range fqnToSymbolVariants(fqn) {
+				for _, s := range syms {
+					if s.Symbol == candidate {
+						return candidate
+					}
 				}
 			}
 		}
 	}
 
-	// 5. Global fallback: find any type with this simple name.
-	if syms := r.idx.TypeBySimpleName(arrayBase); len(syms) > 0 {
+	// 5. Global fallback: only resolve if there is exactly one match.
+	if syms := r.idx.TypeBySimpleName(arrayBase); len(syms) == 1 {
 		return syms[0].Symbol
 	}
 
@@ -182,6 +186,39 @@ func (r *typeResolver) resolve(name string) string {
 // e.g. "java.util.List" → "java/util/List#"
 func fqnToSymbol(fqn string) string {
 	return strings.ReplaceAll(fqn, ".", "/") + "#"
+}
+
+// fqnToSymbolVariants returns all possible SemanticDB symbols for an FQN,
+// accounting for inner classes. For "com.example.Outer.Inner", it returns:
+//   - "com/example/Outer/Inner#"  (all dots as package separators)
+//   - "com/example/Outer$Inner#"  (last dot as inner class separator)
+//   - "com/example$Outer$Inner#"  (etc.)
+func fqnToSymbolVariants(fqn string) []string {
+	base := fqnToSymbol(fqn)
+	variants := []string{base}
+
+	// Progressively replace rightmost "/" with "$" to generate inner class variants.
+	sym := base[:len(base)-1] // strip trailing "#"
+	for {
+		idx := strings.LastIndex(sym, "/")
+		if idx < 0 {
+			break
+		}
+		sym = sym[:idx] + "$" + sym[idx+1:]
+		variants = append(variants, sym+"#")
+	}
+	return variants
+}
+
+// resolveInnerClassFQN tries to resolve an FQN to a symbol in the index,
+// handling inner classes by trying "$" separator variants.
+func (r *typeResolver) resolveInnerClassFQN(fqn string) string {
+	for _, sym := range fqnToSymbolVariants(fqn) {
+		if def := r.idx.SymbolDefinition(sym); def != nil {
+			return sym
+		}
+	}
+	return ""
 }
 
 func isPrimitive(name string) bool {

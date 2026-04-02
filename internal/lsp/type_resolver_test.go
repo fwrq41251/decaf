@@ -119,3 +119,80 @@ func TestTypeResolver_Unknown(t *testing.T) {
 		t.Fatalf("expected empty for unknown type, got %q", got)
 	}
 }
+
+func TestTypeResolver_InnerClassExplicitImport(t *testing.T) {
+	idx := setupResolverIndex(t, []*sdb.SymbolInformation{
+		{Symbol: "com/example/Outer$Inner#", DisplayName: "Inner", Kind: sdb.SymbolInformation_CLASS},
+	})
+	r := &typeResolver{
+		idx: idx,
+		imports: []ImportSpec{
+			{Path: "com.example.Outer.Inner"},
+		},
+	}
+	got := r.resolve("Inner")
+	if got != "com/example/Outer$Inner#" {
+		t.Fatalf("expected 'com/example/Outer$Inner#', got %q", got)
+	}
+}
+
+func TestTypeResolver_InnerClassFQN(t *testing.T) {
+	idx := setupResolverIndex(t, []*sdb.SymbolInformation{
+		{Symbol: "com/example/Outer$Inner#", DisplayName: "Inner", Kind: sdb.SymbolInformation_CLASS},
+	})
+	r := &typeResolver{idx: idx}
+	got := r.resolve("com.example.Outer.Inner")
+	if got != "com/example/Outer$Inner#" {
+		t.Fatalf("expected 'com/example/Outer$Inner#', got %q", got)
+	}
+}
+
+func TestTypeResolver_InnerClassSamePackage(t *testing.T) {
+	idx := setupResolverIndex(t, []*sdb.SymbolInformation{
+		{Symbol: "com/example/Outer$Inner#", DisplayName: "Inner", Kind: sdb.SymbolInformation_CLASS},
+	})
+	r := &typeResolver{
+		idx: idx,
+		pkg: "com.example",
+	}
+	// "Inner" alone won't match same-package "com/example/Inner#", but
+	// the global fallback (step 5) should find it as the only match.
+	got := r.resolve("Inner")
+	if got != "com/example/Outer$Inner#" {
+		t.Fatalf("expected 'com/example/Outer$Inner#', got %q", got)
+	}
+}
+
+func TestTypeResolver_InnerClassWildcardImport(t *testing.T) {
+	idx := setupResolverIndex(t, []*sdb.SymbolInformation{
+		{Symbol: "com/example/Outer$Inner#", DisplayName: "Inner", Kind: sdb.SymbolInformation_CLASS},
+	})
+	r := &typeResolver{
+		idx: idx,
+		imports: []ImportSpec{
+			{Path: "com.example.Outer.*", Wildcard: true},
+		},
+	}
+	got := r.resolve("Inner")
+	if got != "com/example/Outer$Inner#" {
+		t.Fatalf("expected 'com/example/Outer$Inner#', got %q", got)
+	}
+}
+
+func TestFqnToSymbolVariants(t *testing.T) {
+	variants := fqnToSymbolVariants("com.example.Outer.Inner")
+	expected := []string{
+		"com/example/Outer/Inner#",
+		"com/example/Outer$Inner#",
+		"com/example$Outer$Inner#",
+		"com$example$Outer$Inner#",
+	}
+	if len(variants) != len(expected) {
+		t.Fatalf("expected %d variants, got %d: %v", len(expected), len(variants), variants)
+	}
+	for i, v := range variants {
+		if v != expected[i] {
+			t.Fatalf("variant[%d]: expected %q, got %q", i, expected[i], v)
+		}
+	}
+}

@@ -177,7 +177,7 @@ func (h *Handler) resolveIdentifierTypeExpr(name string, cctx *CompletionCtx, re
 			}
 			// Deferred var inference: resolve method return type via index.
 			if cctx.Locals[i].Initializer != nil {
-				if te := h.resolveVarInitializer(cctx.Locals[i].Initializer, resolver); te != nil {
+				if te := h.resolveVarInitializer(cctx.Locals[i].Initializer, cctx, resolver); te != nil {
 					return te, false
 				}
 			}
@@ -202,14 +202,30 @@ func (h *Handler) resolveIdentifierTypeExpr(name string, cctx *CompletionCtx, re
 	return nil, false
 }
 
-// resolveVarInitializer resolves the return type of a static method call
-// used as an initializer for a "var" declaration. e.g. var list = List.of(...)
-func (h *Handler) resolveVarInitializer(vi *VarInitializer, resolver *typeResolver) *index.TypeExpr {
-	classSym := resolver.resolve(vi.Receiver)
-	if classSym == "" {
+// resolveVarInitializer resolves the return type of a method call
+// used as an initializer for a "var" declaration.
+// Supports static calls (List.of(...)), instance calls (list.get(0)),
+// and chained calls (builder.name("a").build()).
+func (h *Handler) resolveVarInitializer(vi *VarInitializer, cctx *CompletionCtx, resolver *typeResolver) *index.TypeExpr {
+	// Resolve the receiver chain (e.g. "builder.name" or "List").
+	parts := strings.Split(vi.Receiver, ".")
+	if len(parts) == 0 {
 		return nil
 	}
-	return h.resolveMemberTypeExpr(&index.TypeExpr{Sym: classSym}, vi.MethodName)
+
+	typeExpr, _ := h.resolveIdentifierTypeExpr(parts[0], cctx, resolver)
+	if typeExpr == nil {
+		return nil
+	}
+
+	for i := 1; i < len(parts); i++ {
+		typeExpr = h.resolveMemberTypeExpr(typeExpr, parts[i])
+		if typeExpr == nil {
+			return nil
+		}
+	}
+
+	return h.resolveMemberTypeExpr(typeExpr, vi.MethodName)
 }
 
 // resolveMemberTypeExpr resolves the type of a member on a given type,

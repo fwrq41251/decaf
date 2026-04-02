@@ -485,7 +485,7 @@ public class MyClass {
 	}
 }
 
-func TestParseCompletionCtx_VarUnknownInitializer(t *testing.T) {
+func TestParseCompletionCtx_VarIntLiteral(t *testing.T) {
 	src := []byte(`package com.example;
 public class MyClass {
     public void doSomething() {
@@ -498,15 +498,212 @@ public class MyClass {
 	for _, l := range ctx.Locals {
 		if l.Name == "num" {
 			found = true
-			// Integer literal — type should be nil (can't infer).
-			if l.Type != nil {
-				t.Fatalf("expected nil type for int literal var, got %v", l.Type)
+			if l.Type == nil || l.Type.Sym != "int" {
+				t.Fatalf("expected type 'int' for int literal var, got %v", l.Type)
 			}
 		}
 	}
 	if !found {
 		t.Fatalf("expected 'num' in locals, got %+v", ctx.Locals)
 	}
+}
+
+func TestParseCompletionCtx_VarLongLiteral(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var num = 42L;
+        num.
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 4, 12)
+	for _, l := range ctx.Locals {
+		if l.Name == "num" {
+			if l.Type == nil || l.Type.Sym != "long" {
+				t.Fatalf("expected type 'long', got %v", l.Type)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected 'num' in locals, got %+v", ctx.Locals)
+}
+
+func TestParseCompletionCtx_VarDoubleLiteral(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var pi = 3.14;
+        pi.
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 4, 11)
+	for _, l := range ctx.Locals {
+		if l.Name == "pi" {
+			if l.Type == nil || l.Type.Sym != "double" {
+				t.Fatalf("expected type 'double', got %v", l.Type)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected 'pi' in locals, got %+v", ctx.Locals)
+}
+
+func TestParseCompletionCtx_VarFloatLiteral(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var f = 3.14f;
+        f.
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 4, 10)
+	for _, l := range ctx.Locals {
+		if l.Name == "f" {
+			if l.Type == nil || l.Type.Sym != "float" {
+				t.Fatalf("expected type 'float', got %v", l.Type)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected 'f' in locals, got %+v", ctx.Locals)
+}
+
+func TestParseCompletionCtx_VarBooleanLiteral(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var flag = true;
+        flag.
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 4, 13)
+	for _, l := range ctx.Locals {
+		if l.Name == "flag" {
+			if l.Type == nil || l.Type.Sym != "boolean" {
+				t.Fatalf("expected type 'boolean', got %v", l.Type)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected 'flag' in locals, got %+v", ctx.Locals)
+}
+
+func TestParseCompletionCtx_VarCharLiteral(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var ch = 'a';
+        ch.
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 4, 11)
+	for _, l := range ctx.Locals {
+		if l.Name == "ch" {
+			if l.Type == nil || l.Type.Sym != "char" {
+				t.Fatalf("expected type 'char', got %v", l.Type)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected 'ch' in locals, got %+v", ctx.Locals)
+}
+
+func TestParseCompletionCtx_VarArrayCreation(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var arr = new int[]{1, 2, 3};
+        arr.
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 4, 12)
+	for _, l := range ctx.Locals {
+		if l.Name == "arr" {
+			if l.Type == nil || l.Type.Sym != "int" {
+				t.Fatalf("expected type 'int', got %v", l.Type)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected 'arr' in locals, got %+v", ctx.Locals)
+}
+
+func TestParseCompletionCtx_VarArrayCreationObject(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var arr = new String[10];
+        arr.
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 4, 12)
+	for _, l := range ctx.Locals {
+		if l.Name == "arr" {
+			if l.Type == nil || l.Type.Sym != "String" {
+				t.Fatalf("expected type 'String', got %v", l.Type)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected 'arr' in locals, got %+v", ctx.Locals)
+}
+
+func TestParseCompletionCtx_VarChainedMethodInvocation(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var result = builder.name("a").build();
+        result.
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 4, 15)
+	for _, l := range ctx.Locals {
+		if l.Name == "result" {
+			if l.Type != nil {
+				t.Fatalf("expected nil type for chained call var, got %v", l.Type)
+			}
+			if l.Initializer == nil {
+				t.Fatal("expected Initializer to be set for chained call var")
+			}
+			if l.Initializer.Receiver != "builder.name" {
+				t.Fatalf("expected receiver 'builder.name', got %q", l.Initializer.Receiver)
+			}
+			if l.Initializer.MethodName != "build" {
+				t.Fatalf("expected method 'build', got %q", l.Initializer.MethodName)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected 'result' in locals, got %+v", ctx.Locals)
+}
+
+func TestParseCompletionCtx_VarInstanceMethodInvocation(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void doSomething() {
+        var item = list.get(0);
+        item.
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 4, 13)
+	for _, l := range ctx.Locals {
+		if l.Name == "item" {
+			if l.Type != nil {
+				t.Fatalf("expected nil type for instance call var, got %v", l.Type)
+			}
+			if l.Initializer == nil {
+				t.Fatal("expected Initializer to be set for instance call var")
+			}
+			if l.Initializer.Receiver != "list" {
+				t.Fatalf("expected receiver 'list', got %q", l.Initializer.Receiver)
+			}
+			if l.Initializer.MethodName != "get" {
+				t.Fatalf("expected method 'get', got %q", l.Initializer.MethodName)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected 'item' in locals, got %+v", ctx.Locals)
 }
 
 func TestExtractReceiverFromAST(t *testing.T) {
