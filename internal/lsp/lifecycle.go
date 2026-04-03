@@ -26,6 +26,11 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 	h.rootURI = p.RootURI
 	h.clientCaps = p.Capabilities
 	h.logger.Printf("initialize: rootURI=%s, processID=%v", p.RootURI, p.ProcessID)
+	if p.Capabilities.TextDocument != nil && p.Capabilities.TextDocument.Completion != nil && p.Capabilities.TextDocument.Completion.CompletionItem != nil {
+		h.logger.Printf("initialize: completion.snippetSupport=%v", p.Capabilities.TextDocument.Completion.CompletionItem.SnippetSupport)
+	} else {
+		h.logger.Printf("initialize: completion.snippetSupport=unknown")
+	}
 
 	caps := ServerCapabilities{
 		TextDocumentSync: &TextDocumentSyncOptions{

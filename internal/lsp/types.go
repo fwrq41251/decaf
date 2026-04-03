@@ -25,10 +25,19 @@ type WorkspaceEditClientCapabilities struct {
 
 type TextDocumentClientCapabilities struct {
 	PublishDiagnostics *PublishDiagnosticsClientCapabilities `json:"publishDiagnostics,omitempty"`
+	Completion         *CompletionClientCapabilities         `json:"completion,omitempty"`
 }
 
 type PublishDiagnosticsClientCapabilities struct {
 	RelatedInformation bool `json:"relatedInformation,omitempty"`
+}
+
+type CompletionClientCapabilities struct {
+	CompletionItem *CompletionItemClientCapabilities `json:"completionItem,omitempty"`
+}
+
+type CompletionItemClientCapabilities struct {
+	SnippetSupport bool `json:"snippetSupport,omitempty"`
 }
 
 // InitializeResult is returned by the server in response to "initialize".

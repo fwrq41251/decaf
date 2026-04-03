@@ -42,6 +42,11 @@ type CallContext struct {
 	Constructor string // type name for new-expression (e.g. "Foo")
 }
 
+type MethodDecl struct {
+	Name   string
+	Params []string
+}
+
 // CompletionCtx holds the parsed context for a completion request.
 type CompletionCtx struct {
 	Kind           CompletionKind
@@ -50,7 +55,7 @@ type CompletionCtx struct {
 	Locals         []ValueDecl  // local variables visible at cursor
 	Params         []ValueDecl  // method parameters
 	ClassFields    []ValueDecl  // fields of enclosing class
-	ClassMethods   []string     // method names of enclosing class
+	ClassMethods   []MethodDecl // methods of enclosing class
 	Imports        []ImportSpec
 	Package        string
 	EnclosingClass string       // simple name of the enclosing class
@@ -395,15 +400,48 @@ func extractClassMembers(classNode *slog.Node, content []byte, ctx *CompletionCt
 				ctx.ClassFields = append(ctx.ClassFields, ValueDecl{Name: name, Type: typeExpr})
 			}
 		case "method_declaration":
-			for j := 0; j < int(child.NamedChildCount()); j++ {
-				gc := child.NamedChild(j)
-				if gc.Type() == "identifier" {
-					ctx.ClassMethods = append(ctx.ClassMethods, gc.Content(content))
-					break
-				}
+			if decl := extractMethodDecl(child, content); decl.Name != "" {
+				ctx.ClassMethods = append(ctx.ClassMethods, decl)
 			}
 		}
 	}
+}
+
+func extractMethodDecl(methodNode *slog.Node, content []byte) MethodDecl {
+	var decl MethodDecl
+	for i := 0; i < int(methodNode.NamedChildCount()); i++ {
+		child := methodNode.NamedChild(i)
+		switch child.Type() {
+		case "identifier":
+			if decl.Name == "" {
+				decl.Name = child.Content(content)
+			}
+		case "formal_parameters":
+			decl.Params = extractParameterNames(child, content)
+		}
+	}
+	return decl
+}
+
+func extractParameterNames(paramsNode *slog.Node, content []byte) []string {
+	var params []string
+	if paramsNode == nil {
+		return nil
+	}
+	for i := 0; i < int(paramsNode.NamedChildCount()); i++ {
+		param := paramsNode.NamedChild(i)
+		if param.Type() != "formal_parameter" && param.Type() != "spread_parameter" {
+			continue
+		}
+		for j := 0; j < int(param.NamedChildCount()); j++ {
+			child := param.NamedChild(j)
+			if child.Type() == "identifier" {
+				params = append(params, child.Content(content))
+				break
+			}
+		}
+	}
+	return params
 }
 
 // extractMethodParams extracts parameters from the enclosing method.

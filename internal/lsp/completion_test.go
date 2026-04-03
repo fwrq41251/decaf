@@ -6,30 +6,6 @@ import (
 	"github.com/fwrq41251/decaf/internal/index"
 )
 
-func TestOverloadDetail(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		// Increment 1 → 2.
-		{"void add(String) (+1 overload)", "void add(String) (+2 overloads)"},
-		// Increment 2 → 3.
-		{"void add(String) (+2 overloads)", "void add(String) (+3 overloads)"},
-		// Increment 9 → 10.
-		{"void add(String) (+9 overloads)", "void add(String) (+10 overloads)"},
-		// No " (+" marker: return as-is.
-		{"int size()", "int size()"},
-		// Empty string: return as-is.
-		{"", ""},
-	}
-	for _, tt := range tests {
-		got := overloadDetail(tt.input)
-		if got != tt.want {
-			t.Errorf("overloadDetail(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestMethodCompletionItem(t *testing.T) {
 	// Method with params: snippet with tabstop inside parens.
 	sig := &index.SignatureInfo{
@@ -40,6 +16,9 @@ func TestMethodCompletionItem(t *testing.T) {
 		},
 	}
 	item := methodCompletionItem("doWork", CompletionKindMethod, sig, "", "")
+	if item.Label != "doWork(String name)" {
+		t.Errorf("method with params: Label = %q, want %q", item.Label, "doWork(String name)")
+	}
 	if item.InsertText != "doWork(${1:name})$0" {
 		t.Errorf("method with params: InsertText = %q, want %q", item.InsertText, "doWork(${1:name})$0")
 	}
@@ -52,6 +31,9 @@ func TestMethodCompletionItem(t *testing.T) {
 		Label: "int getCount()",
 	}
 	item2 := methodCompletionItem("getCount", CompletionKindMethod, sigNoParams, "", "")
+	if item2.Label != "getCount()" {
+		t.Errorf("method no params: Label = %q, want %q", item2.Label, "getCount()")
+	}
 	if item2.InsertText != "getCount()$0" {
 		t.Errorf("method no params: InsertText = %q, want %q", item2.InsertText, "getCount()$0")
 	}
@@ -77,6 +59,38 @@ func TestMethodCompletionItem_FallbackSnippet(t *testing.T) {
 	item := methodCompletionItem("doWork", CompletionKindMethod, sig, "", "")
 	if item.InsertText != "doWork($1)$0" {
 		t.Errorf("fallback snippet InsertText = %q, want %q", item.InsertText, "doWork($1)$0")
+	}
+}
+
+func TestBuildLocalMethodInsertText(t *testing.T) {
+	got := buildLocalMethodInsertText(MethodDecl{
+		Name:   "doWork",
+		Params: []string{"name", "count"},
+	})
+	if got != "doWork(${1:name}, ${2:count})$0" {
+		t.Errorf("buildLocalMethodInsertText() = %q, want %q", got, "doWork(${1:name}, ${2:count})$0")
+	}
+}
+
+func TestMethodCompletionLabel(t *testing.T) {
+	sig := &index.SignatureInfo{
+		Label:     "void get(String name, int count)",
+		HasParams: true,
+		Params: []index.ParamInfo{
+			{Name: "name", Type: "String"},
+			{Name: "count", Type: "int"},
+		},
+	}
+	got := methodCompletionLabel("get", sig)
+	if got != "get(String name, int count)" {
+		t.Errorf("methodCompletionLabel() = %q, want %q", got, "get(String name, int count)")
+	}
+}
+
+func TestFormatMethodDeclDetail(t *testing.T) {
+	got := formatMethodDeclDetail(MethodDecl{Name: "doWork", Params: []string{"name", "count"}})
+	if got != "doWork(name, count)" {
+		t.Errorf("formatMethodDeclDetail() = %q, want %q", got, "doWork(name, count)")
 	}
 }
 

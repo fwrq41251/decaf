@@ -573,6 +573,358 @@ public class Caller {
 	}
 }
 
+func TestCompletion_AllowsMultipleTypesWithSameSimpleName(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+
+	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	close(h.indexReady)
+	h.idx = idx
+	h.rootURI = "file://" + tmpDir
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "java/time/LocalDate#", DisplayName: "LocalDate", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "org/joda/time/LocalDate#", DisplayName: "LocalDate", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	}
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "Types.java.semanticdb"), data, 0644)
+	idx.Load()
+
+	fileURI := "file://" + tmpDir + "/src/Caller.java"
+	content := `package com.example;
+public class Caller {
+    void test() {
+        Loca
+    }
+}`
+	h.docs.Open(fileURI, content)
+
+	params := CompletionParams{
+		TextDocumentPositionParams: TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: fileURI},
+			Position:     Position{Line: 3, Character: 12},
+		},
+	}
+	rawParams, _ := json.Marshal(params)
+
+	got, err := h.handleCompletion(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleCompletion failed: %v", err)
+	}
+
+	list := got.(CompletionList)
+	var localDates []CompletionItem
+	for _, item := range list.Items {
+		if item.Label == "LocalDate" {
+			localDates = append(localDates, item)
+		}
+	}
+	if len(localDates) != 2 {
+		t.Fatalf("expected 2 LocalDate completion items, got %d: %+v", len(localDates), localDates)
+	}
+
+	details := map[string]bool{}
+	for _, item := range localDates {
+		details[item.Detail] = true
+	}
+	if !details["java.time.LocalDate"] {
+		t.Fatalf("missing java.time.LocalDate completion item: %+v", localDates)
+	}
+	if !details["org.joda.time.LocalDate"] {
+		t.Fatalf("missing org.joda.time.LocalDate completion item: %+v", localDates)
+	}
+}
+
+func TestCompletion_PrefersJDKTypeOverThirdPartyForSameSimpleName(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+
+	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	close(h.indexReady)
+	h.idx = idx
+	h.rootURI = "file://" + tmpDir
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "java/time/LocalDate#", DisplayName: "LocalDate", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "org/joda/time/LocalDate#", DisplayName: "LocalDate", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	}
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "Types.java.semanticdb"), data, 0644)
+	idx.Load()
+
+	fileURI := "file://" + tmpDir + "/src/Caller.java"
+	content := `package com.example;
+public class Caller {
+    void test() {
+        Loca
+    }
+}`
+	h.docs.Open(fileURI, content)
+
+	params := CompletionParams{
+		TextDocumentPositionParams: TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: fileURI},
+			Position:     Position{Line: 3, Character: 12},
+		},
+	}
+	rawParams, _ := json.Marshal(params)
+
+	got, err := h.handleCompletion(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleCompletion failed: %v", err)
+	}
+
+	list := got.(CompletionList)
+	var localDates []CompletionItem
+	for _, item := range list.Items {
+		if item.Label == "LocalDate" {
+			localDates = append(localDates, item)
+		}
+	}
+	if len(localDates) < 2 {
+		t.Fatalf("expected at least 2 LocalDate completion items, got %d: %+v", len(localDates), localDates)
+	}
+	if localDates[0].Detail != "java.time.LocalDate" {
+		t.Fatalf("first LocalDate detail = %q, want %q", localDates[0].Detail, "java.time.LocalDate")
+	}
+}
+
+func TestCompletion_PrefersExplicitImportForSameSimpleName(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+
+	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	close(h.indexReady)
+	h.idx = idx
+	h.rootURI = "file://" + tmpDir
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "java/time/LocalDate#", DisplayName: "LocalDate", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "org/joda/time/LocalDate#", DisplayName: "LocalDate", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	}
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "Types.java.semanticdb"), data, 0644)
+	idx.Load()
+
+	fileURI := "file://" + tmpDir + "/src/Caller.java"
+	content := `package com.example;
+import org.joda.time.LocalDate;
+public class Caller {
+    void test() {
+        Loca
+    }
+}`
+	h.docs.Open(fileURI, content)
+
+	params := CompletionParams{
+		TextDocumentPositionParams: TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: fileURI},
+			Position:     Position{Line: 4, Character: 12},
+		},
+	}
+	rawParams, _ := json.Marshal(params)
+
+	got, err := h.handleCompletion(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleCompletion failed: %v", err)
+	}
+
+	list := got.(CompletionList)
+	var localDates []CompletionItem
+	for _, item := range list.Items {
+		if item.Label == "LocalDate" {
+			localDates = append(localDates, item)
+		}
+	}
+	if len(localDates) < 2 {
+		t.Fatalf("expected at least 2 LocalDate completion items, got %d: %+v", len(localDates), localDates)
+	}
+	if localDates[0].AdditionalTextEdits != nil {
+		t.Fatalf("expected imported LocalDate to need no additional import edit, got %+v", localDates[0].AdditionalTextEdits)
+	}
+}
+
+func TestCompletion_ShowsOverloadedMethodsSeparately(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+
+	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	close(h.indexReady)
+	h.idx = idx
+	h.rootURI = "file://" + tmpDir
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Foo.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "com/example/Foo#", DisplayName: "Foo", Kind: sdb.SymbolInformation_CLASS},
+				{
+					Symbol: "com/example/Foo#get().", DisplayName: "get", Kind: sdb.SymbolInformation_METHOD,
+					Signature: &sdb.Signature{
+						SealedValue: &sdb.Signature_MethodSignature{
+							MethodSignature: &sdb.MethodSignature{
+								ReturnType: &sdb.Type{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "java/lang/String#"}}},
+							},
+						},
+					},
+				},
+				{
+					Symbol: "com/example/Foo#get(+1).", DisplayName: "get", Kind: sdb.SymbolInformation_METHOD,
+					Signature: &sdb.Signature{
+						SealedValue: &sdb.Signature_MethodSignature{
+							MethodSignature: &sdb.MethodSignature{
+								ReturnType: &sdb.Type{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "java/lang/String#"}}},
+								ParameterLists: []*sdb.Scope{{
+									Hardlinks: []*sdb.SymbolInformation{
+										{DisplayName: "name", Signature: &sdb.Signature{SealedValue: &sdb.Signature_ValueSignature{ValueSignature: &sdb.ValueSignature{Tpe: &sdb.Type{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "java/lang/String#"}}}}}}},
+									},
+								}},
+							},
+						},
+					},
+				},
+			},
+		}},
+	}
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "Foo.java.semanticdb"), data, 0644)
+	idx.Load()
+
+	fileURI := "file://" + tmpDir + "/src/Caller.java"
+	content := `package com.example;
+public class Caller {
+    void test() {
+        Foo foo = new Foo();
+        foo.get
+    }
+}`
+	h.docs.Open(fileURI, content)
+
+	params := CompletionParams{
+		TextDocumentPositionParams: TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: fileURI},
+			Position:     Position{Line: 4, Character: 15},
+		},
+	}
+	rawParams, _ := json.Marshal(params)
+
+	got, err := h.handleCompletion(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleCompletion failed: %v", err)
+	}
+
+	list := got.(CompletionList)
+	var gets []CompletionItem
+	for _, item := range list.Items {
+		if strings.HasPrefix(item.Label, "get(") {
+			gets = append(gets, item)
+		}
+	}
+	if len(gets) != 2 {
+		t.Fatalf("expected 2 get completion items, got %d: %+v", len(gets), gets)
+	}
+
+	insertTexts := map[string]bool{}
+	for _, item := range gets {
+		insertTexts[item.InsertText] = true
+	}
+	if !insertTexts["get()$0"] {
+		t.Fatalf("missing zero-arg get completion: %+v", gets)
+	}
+	if !insertTexts["get(${1:name})$0"] {
+		t.Fatalf("missing one-arg get completion: %+v", gets)
+	}
+}
+
+func TestCompletion_ShowsLocalOverloadedMethodsSeparately(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+
+	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	close(h.indexReady)
+	h.idx = idx
+	h.rootURI = "file://" + tmpDir
+
+	fileURI := "file://" + tmpDir + "/src/Caller.java"
+	content := `package com.example;
+public class Caller {
+    void run() {
+        wor
+    }
+    void work() {}
+    void work(String name) {}
+}`
+	h.docs.Open(fileURI, content)
+
+	params := CompletionParams{
+		TextDocumentPositionParams: TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: fileURI},
+			Position:     Position{Line: 3, Character: 11},
+		},
+	}
+	rawParams, _ := json.Marshal(params)
+
+	got, err := h.handleCompletion(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleCompletion failed: %v", err)
+	}
+
+	list := got.(CompletionList)
+	var works []CompletionItem
+	for _, item := range list.Items {
+		if strings.HasPrefix(item.Label, "work(") {
+			works = append(works, item)
+		}
+	}
+	if len(works) != 2 {
+		t.Fatalf("expected 2 work completion items, got %d: %+v", len(works), works)
+	}
+
+	insertTexts := map[string]bool{}
+	for _, item := range works {
+		insertTexts[item.InsertText] = true
+	}
+	if !insertTexts["work()$0"] {
+		t.Fatalf("missing zero-arg work completion: %+v", works)
+	}
+	if !insertTexts["work(${1:name})$0"] {
+		t.Fatalf("missing one-arg work completion: %+v", works)
+	}
+}
+
 func TestDiagnosticsClearing(t *testing.T) {
 	var output bytes.Buffer
 	logger := log.New(&bytes.Buffer{}, "[test] ", 0)

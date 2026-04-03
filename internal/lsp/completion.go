@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/fwrq41251/decaf/internal/index"
@@ -51,6 +52,15 @@ func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) 
 	} else {
 		items = h.completeLexical(cctx, p.TextDocument.URI, contentBytes)
 	}
+	sortCompletionItems(items)
+	for _, item := range items {
+		if item.Kind == CompletionKindMethod || item.Kind == CompletionKindConstructor {
+			if item.InsertTextFormat == InsertTextFormatSnippet {
+				h.logger.Printf("completion snippet item label=%q insert=%q format=%d detail=%q",
+					item.Label, item.InsertText, item.InsertTextFormat, item.Detail)
+			}
+		}
+	}
 
 	h.logger.Printf("completion at %s:%d:%d kind=%d prefix=%q receiver=%q -> %d items",
 		p.TextDocument.URI, p.Position.Line, p.Position.Character,
@@ -68,14 +78,22 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 	if typeExpr == nil {
 		return nil
 	}
+	h.logger.Printf("completeDot: receiver=%q resolvedType=%q static=%v prefix=%q", cctx.Receiver, typeExpr.Sym, staticAccess, cctx.Prefix)
 
 	// Get members of the resolved type.
 	members := h.idx.MembersOfType(typeExpr.Sym)
 	query := cctx.Prefix
 
 	var items []CompletionItem
-	seen := make(map[string]int) // name -> index in items (for dedup of overloads)
+	seen := make(map[string]struct{})
 	for _, m := range members {
+		if m.Name == cctx.Prefix || strings.HasPrefix(m.Name, cctx.Prefix) {
+			sigLabel := ""
+			if m.Signature != nil {
+				sigLabel = m.Signature.Label
+			}
+			h.logger.Printf("completeDot candidate: owner=%q name=%q symbol=%q kind=%v static=%v sig=%q", typeExpr.Sym, m.Name, m.Symbol, m.Kind, m.IsStatic, sigLabel)
+		}
 		if !index.FuzzyMatch(m.Name, query) {
 			continue
 		}
@@ -96,20 +114,17 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 		if kind == CompletionKindField || kind == CompletionKindProperty {
 			kindOrder = "0" // fields first
 		}
-		sortText := sortPrefix + kindOrder + m.Name
-
-		// Merge overloaded methods: keep one item per name, update detail for overloads.
-		if idx, ok := seen[m.Name]; ok {
-			if items[idx].Detail != "" && !strings.Contains(items[idx].Detail, " (+") {
-				items[idx].Detail += " (+1 overload)"
-			} else if strings.Contains(items[idx].Detail, " (+") {
-				items[idx].Detail = overloadDetail(items[idx].Detail)
-			}
+		key := completionItemKeyForSymbol(m)
+		if _, ok := seen[key]; ok {
 			continue
+		}
+		seen[key] = struct{}{}
+		sortText := sortPrefix + kindOrder + m.Name
+		if kind == CompletionKindMethod || kind == CompletionKindConstructor {
+			sortText += signatureSortSuffix(m.Signature)
 		}
 
 		item := methodCompletionItem(m.Name, kind, m.Signature, sortText, m.Doc)
-		seen[m.Name] = len(items)
 		items = append(items, item)
 		if len(items) >= 100 {
 			break
@@ -347,6 +362,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	expectedType := h.resolveExpectedType(cctx)
 
 	seen := make(map[string]struct{})
+	seenTypeSymbols := make(map[string]struct{})
 	var items []CompletionItem
 
 	// casePrefix returns "0" if name starts with the original-case prefix, "1" otherwise.
@@ -406,18 +422,21 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 
 	// 4. Class methods (scope "3").
 	for _, m := range cctx.ClassMethods {
-		if matchPrefix(m) {
-			if _, ok := seen[m]; ok {
+		if matchPrefix(m.Name) {
+			key := completionItemKeyForMethodDecl(m)
+			if _, ok := seen[key]; ok {
 				continue
 			}
-			seen[m] = struct{}{}
+			seen[key] = struct{}{}
+			insertText := buildLocalMethodInsertText(m)
 			items = append(items, CompletionItem{
-				Label:            m,
+				Label:            formatMethodDeclDetail(m),
 				Kind:             SymbolKindMethod,
-				InsertText:       m + "($1)$0",
+				InsertText:       insertText,
 				InsertTextFormat: InsertTextFormatSnippet,
-				SortText:         "1" + casePrefix(m) + "3" + m,
-				FilterText:       m,
+				Detail:           formatMethodDeclDetail(m),
+				SortText:         "1" + casePrefix(m.Name) + "3" + m.Name + methodDeclSortSuffix(m),
+				FilterText:       m.Name,
 			})
 		}
 	}
@@ -445,11 +464,6 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		if len(items) >= 100 {
 			break
 		}
-		if _, ok := seen[s.Name]; ok {
-			continue
-		}
-		seen[s.Name] = struct{}{}
-
 		scopeOrder := "7" // default: other symbol
 		if s.SameFile {
 			if isTypeCompletionKind(sdbKindToCompletionKind(s.Kind)) {
@@ -464,7 +478,26 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		}
 
 		kind := sdbKindToCompletionKind(s.Kind)
-		sortText := "1" + casePrefix(s.Name) + scopeOrder + s.Name
+		if isTypeCompletionKind(kind) {
+			if _, ok := seenTypeSymbols[s.Symbol]; ok {
+				continue
+			}
+			seenTypeSymbols[s.Symbol] = struct{}{}
+		} else {
+			key := completionItemKeyForIndexedSymbol(s, kind)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		sortText := "1" + casePrefix(s.Name) + scopeOrder
+		if isTypeCompletionKind(kind) {
+			sortText += typeCompletionPriority(cctx, s)
+		}
+		sortText += s.Name
+		if kind == CompletionKindMethod || kind == CompletionKindConstructor {
+			sortText += signatureSortSuffix(s.Signature)
+		}
 		item := methodCompletionItem(s.Name, kind, s.Signature, sortText, s.Doc)
 
 		// Auto-import for type symbols from other packages.
@@ -610,6 +643,9 @@ func methodCompletionItem(name string, kind int, sig *index.SignatureInfo, sortT
 	if sig != nil {
 		item.Detail = sig.Label
 	}
+	if kind == CompletionKindMethod || kind == CompletionKindConstructor {
+		item.Label = methodCompletionLabel(name, sig)
+	}
 	if doc != "" {
 		item.Documentation = &MarkupContent{Kind: "markdown", Value: doc}
 	}
@@ -646,36 +682,136 @@ func buildMethodInsertText(name string, sig *index.SignatureInfo) string {
 	return name + "(" + strings.Join(placeholders, ", ") + ")$0"
 }
 
-// overloadDetail increments the overload count in a detail string like "void foo(int) (+1 overload)".
-func overloadDetail(detail string) string {
-	// Parse existing count from " (+N overload)" or " (+N overloads)" suffix.
-	idx := strings.Index(detail, " (+")
-	if idx < 0 {
-		return detail
+func buildLocalMethodInsertText(m MethodDecl) string {
+	if len(m.Params) == 0 {
+		return m.Name + "()$0"
 	}
-	base := detail[:idx]
-	suffix := detail[idx+3:] // after " (+"
-	end := strings.Index(suffix, " ")
-	if end < 0 {
-		return detail
-	}
-	n := 0
-	for _, c := range suffix[:end] {
-		if c < '0' || c > '9' {
-			return detail
+	var placeholders []string
+	for i, p := range m.Params {
+		label := p
+		if label == "" {
+			label = "arg"
 		}
-		n = n*10 + int(c-'0')
+		placeholders = append(placeholders, fmt.Sprintf("${%d:%s}", i+1, label))
 	}
-	n++
-	noun := "overloads"
-	if n == 1 {
-		noun = "overload"
-	}
-	return fmt.Sprintf("%s (+%d %s)", base, n, noun)
+	return m.Name + "(" + strings.Join(placeholders, ", ") + ")$0"
 }
 
+func methodCompletionLabel(name string, sig *index.SignatureInfo) string {
+	if sig == nil {
+		return name + "()"
+	}
+	params := sig.ParseParams()
+	if len(params) == 0 {
+		return name + "()"
+	}
+	return name + "(" + strings.Join(params, ", ") + ")"
+}
+
+// overloadDetail increments the overload count in a detail string like "void foo(int) (+1 overload)".
 func isTypeCompletionKind(kind int) bool {
 	return kind == CompletionKindClass || kind == CompletionKindInterface || kind == CompletionKindEnum
+}
+
+func typeCompletionPriority(cctx *CompletionCtx, s index.Symbol) string {
+	fqn := fqnFromSymbol(s.Symbol)
+	if fqn == "" {
+		return "9"
+	}
+	if isExplicitlyImportedType(cctx.Imports, fqn) {
+		return "0"
+	}
+	if packageName(fqn) == cctx.Package && cctx.Package != "" {
+		return "1"
+	}
+	if isImplicitlyImportedJavaLang(fqn) {
+		return "2"
+	}
+	if isJDKType(fqn) {
+		return "3"
+	}
+	return "4"
+}
+
+func isExplicitlyImportedType(imports []ImportSpec, fqn string) bool {
+	for _, imp := range imports {
+		if imp.Static || imp.Wildcard {
+			continue
+		}
+		if imp.Path == fqn {
+			return true
+		}
+	}
+	return false
+}
+
+func isImplicitlyImportedJavaLang(fqn string) bool {
+	return strings.HasPrefix(fqn, "java.lang.")
+}
+
+func isJDKType(fqn string) bool {
+	return strings.HasPrefix(fqn, "java.") || strings.HasPrefix(fqn, "javax.")
+}
+
+func packageName(fqn string) string {
+	if idx := strings.LastIndexByte(fqn, '.'); idx >= 0 {
+		return fqn[:idx]
+	}
+	return ""
+}
+
+func sortCompletionItems(items []CompletionItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].SortText != items[j].SortText {
+			return items[i].SortText < items[j].SortText
+		}
+		if items[i].Label != items[j].Label {
+			return items[i].Label < items[j].Label
+		}
+		return items[i].Detail < items[j].Detail
+	})
+}
+
+func completionItemKeyForSymbol(sym index.Symbol) string {
+	if sym.Signature != nil && sym.Signature.Label != "" {
+		return sym.Symbol + "|" + sym.Signature.Label
+	}
+	return sym.Symbol + "|" + sym.Name
+}
+
+func completionItemKeyForIndexedSymbol(sym index.Symbol, kind int) string {
+	if kind == CompletionKindMethod || kind == CompletionKindConstructor {
+		return completionItemKeyForSymbol(sym)
+	}
+	if isTypeCompletionKind(kind) {
+		return sym.Symbol
+	}
+	return sym.Name
+}
+
+func completionItemKeyForMethodDecl(m MethodDecl) string {
+	return m.Name + "|" + strings.Join(m.Params, ",")
+}
+
+func signatureSortSuffix(sig *index.SignatureInfo) string {
+	if sig == nil || sig.Label == "" {
+		return ""
+	}
+	return "|" + sig.Label
+}
+
+func methodDeclSortSuffix(m MethodDecl) string {
+	if len(m.Params) == 0 {
+		return "|()"
+	}
+	return "|(" + strings.Join(m.Params, ",") + ")"
+}
+
+func formatMethodDeclDetail(m MethodDecl) string {
+	if len(m.Params) == 0 {
+		return m.Name + "()"
+	}
+	return fmt.Sprintf("%s(%s)", m.Name, strings.Join(m.Params, ", "))
 }
 
 func (h *Handler) handleSignatureHelp(ctx context.Context, params json.RawMessage) (any, error) {

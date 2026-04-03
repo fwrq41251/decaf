@@ -233,9 +233,32 @@ public class MyClass {
 	}
 	expected := map[string]bool{"doSomething": true, "otherMethod": true, "getName": true}
 	for _, m := range ctx.ClassMethods {
-		if !expected[m] {
-			t.Fatalf("unexpected method %q", m)
+		if !expected[m.Name] {
+			t.Fatalf("unexpected method %q", m.Name)
 		}
+	}
+}
+
+func TestParseCompletionCtx_ClassMethodParams(t *testing.T) {
+	src := []byte(`package com.example;
+
+public class MyClass {
+    public void doSomething(String name, int count) {
+        
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 4, 8)
+	if len(ctx.ClassMethods) != 1 {
+		t.Fatalf("expected 1 class method, got %d: %v", len(ctx.ClassMethods), ctx.ClassMethods)
+	}
+	if ctx.ClassMethods[0].Name != "doSomething" {
+		t.Fatalf("expected method doSomething, got %q", ctx.ClassMethods[0].Name)
+	}
+	if len(ctx.ClassMethods[0].Params) != 2 {
+		t.Fatalf("expected 2 params, got %d: %v", len(ctx.ClassMethods[0].Params), ctx.ClassMethods[0].Params)
+	}
+	if ctx.ClassMethods[0].Params[0] != "name" || ctx.ClassMethods[0].Params[1] != "count" {
+		t.Fatalf("unexpected params: %v", ctx.ClassMethods[0].Params)
 	}
 }
 
