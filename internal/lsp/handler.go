@@ -131,6 +131,7 @@ func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
 	d.RegisterConcurrent("textDocument/completion", h.handleCompletion)
 	d.RegisterConcurrent("textDocument/signatureHelp", h.handleSignatureHelp)
 	d.RegisterConcurrent("textDocument/prepareRename", h.handlePrepareRename)
+	d.RegisterConcurrent("textDocument/inlayHint", h.handleInlayHint)
 
 	// Code actions — concurrent (read-only analysis).
 	d.RegisterConcurrent("textDocument/codeAction", h.handleCodeAction)

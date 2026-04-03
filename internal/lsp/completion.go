@@ -532,6 +532,12 @@ func (h *Handler) resolveExpectedType(cctx *CompletionCtx) string {
 		if sym.Signature == nil {
 			continue
 		}
+		if paramIdx < len(sym.Signature.Params) {
+			param := sym.Signature.Params[paramIdx]
+			if param.Type != "" {
+				return param.Type
+			}
+		}
 		params := sym.Signature.ParseParams()
 		if paramIdx < len(params) {
 			return extractParamTypeName(params[paramIdx])
@@ -608,13 +614,35 @@ func methodCompletionItem(name string, kind int, sig *index.SignatureInfo, sortT
 	}
 	if kind == CompletionKindMethod || kind == CompletionKindConstructor {
 		if sig != nil && sig.HasParams {
-			item.InsertText = name + "($1)$0"
+			item.InsertText = buildMethodInsertText(name, sig)
 		} else {
 			item.InsertText = name + "()$0"
 		}
 		item.InsertTextFormat = InsertTextFormatSnippet
 	}
 	return item
+}
+
+func buildMethodInsertText(name string, sig *index.SignatureInfo) string {
+	if sig == nil || !sig.HasParams {
+		return name + "()$0"
+	}
+	if len(sig.Params) == 0 {
+		return name + "($1)$0"
+	}
+
+	var placeholders []string
+	for i, p := range sig.Params {
+		label := p.Name
+		if label == "" {
+			label = p.Type
+		}
+		if label == "" {
+			label = "arg"
+		}
+		placeholders = append(placeholders, fmt.Sprintf("${%d:%s}", i+1, label))
+	}
+	return name + "(" + strings.Join(placeholders, ", ") + ")$0"
 }
 
 // overloadDetail increments the overload count in a detail string like "void foo(int) (+1 overload)".

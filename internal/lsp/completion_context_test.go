@@ -58,6 +58,75 @@ public class MyClass {
 	}
 }
 
+func TestParseCompletionCtx_ChainedCallNewline(t *testing.T) {
+	// Chained call with dot on the next line:
+	//   items.stream()
+	//       .fil
+	src := []byte(`package com.example;
+import java.util.List;
+public class MyClass {
+    public void doSomething(List<String> items) {
+        items.stream()
+            .fil
+    }
+}`)
+	// ".fil" on line 5, character 16 (after "fil")
+	ctx := parseCompletionCtx(nil, src, 5, 16)
+	if ctx.Kind != CompletionDot {
+		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
+	}
+	if ctx.Prefix != "fil" {
+		t.Fatalf("expected prefix 'fil', got %q", ctx.Prefix)
+	}
+	if ctx.Receiver != "items.stream" {
+		t.Fatalf("expected receiver 'items.stream', got %q", ctx.Receiver)
+	}
+}
+
+func TestParseCompletionCtx_ChainedCallNewlineNoPrefx(t *testing.T) {
+	// Chained call with dot on the next line, cursor right after dot:
+	//   items.stream()
+	//       .
+	src := []byte(`package com.example;
+import java.util.List;
+public class MyClass {
+    public void doSomething(List<String> items) {
+        items.stream()
+            .
+    }
+}`)
+	// "." on line 5, character 13 (after the dot)
+	ctx := parseCompletionCtx(nil, src, 5, 13)
+	if ctx.Kind != CompletionDot {
+		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
+	}
+	if ctx.Prefix != "" {
+		t.Fatalf("expected empty prefix, got %q", ctx.Prefix)
+	}
+}
+
+func TestParseCompletionCtx_DotOnPrevLineWithPrefixOnNewLine(t *testing.T) {
+	// Dot at the end of the previous line, prefix on the new line:
+	//   items.stream().
+	//       fil
+	src := []byte(`package com.example;
+import java.util.List;
+public class MyClass {
+    public void doSomething(List<String> items) {
+        items.stream().
+            fil
+    }
+}`)
+	// "fil" on line 5, character 15 (after "fil")
+	ctx := parseCompletionCtx(nil, src, 5, 15)
+	if ctx.Kind != CompletionDot {
+		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
+	}
+	if ctx.Prefix != "fil" {
+		t.Fatalf("expected prefix 'fil', got %q", ctx.Prefix)
+	}
+}
+
 func TestParseCompletionCtx_LexicalCompletion(t *testing.T) {
 	src := []byte(`package com.example;
 

@@ -296,6 +296,15 @@ func TestFormatMethodSignature(t *testing.T) {
 	if len(params) != 1 || params[0] != "Object" {
 		t.Errorf("ParseParams() = %v, want [Object]", params)
 	}
+	if len(sig.Params) != 1 {
+		t.Fatalf("Params len = %d, want 1", len(sig.Params))
+	}
+	if sig.Params[0].Type != "Object" {
+		t.Errorf("Params[0].Type = %q, want %q", sig.Params[0].Type, "Object")
+	}
+	if sig.Params[0].TypeSym != "java/lang/Object#" {
+		t.Errorf("Params[0].TypeSym = %q, want %q", sig.Params[0].TypeSym, "java/lang/Object#")
+	}
 
 	sig2 := formatMethodSignature("main", "([Ljava/lang/String;)V")
 	if sig2.Label != "void main(String[])" {

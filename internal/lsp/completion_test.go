@@ -35,10 +35,13 @@ func TestMethodCompletionItem(t *testing.T) {
 	sig := &index.SignatureInfo{
 		Label:     "void doWork(String name)",
 		HasParams: true,
+		Params: []index.ParamInfo{
+			{Name: "name", Type: "String"},
+		},
 	}
 	item := methodCompletionItem("doWork", CompletionKindMethod, sig, "", "")
-	if item.InsertText != "doWork($1)$0" {
-		t.Errorf("method with params: InsertText = %q, want %q", item.InsertText, "doWork($1)$0")
+	if item.InsertText != "doWork(${1:name})$0" {
+		t.Errorf("method with params: InsertText = %q, want %q", item.InsertText, "doWork(${1:name})$0")
 	}
 	if item.InsertTextFormat != InsertTextFormatSnippet {
 		t.Errorf("method with params: InsertTextFormat = %d, want %d", item.InsertTextFormat, InsertTextFormatSnippet)
@@ -63,6 +66,17 @@ func TestMethodCompletionItem(t *testing.T) {
 	}
 	if item3.InsertTextFormat != 0 {
 		t.Errorf("field: InsertTextFormat = %d, want 0", item3.InsertTextFormat)
+	}
+}
+
+func TestMethodCompletionItem_FallbackSnippet(t *testing.T) {
+	sig := &index.SignatureInfo{
+		Label:     "void doWork(String)",
+		HasParams: true,
+	}
+	item := methodCompletionItem("doWork", CompletionKindMethod, sig, "", "")
+	if item.InsertText != "doWork($1)$0" {
+		t.Errorf("fallback snippet InsertText = %q, want %q", item.InsertText, "doWork($1)$0")
 	}
 }
 

@@ -138,8 +138,8 @@ func determineCompletionKind(content []byte, cursorOffset int, root *slog.Node) 
 
 	// Check if there's a dot before the prefix.
 	dotPos := pos
-	// Skip whitespace between dot and prefix.
-	for dotPos > 0 && (content[dotPos-1] == ' ' || content[dotPos-1] == '\t') {
+	// Skip whitespace (including newlines) between dot and prefix.
+	for dotPos > 0 && (content[dotPos-1] == ' ' || content[dotPos-1] == '\t' || content[dotPos-1] == '\n' || content[dotPos-1] == '\r') {
 		dotPos--
 	}
 	if dotPos > 0 && content[dotPos-1] == '.' {
@@ -160,8 +160,18 @@ func extractReceiverFromAST(root *slog.Node, content []byte, dotBytePos int) str
 		return ""
 	}
 
-	// Find the AST node at the byte just before the dot.
-	line, col := byteOffsetToPosition(content, dotBytePos-1)
+	// Find the last non-whitespace byte before the dot.
+	// This handles chained calls across lines like:
+	//   items.stream()
+	//       .filter(...)
+	// where the byte before '.' may be whitespace/newline, not ')'.
+	beforeDot := dotBytePos - 1
+	for beforeDot > 0 && (content[beforeDot] == ' ' || content[beforeDot] == '\t' || content[beforeDot] == '\n' || content[beforeDot] == '\r') {
+		beforeDot--
+	}
+
+	// Find the AST node at the last non-whitespace byte before the dot.
+	line, col := byteOffsetToPosition(content, beforeDot)
 	node := nodeAtPosition(root, line, col)
 	if node == nil {
 		return ""

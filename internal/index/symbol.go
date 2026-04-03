@@ -8,9 +8,31 @@ import (
 
 // SignatureInfo holds pre-computed signature display information,
 // replacing the heavy protobuf *sdb.Signature tree.
+type ParamInfo struct {
+	Name    string
+	Type    string
+	TypeSym string
+	Varargs bool
+}
+
 type SignatureInfo struct {
 	Label     string // formatted signature, e.g. "void main(String[] args)"
 	HasParams bool   // true if method has parameters (for snippet generation)
+	Params    []ParamInfo
+}
+
+func (p ParamInfo) Label() string {
+	typeName := strings.TrimSpace(p.Type)
+	if p.Varargs {
+		typeName = strings.TrimSuffix(typeName, "[]") + "..."
+	}
+	if p.Name == "" {
+		return typeName
+	}
+	if typeName == "" {
+		return p.Name
+	}
+	return typeName + " " + p.Name
 }
 
 // ParseParams lazily extracts parameter labels from the Label string.
@@ -18,6 +40,17 @@ type SignatureInfo struct {
 func (s *SignatureInfo) ParseParams() []string {
 	if s == nil || !s.HasParams {
 		return nil
+	}
+	if len(s.Params) > 0 {
+		params := make([]string, 0, len(s.Params))
+		for _, p := range s.Params {
+			if label := p.Label(); label != "" {
+				params = append(params, label)
+			}
+		}
+		if len(params) > 0 {
+			return params
+		}
 	}
 	// Find the parameter list between the first '(' and the matching ')'.
 	start := strings.IndexByte(s.Label, '(')

@@ -448,14 +448,32 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 		if sym.Documentation != nil {
 			doc = sym.Documentation.Message
 		}
+
+		kind := sym.Kind
+		// Enum constants may be tagged as METHOD by some SemanticDB producers,
+		// but they should be treated as FIELD for completion (no parentheses).
+		isEnum := sym.Properties&int32(sdb.SymbolInformation_ENUM) != 0
+		if isEnum && kind == sdb.SymbolInformation_METHOD {
+			kind = sdb.SymbolInformation_FIELD
+		}
+
 		s := &Symbol{
 			Name:      sym.DisplayName,
 			Symbol:    symStr,
-			Kind:      sym.Kind,
+			Kind:      kind,
 			URI:       uri,
 			Signature: buildSignatureInfo(sym.DisplayName, sym.Signature),
 			Doc:       doc,
 			IsStatic:  sym.Properties&int32(sdb.SymbolInformation_STATIC) != 0,
+		}
+
+		// For enum constants, override the signature to field-style (name: Type)
+		// instead of method-style with parameters.
+		if isEnum && kind == sdb.SymbolInformation_FIELD {
+			if typeSym := extractTypeSym(sym.Signature); typeSym != "" {
+				typeName := simplifySymbol(typeSym)
+				s.Signature = &SignatureInfo{Label: fmt.Sprintf("%s: %s", sym.DisplayName, typeName)}
+			}
 		}
 		idx.definitions[symStr] = append(idx.definitions[symStr], s)
 		idx.fileSymbols[uri] = append(idx.fileSymbols[uri], s)

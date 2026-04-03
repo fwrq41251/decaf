@@ -56,6 +56,7 @@ type ServerCapabilities struct {
 	ImplementationProvider    bool                     `json:"implementationProvider,omitempty"`
 	WorkspaceSymbolProvider   bool                     `json:"workspaceSymbolProvider,omitempty"`
 	CodeActionProvider        *CodeActionOptions       `json:"codeActionProvider,omitempty"`
+	InlayHintProvider         bool                     `json:"inlayHintProvider,omitempty"`
 	Workspace                 *ServerWorkspaceCapabilities `json:"workspace,omitempty"`
 }
 
@@ -486,6 +487,27 @@ type ProgressParams struct {
 	Token string `json:"token"`
 	Value any    `json:"value"`
 }
+
+// InlayHintParams is sent for textDocument/inlayHint.
+type InlayHintParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Range        Range                  `json:"range"`
+}
+
+// InlayHint represents an inlay hint (type annotation or parameter name).
+type InlayHint struct {
+	Position     Position `json:"position"`
+	Label        string   `json:"label"`
+	Kind         int      `json:"kind,omitempty"`
+	PaddingLeft  bool     `json:"paddingLeft,omitempty"`
+	PaddingRight bool     `json:"paddingRight,omitempty"`
+}
+
+// InlayHintKind constants.
+const (
+	InlayHintKindType      = 1
+	InlayHintKindParameter = 2
+)
 
 // WorkDoneProgressBegin is sent at the start of a progress sequence.
 type WorkDoneProgressBegin struct {

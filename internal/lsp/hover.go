@@ -148,14 +148,33 @@ func formatSignatureHelp(sym *index.Symbol) *SignatureInformation {
 		return nil
 	}
 
-	parsed := sym.Signature.ParseParams()
-	if len(parsed) == 0 {
-		return nil
+	if len(sym.Signature.Params) == 0 {
+		parsed := sym.Signature.ParseParams()
+		if len(parsed) == 0 {
+			return nil
+		}
+
+		params := make([]ParameterInformation, len(parsed))
+		for i, p := range parsed {
+			params[i] = ParameterInformation{Label: p}
+		}
+
+		return &SignatureInformation{
+			Label:      sym.Signature.Label,
+			Parameters: params,
+		}
 	}
 
-	params := make([]ParameterInformation, len(parsed))
-	for i, p := range parsed {
-		params[i] = ParameterInformation{Label: p}
+	params := make([]ParameterInformation, 0, len(sym.Signature.Params))
+	for _, p := range sym.Signature.Params {
+		label := p.Label()
+		if label == "" {
+			continue
+		}
+		params = append(params, ParameterInformation{Label: label})
+	}
+	if len(params) == 0 {
+		return nil
 	}
 
 	return &SignatureInformation{

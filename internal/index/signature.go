@@ -28,14 +28,23 @@ func buildSignatureInfo(name string, sig *sdb.Signature) *SignatureInfo {
 }
 
 func buildMethodSignatureInfo(name string, sig *sdb.MethodSignature) *SignatureInfo {
+	var paramInfos []ParamInfo
 	var params []string
 	for _, paramList := range sig.ParameterLists {
 		for _, param := range paramList.Hardlinks {
 			paramType := ""
+			typeSym := ""
 			if vs, ok := param.Signature.SealedValue.(*sdb.Signature_ValueSignature); ok {
 				paramType = formatType(vs.ValueSignature.Tpe)
+				typeSym = typeRefSymbol(vs.ValueSignature.Tpe)
 			}
-			params = append(params, paramType+" "+param.DisplayName)
+			info := ParamInfo{
+				Name:    param.DisplayName,
+				Type:    paramType,
+				TypeSym: typeSym,
+			}
+			params = append(params, info.Label())
+			paramInfos = append(paramInfos, info)
 		}
 	}
 
@@ -51,6 +60,7 @@ func buildMethodSignatureInfo(name string, sig *sdb.MethodSignature) *SignatureI
 	return &SignatureInfo{
 		Label:     b.String(),
 		HasParams: len(params) > 0,
+		Params:    paramInfos,
 	}
 }
 

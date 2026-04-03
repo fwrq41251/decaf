@@ -466,8 +466,14 @@ func formatMethodSignature(name, desc string) *SignatureInfo {
 
 	retName := descriptorToSimpleName(ret)
 	var paramLabels []string
+	paramInfos := make([]ParamInfo, 0, len(params))
 	for _, p := range params {
-		paramLabels = append(paramLabels, descriptorToSimpleName(p))
+		typeName := descriptorToSimpleName(p)
+		paramLabels = append(paramLabels, typeName)
+		paramInfos = append(paramInfos, ParamInfo{
+			Type:    typeName,
+			TypeSym: descriptorToSymbol(p),
+		})
 	}
 
 	var b strings.Builder
@@ -481,5 +487,6 @@ func formatMethodSignature(name, desc string) *SignatureInfo {
 	return &SignatureInfo{
 		Label:     b.String(),
 		HasParams: len(paramLabels) > 0,
+		Params:    paramInfos,
 	}
 }

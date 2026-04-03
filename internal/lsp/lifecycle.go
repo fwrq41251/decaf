@@ -44,6 +44,7 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 		ImplementationProvider:    true,
 		WorkspaceSymbolProvider:   true,
 		CodeActionProvider:        &CodeActionOptions{CodeActionKinds: []string{CodeActionSourceOrganizeImports, CodeActionQuickFix}},
+		InlayHintProvider:         true,
 	}
 
 	return InitializeResult{
