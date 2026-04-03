@@ -352,6 +352,7 @@ const (
 	CompletionKindModule        = 9
 	CompletionKindProperty      = 10
 	CompletionKindEnum          = 13
+	CompletionKindSnippet       = 15
 	CompletionKindConstant      = 21
 )
 

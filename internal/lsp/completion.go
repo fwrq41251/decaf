@@ -365,6 +365,9 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	seenTypeSymbols := make(map[string]struct{})
 	var items []CompletionItem
 
+	// Add static snippets first.
+	items = append(items, h.completeSnippets(cctx)...)
+
 	// casePrefix returns "0" if name starts with the original-case prefix, "1" otherwise.
 	casePrefix := func(name string) string {
 		if cctx.Prefix != "" && strings.HasPrefix(name, cctx.Prefix) {

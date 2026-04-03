@@ -18,6 +18,14 @@ const (
 	CompletionDot
 )
 
+type CompletionScope int
+
+const (
+	ScopeUnknown CompletionScope = iota
+	ScopeClass                   // Inside a class/interface/enum body
+	ScopeBlock                   // Inside a method/constructor/initializer block
+)
+
 // VarInitializer holds info about a var declaration's initializer expression
 // for deferred type inference (requires index access).
 type VarInitializer struct {
@@ -50,6 +58,7 @@ type MethodDecl struct {
 // CompletionCtx holds the parsed context for a completion request.
 type CompletionCtx struct {
 	Kind           CompletionKind
+	Scope          CompletionScope
 	Receiver       string       // the text before the dot (for dot completion)
 	Prefix         string       // the identifier prefix being typed
 	Locals         []ValueDecl  // local variables visible at cursor
@@ -97,11 +106,12 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 	// 3. Extract imports and package from root.
 	extractImportsAndPackage(root, content, ctx)
 
-	// 4. Find enclosing class.
+	// 4. Find enclosing class and method to determine scope.
 	cursorNode := nodeAtPosition(root, line, character)
 	if cursorNode != nil {
 		classNode := findAncestor(cursorNode, "class_declaration", "interface_declaration", "enum_declaration")
 		if classNode != nil {
+			ctx.Scope = ScopeClass
 			for i := 0; i < int(classNode.NamedChildCount()); i++ {
 				child := classNode.NamedChild(i)
 				if child.Type() == "identifier" {
@@ -114,7 +124,13 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 			extractClassMembers(classNode, content, ctx)
 		}
 
-		// Find enclosing method.
+		// Find enclosing method or block for scope.
+		blockNode := findAncestor(cursorNode, "method_declaration", "constructor_declaration", "block", "static_initializer")
+		if blockNode != nil {
+			ctx.Scope = ScopeBlock
+		}
+
+		// Find specific method/constructor for parameter extraction.
 		methodNode := findAncestor(cursorNode, "method_declaration", "constructor_declaration")
 		if methodNode != nil {
 			// 7. Extract method parameters.

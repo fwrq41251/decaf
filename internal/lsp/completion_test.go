@@ -138,3 +138,56 @@ func TestTypeMatchesExpected(t *testing.T) {
 		}
 	}
 }
+
+func TestCompleteSnippets(t *testing.T) {
+	h := &Handler{}
+
+	// Test case 1: Inside a class, prefix "ma"
+	ctx1 := &CompletionCtx{
+		Scope:  ScopeClass,
+		Prefix: "ma",
+	}
+	items1 := h.completeSnippets(ctx1)
+	foundMain := false
+	for _, item := range items1 {
+		if item.Label == "main" {
+			foundMain = true
+			if item.InsertTextFormat != InsertTextFormatSnippet {
+				t.Errorf("main snippet: expected InsertTextFormatSnippet, got %v", item.InsertTextFormat)
+			}
+			break
+		}
+	}
+	if !foundMain {
+		t.Error("expected 'main' snippet in ScopeClass with prefix 'ma'")
+	}
+
+	// Test case 2: Inside a block, prefix "sou"
+	ctx2 := &CompletionCtx{
+		Scope:  ScopeBlock,
+		Prefix: "sou",
+	}
+	items2 := h.completeSnippets(ctx2)
+	foundSout := false
+	for _, item := range items2 {
+		if item.Label == "sout" {
+			foundSout = true
+			break
+		}
+	}
+	if !foundSout {
+		t.Error("expected 'sout' snippet in ScopeBlock with prefix 'sou'")
+	}
+
+	// Test case 3: Inside a block, prefix "ma" - should NOT show main
+	ctx3 := &CompletionCtx{
+		Scope:  ScopeBlock,
+		Prefix: "ma",
+	}
+	items3 := h.completeSnippets(ctx3)
+	for _, item := range items3 {
+		if item.Label == "main" {
+			t.Error("did not expect 'main' snippet in ScopeBlock")
+		}
+	}
+}
