@@ -450,29 +450,32 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 		}
 
 		kind := sym.Kind
-		// Enum constants may be tagged as METHOD by some SemanticDB producers,
-		// but they should be treated as FIELD for completion (no parentheses).
-		isEnum := sym.Properties&int32(sdb.SymbolInformation_ENUM) != 0
-		if isEnum && kind == sdb.SymbolInformation_METHOD {
+		owner := extractOwner(symStr)
+		isEnumConstant := isEnumValueSymbol(sym, owner)
+		if isEnumConstant {
 			kind = sdb.SymbolInformation_FIELD
+		}
+		displayName := sym.DisplayName
+		if isEnumConstant {
+			displayName = normalizeEnumConstantName(displayName)
 		}
 
 		s := &Symbol{
-			Name:      sym.DisplayName,
+			Name:      displayName,
 			Symbol:    symStr,
 			Kind:      kind,
 			URI:       uri,
-			Signature: buildSignatureInfo(sym.DisplayName, sym.Signature),
+			Signature: buildSignatureInfo(displayName, sym.Signature),
 			Doc:       doc,
 			IsStatic:  sym.Properties&int32(sdb.SymbolInformation_STATIC) != 0,
 		}
 
 		// For enum constants, override the signature to field-style (name: Type)
 		// instead of method-style with parameters.
-		if isEnum && kind == sdb.SymbolInformation_FIELD {
+		if isEnumConstant {
 			if typeSym := extractTypeSym(sym.Signature); typeSym != "" {
 				typeName := simplifySymbol(typeSym)
-				s.Signature = &SignatureInfo{Label: fmt.Sprintf("%s: %s", sym.DisplayName, typeName)}
+				s.Signature = &SignatureInfo{Label: fmt.Sprintf("%s: %s", displayName, typeName)}
 			}
 		}
 		idx.definitions[symStr] = append(idx.definitions[symStr], s)
@@ -485,7 +488,7 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 		}
 
 		// Build ownerMembers: extract owner type from symbol string.
-		if owner := extractOwner(symStr); owner != "" {
+		if owner != "" {
 			idx.ownerMembers[owner] = append(idx.ownerMembers[owner], s)
 		}
 
@@ -618,6 +621,44 @@ func extractTypeExpr(sig *sdb.Signature) *TypeExpr {
 	default:
 		return nil
 	}
+}
+
+func isEnumValueSymbol(sym *sdb.SymbolInformation, owner string) bool {
+	if sym == nil || owner == "" {
+		return false
+	}
+	if sym.Properties&int32(sdb.SymbolInformation_ENUM) == 0 {
+		return false
+	}
+	if sym.Signature == nil {
+		return false
+	}
+	vs, ok := sym.Signature.SealedValue.(*sdb.Signature_ValueSignature)
+	if !ok || vs.ValueSignature == nil {
+		return false
+	}
+	return typeRefSymbol(vs.ValueSignature.Tpe) == owner
+}
+
+func normalizeEnumConstantName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return name
+	}
+
+	end := 0
+	for end < len(name) {
+		ch := name[end]
+		if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '$' {
+			end++
+			continue
+		}
+		break
+	}
+	if end == 0 {
+		return name
+	}
+	return name[:end]
 }
 
 // extractTypeSym extracts the type symbol from a SemanticDB Signature.

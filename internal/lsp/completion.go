@@ -367,14 +367,15 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		if expectedType != "" && typeMatchesExpected(detail, expectedType) {
 			typePrefix = "0"
 		}
-		items = append(items, CompletionItem{
+		item := CompletionItem{
 			Label:      name,
 			Kind:       kind,
 			InsertText: name,
 			Detail:     detail,
 			SortText:   typePrefix + casePrefix(name) + scopeOrder + name,
 			FilterText: name,
-		})
+		}
+		items = append(items, item)
 	}
 
 	matchPrefix := func(name string) bool {

@@ -273,6 +273,62 @@ func TestTypeOfSymbol(t *testing.T) {
 	}
 }
 
+func TestIndexDocument_NormalizesEnumConstantDisplayName(t *testing.T) {
+	tmpDir := t.TempDir()
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/MyEnum.java",
+			Symbols: []*sdb.SymbolInformation{
+				{
+					Symbol:      "com/example/MyEnum#",
+					DisplayName: "MyEnum",
+					Kind:        sdb.SymbolInformation_CLASS,
+					Properties:  int32(sdb.SymbolInformation_ENUM),
+				},
+				{
+					Symbol:      "com/example/MyEnum#A.",
+					DisplayName: `A("x")`,
+					Kind:        sdb.SymbolInformation_UNKNOWN_KIND,
+					Properties:  int32(sdb.SymbolInformation_ENUM) | int32(sdb.SymbolInformation_STATIC) | int32(sdb.SymbolInformation_FINAL),
+					Signature: &sdb.Signature{
+						SealedValue: &sdb.Signature_ValueSignature{
+							ValueSignature: &sdb.ValueSignature{
+								Tpe: &sdb.Type{
+									SealedValue: &sdb.Type_TypeRef{
+										TypeRef: &sdb.TypeRef{Symbol: "com/example/MyEnum#"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}},
+	}
+	writeSDB(t, filepath.Join(sdbDir, "MyEnum.java.semanticdb"), docs)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	if err := idx.Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	members := idx.MembersOfType("com/example/MyEnum#")
+	if len(members) != 1 {
+		t.Fatalf("expected 1 member, got %d", len(members))
+	}
+	if members[0].Name != "A" {
+		t.Fatalf("member name = %q, want %q", members[0].Name, "A")
+	}
+	if members[0].Kind != sdb.SymbolInformation_FIELD {
+		t.Fatalf("member kind = %v, want FIELD", members[0].Kind)
+	}
+	if members[0].Signature == nil || members[0].Signature.Label != "A: MyEnum" {
+		t.Fatalf("member signature = %+v, want label %q", members[0].Signature, "A: MyEnum")
+	}
+}
+
 func TestTypeBySimpleName(t *testing.T) {
 	tmpDir := t.TempDir()
 	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
