@@ -8,14 +8,14 @@ import (
 )
 
 // buildSignatureInfo converts a protobuf Signature into a lightweight SignatureInfo.
-func buildSignatureInfo(name string, sig *sdb.Signature) *SignatureInfo {
+func buildSignatureInfo(name string, sig *sdb.Signature, lookup map[string]*sdb.SymbolInformation) *SignatureInfo {
 	if sig == nil {
 		return nil
 	}
 
 	switch s := sig.SealedValue.(type) {
 	case *sdb.Signature_MethodSignature:
-		return buildMethodSignatureInfo(name, s.MethodSignature)
+		return buildMethodSignatureInfo(name, s.MethodSignature, lookup)
 	case *sdb.Signature_ClassSignature:
 		return &SignatureInfo{Label: formatClassSig(name, s.ClassSignature)}
 	case *sdb.Signature_ValueSignature:
@@ -27,24 +27,23 @@ func buildSignatureInfo(name string, sig *sdb.Signature) *SignatureInfo {
 	}
 }
 
-func buildMethodSignatureInfo(name string, sig *sdb.MethodSignature) *SignatureInfo {
+func buildMethodSignatureInfo(name string, sig *sdb.MethodSignature, lookup map[string]*sdb.SymbolInformation) *SignatureInfo {
 	var paramInfos []ParamInfo
 	var params []string
 	for _, paramList := range sig.ParameterLists {
+		// Handle hardlinks (fully embedded symbol info)
 		for _, param := range paramList.Hardlinks {
-			paramType := ""
-			typeSym := ""
-			if vs, ok := param.Signature.SealedValue.(*sdb.Signature_ValueSignature); ok {
-				paramType = formatType(vs.ValueSignature.Tpe)
-				typeSym = typeRefSymbol(vs.ValueSignature.Tpe)
-			}
-			info := ParamInfo{
-				Name:    param.DisplayName,
-				Type:    paramType,
-				TypeSym: typeSym,
-			}
+			info := buildParamInfo(param)
 			params = append(params, info.Label())
 			paramInfos = append(paramInfos, info)
+		}
+		// Handle symlinks (references to other symbols in the document)
+		for _, sym := range paramList.Symlinks {
+			if param, ok := lookup[sym]; ok {
+				info := buildParamInfo(param)
+				params = append(params, info.Label())
+				paramInfos = append(paramInfos, info)
+			}
 		}
 	}
 
@@ -61,6 +60,20 @@ func buildMethodSignatureInfo(name string, sig *sdb.MethodSignature) *SignatureI
 		Label:     b.String(),
 		HasParams: len(params) > 0,
 		Params:    paramInfos,
+	}
+}
+
+func buildParamInfo(param *sdb.SymbolInformation) ParamInfo {
+	paramType := ""
+	typeSym := ""
+	if vs, ok := param.Signature.SealedValue.(*sdb.Signature_ValueSignature); ok {
+		paramType = formatType(vs.ValueSignature.Tpe)
+		typeSym = typeRefSymbol(vs.ValueSignature.Tpe)
+	}
+	return ParamInfo{
+		Name:    param.DisplayName,
+		Type:    paramType,
+		TypeSym: typeSym,
 	}
 }
 

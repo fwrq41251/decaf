@@ -441,12 +441,18 @@ func (idx *Index) removeDocument(uri string) {
 func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 	uri = idx.intern(filepath.ToSlash(uri))
 
+	// Build symbol lookup for resolving symlinks in signatures.
+	symbolLookup := make(map[string]*sdb.SymbolInformation, len(doc.Symbols))
+	for _, sym := range doc.Symbols {
+		symbolLookup[sym.Symbol] = sym
+	}
+
 	// Index symbol definitions.
 	for _, sym := range doc.Symbols {
 		symStr := idx.intern(sym.Symbol)
-		var doc string
+		var docStr string
 		if sym.Documentation != nil {
-			doc = sym.Documentation.Message
+			docStr = sym.Documentation.Message
 		}
 
 		kind := sym.Kind
@@ -465,8 +471,8 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			Symbol:    symStr,
 			Kind:      kind,
 			URI:       uri,
-			Signature: buildSignatureInfo(displayName, sym.Signature),
-			Doc:       doc,
+			Signature: buildSignatureInfo(displayName, sym.Signature, symbolLookup),
+			Doc:       docStr,
 			IsStatic:  sym.Properties&int32(sdb.SymbolInformation_STATIC) != 0,
 		}
 
