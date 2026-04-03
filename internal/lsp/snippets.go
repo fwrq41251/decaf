@@ -50,7 +50,7 @@ var javaSnippets = []javaSnippet{
 	{
 		label:      "printstack",
 		detail:     "printStackTrace()",
-		insertText: "e.printStackTrace();$0",
+		insertText: "${1:e}.printStackTrace();$0",
 		scope:      ScopeBlock,
 	},
 
@@ -77,10 +77,11 @@ var javaSnippets = []javaSnippet{
 
 func (h *Handler) completeSnippets(cctx *CompletionCtx) []CompletionItem {
 	var items []CompletionItem
+	prefix := strings.ToLower(cctx.Prefix)
 	for _, s := range javaSnippets {
 		// Only show snippets if they match the scope AND the prefix (if any).
 		if s.scope == cctx.Scope {
-			if cctx.Prefix == "" || strings.HasPrefix(s.label, cctx.Prefix) {
+			if prefix == "" || strings.HasPrefix(s.label, prefix) {
 				items = append(items, CompletionItem{
 					Label:            s.label,
 					Detail:           s.detail,

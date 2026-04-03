@@ -125,7 +125,7 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 		}
 
 		// Find enclosing method or block for scope.
-		blockNode := findAncestor(cursorNode, "method_declaration", "constructor_declaration", "block", "static_initializer")
+		blockNode := findAncestor(cursorNode, "block", "constructor_body", "static_initializer")
 		if blockNode != nil {
 			ctx.Scope = ScopeBlock
 		}

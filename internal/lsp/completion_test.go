@@ -179,7 +179,7 @@ func TestCompleteSnippets(t *testing.T) {
 		t.Error("expected 'sout' snippet in ScopeBlock with prefix 'sou'")
 	}
 
-	// Test case 3: Inside a block, prefix "ma" - should NOT show main
+	// Test case 3: Class-scope snippets (main) should not appear in ScopeBlock
 	ctx3 := &CompletionCtx{
 		Scope:  ScopeBlock,
 		Prefix: "ma",
