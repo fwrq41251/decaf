@@ -25,10 +25,14 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 	// Check which code action kinds are requested.
 	wantOrganize := len(p.Context.Only) == 0
 	wantQuickFix := len(p.Context.Only) == 0
+	wantSource := len(p.Context.Only) == 0
 	for _, kind := range p.Context.Only {
 		switch kind {
-		case CodeActionSourceOrganizeImports, "source":
+		case CodeActionSourceOrganizeImports:
 			wantOrganize = true
+		case "source":
+			wantOrganize = true
+			wantSource = true
 		case CodeActionQuickFix:
 			wantQuickFix = true
 		}
@@ -47,35 +51,61 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 		}
 	}
 
-	// Quick fix: add missing import.
+	// Quick fix: add missing import / implement methods.
 	if wantQuickFix {
 		overlay, _ := h.docs.Get(p.TextDocument.URI)
 		for _, diag := range p.Context.Diagnostics {
+			// Add missing import.
 			name := extractMissingSymbolName(diag.Message)
-			if name == "" {
-				continue
+			if name != "" {
+				candidates := h.idx.SearchSymbols(name)
+				for _, sym := range candidates {
+					if sym.Name != name {
+						continue
+					}
+					fqn := fqnFromSymbol(sym.Symbol)
+					if fqn == "" {
+						continue
+					}
+					edit := addImportEdit(p.TextDocument.URI, overlay, fqn)
+					if edit == nil {
+						continue
+					}
+					actions = append(actions, CodeAction{
+						Title:       fmt.Sprintf("Add import '%s'", fqn),
+						Kind:        CodeActionQuickFix,
+						Diagnostics: []Diagnostic{diag},
+						Edit:        edit,
+					})
+				}
 			}
-			candidates := h.idx.SearchSymbols(name)
-			for _, sym := range candidates {
-				if sym.Name != name {
-					continue
-				}
-				fqn := fqnFromSymbol(sym.Symbol)
-				if fqn == "" {
-					continue
-				}
-				edit := addImportEdit(p.TextDocument.URI, overlay, fqn)
-				if edit == nil {
-					continue
-				}
+
+			// Implement abstract methods.
+			if edit := implementMethodsEdit(p.TextDocument.URI, h.idx, overlay, diag); edit != nil {
 				actions = append(actions, CodeAction{
-					Title:       fmt.Sprintf("Add import '%s'", fqn),
+					Title:       "Implement abstract methods",
 					Kind:        CodeActionQuickFix,
 					Diagnostics: []Diagnostic{diag},
 					Edit:        edit,
 				})
 			}
 		}
+	}
+
+	// Source actions: generate constructor, override method.
+	if wantSource {
+		overlay, _ := h.docs.Get(p.TextDocument.URI)
+		cursorLine := p.Range.Start.Line
+
+		if edit := generateConstructorEdit(p.TextDocument.URI, h.idx, overlay, cursorLine); edit != nil {
+			actions = append(actions, CodeAction{
+				Title: "Generate constructor",
+				Kind:  "source",
+				Edit:  edit,
+			})
+		}
+
+		actions = append(actions, overrideMethodActions(p.TextDocument.URI, h.idx, overlay, cursorLine)...)
 	}
 
 	if len(actions) == 0 {

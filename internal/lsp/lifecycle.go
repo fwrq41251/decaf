@@ -48,7 +48,7 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 		DocumentHighlightProvider: true,
 		ImplementationProvider:    true,
 		WorkspaceSymbolProvider:   true,
-		CodeActionProvider:        &CodeActionOptions{CodeActionKinds: []string{CodeActionSourceOrganizeImports, CodeActionQuickFix}},
+		CodeActionProvider:        &CodeActionOptions{CodeActionKinds: []string{CodeActionSourceOrganizeImports, CodeActionQuickFix, "source"}},
 		InlayHintProvider:         true,
 	}
 

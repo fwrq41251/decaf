@@ -88,7 +88,8 @@ type memberSymbol struct {
 	typeSym   string         // return type / field type as SemanticDB symbol
 	declType  *TypeExpr      // declared type preserving generics (from Signature attribute)
 	signature *SignatureInfo // human-readable signature
-	isStatic  bool
+	isStatic   bool
+	isAbstract bool
 }
 
 // scanJARsConcurrently reads all .class files from the given JARs in parallel,
@@ -290,12 +291,13 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 			sig := formatMethodSignature(methodName, m.Descriptor)
 
 			ms := memberSymbol{
-				sym:       methodSym,
-				name:      methodName,
-				kind:      methodKind,
-				typeSym:   retSym,
-				isStatic:  m.AccessFlags&accStatic != 0,
-				signature: sig,
+				sym:        methodSym,
+				name:       methodName,
+				kind:       methodKind,
+				typeSym:    retSym,
+				isStatic:   m.AccessFlags&accStatic != 0,
+				isAbstract: m.AccessFlags&accAbstract != 0,
+				signature:  sig,
 			}
 
 			// Parse method generic signature for return type with generics.
@@ -383,11 +385,12 @@ func (idx *Index) mergeClassSymbols(cs classSymbols) bool {
 			}
 			memberSym := idx.intern(m.sym)
 			ms := &Symbol{
-				Name:      m.name,
-				Symbol:    memberSym,
-				Kind:      m.kind,
-				Signature: m.signature,
-				IsStatic:  m.isStatic,
+				Name:       m.name,
+				Symbol:     memberSym,
+				Kind:       m.kind,
+				Signature:  m.signature,
+				IsStatic:   m.isStatic,
+				IsAbstract: m.isAbstract,
 			}
 			idx.definitions[memberSym] = append(idx.definitions[memberSym], ms)
 			idx.ownerMembers[classSym] = append(idx.ownerMembers[classSym], ms)

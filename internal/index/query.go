@@ -453,6 +453,23 @@ func (idx *Index) Implementations(uri string, line, character int) []Symbol {
 	return result
 }
 
+// DirectMembersOfType returns only the direct member symbols of a type (no inherited members).
+func (idx *Index) DirectMembersOfType(typeSym string) []Symbol {
+	idx.ensureMembersIndexed(typeSym)
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	members := idx.ownerMembers[typeSym]
+	if len(members) == 0 {
+		return nil
+	}
+	result := make([]Symbol, len(members))
+	for i, m := range members {
+		result[i] = *m
+	}
+	return result
+}
+
 // MembersOfType returns all direct member symbols of a type,
 // plus inherited members from parent types.
 func (idx *Index) MembersOfType(typeSym string) []Symbol {

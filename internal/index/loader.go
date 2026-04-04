@@ -473,7 +473,8 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			URI:       uri,
 			Signature: buildSignatureInfo(displayName, sym.Signature, symbolLookup),
 			Doc:       docStr,
-			IsStatic:  sym.Properties&int32(sdb.SymbolInformation_STATIC) != 0,
+			IsStatic:   sym.Properties&int32(sdb.SymbolInformation_STATIC) != 0,
+			IsAbstract: sym.Properties&int32(sdb.SymbolInformation_ABSTRACT) != 0,
 		}
 
 		// For enum constants, override the signature to field-style (name: Type)

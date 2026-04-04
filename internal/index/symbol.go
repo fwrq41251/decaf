@@ -137,8 +137,9 @@ type Symbol struct {
 	Range     Range  // compact range (was *sdb.Range)
 	Signature *SignatureInfo
 	Doc       string // Javadoc/Scaladoc documentation text
-	IsStatic  bool
-	SameFile  bool
+	IsStatic   bool
+	IsAbstract bool
+	SameFile   bool
 }
 
 // Occurrence represents a symbol occurrence (reference or definition).
