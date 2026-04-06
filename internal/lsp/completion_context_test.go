@@ -1077,6 +1077,79 @@ public class MyClass {
 	}
 }
 
+func TestParseCompletionCtx_AfterNew(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void test() {
+        new Arr
+    }
+}`)
+	// Cursor at "Arr" after "new " - line 3, character 15
+	ctx := parseCompletionCtx(nil, src, 3, 15)
+	if !ctx.AfterNew {
+		t.Error("expected AfterNew to be true")
+	}
+	if ctx.Prefix != "Arr" {
+		t.Errorf("Prefix = %q, want %q", ctx.Prefix, "Arr")
+	}
+}
+
+func TestParseCompletionCtx_AfterNew_False(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void test() {
+        String name = Arr
+    }
+}`)
+	// Cursor at "Arr" not after "new" - line 3, character 25
+	ctx := parseCompletionCtx(nil, src, 3, 25)
+	if ctx.AfterNew {
+		t.Error("expected AfterNew to be false")
+	}
+}
+
+func TestParseCompletionCtx_ParenFollows(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void test() {
+        doWo()
+    }
+}`)
+	// Cursor at "doWo" before "()" - line 3, character 12
+	ctx := parseCompletionCtx(nil, src, 3, 12)
+	if !ctx.ParenFollows {
+		t.Error("expected ParenFollows to be true")
+	}
+}
+
+func TestParseCompletionCtx_ParenFollows_FullWord(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void test() {
+        doWork()
+    }
+}`)
+	// Cursor in middle "doWo|rk()" - line 3, character 12
+	ctx := parseCompletionCtx(nil, src, 3, 12)
+	if !ctx.ParenFollows {
+		t.Error("expected ParenFollows to be true when cursor is mid-word before parens")
+	}
+}
+
+func TestParseCompletionCtx_ParenFollows_False(t *testing.T) {
+	src := []byte(`package com.example;
+public class MyClass {
+    public void test() {
+        doWo;
+    }
+}`)
+	// Cursor at "doWo" with no parens following - line 3, character 12
+	ctx := parseCompletionCtx(nil, src, 3, 12)
+	if ctx.ParenFollows {
+		t.Error("expected ParenFollows to be false")
+	}
+}
+
 func TestParseCompletionCtx_CallContext_NoCallContext(t *testing.T) {
 	src := []byte(`package com.example;
 

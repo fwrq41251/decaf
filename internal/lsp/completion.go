@@ -108,7 +108,7 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 			sortText += signatureSortSuffix(m.Signature)
 		}
 
-		item := methodCompletionItem(m.Name, kind, m.Signature, sortText, m.Doc)
+		item := methodCompletionItem(m.Name, kind, m.Signature, sortText, m.Doc, cctx.ParenFollows)
 		items = append(items, item)
 		if len(items) >= 100 {
 			break
@@ -159,15 +159,20 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 		if cctx.Prefix != "" && strings.HasPrefix(m.Name, cctx.Prefix) {
 			sortPrefix = "0"
 		}
-		items = append(items, CompletionItem{
-			Label:            formatMethodDeclDetail(m),
-			Kind:             CompletionKindMethod,
-			InsertText:       buildLocalMethodInsertText(m),
-			InsertTextFormat: InsertTextFormatSnippet,
-			Detail:           formatMethodDeclDetail(m),
-			SortText:         sortPrefix + sortBucket + m.Name + methodDeclSortSuffix(m),
-			FilterText:       m.Name,
-		})
+		item := CompletionItem{
+			Label:      formatMethodDeclDetail(m),
+			Kind:       CompletionKindMethod,
+			Detail:     formatMethodDeclDetail(m),
+			SortText:   sortPrefix + sortBucket + m.Name + methodDeclSortSuffix(m),
+			FilterText: m.Name,
+		}
+		if cctx.ParenFollows {
+			item.InsertText = m.Name
+		} else {
+			item.InsertText = buildLocalMethodInsertText(m)
+			item.InsertTextFormat = InsertTextFormatSnippet
+		}
+		items = append(items, item)
 	}
 
 	addIndexedMethod := func(sym index.Symbol, sortBucket string) {
@@ -188,7 +193,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 		if sym.Signature != nil {
 			sortText += signatureSortSuffix(sym.Signature)
 		}
-		items = append(items, methodCompletionItem(sym.Name, sdbKindToCompletionKind(sym.Kind), sym.Signature, sortText, sym.Doc))
+		items = append(items, methodCompletionItem(sym.Name, sdbKindToCompletionKind(sym.Kind), sym.Signature, sortText, sym.Doc, cctx.ParenFollows))
 	}
 
 	for _, f := range cctx.ClassFields {
@@ -866,16 +871,20 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 				continue
 			}
 			seen[key] = struct{}{}
-			insertText := buildLocalMethodInsertText(m)
-			items = append(items, CompletionItem{
-				Label:            formatMethodDeclDetail(m),
-				Kind:             SymbolKindMethod,
-				InsertText:       insertText,
-				InsertTextFormat: InsertTextFormatSnippet,
-				Detail:           formatMethodDeclDetail(m),
-				SortText:         methodTypePrefix(m.ReturnType.String()) + casePrefix(m.Name) + "4" + m.Name + methodDeclSortSuffix(m),
-				FilterText:       m.Name,
-			})
+			item := CompletionItem{
+				Label:      formatMethodDeclDetail(m),
+				Kind:       SymbolKindMethod,
+				Detail:     formatMethodDeclDetail(m),
+				SortText:   methodTypePrefix(m.ReturnType.String()) + casePrefix(m.Name) + "4" + m.Name + methodDeclSortSuffix(m),
+				FilterText: m.Name,
+			}
+			if cctx.ParenFollows {
+				item.InsertText = m.Name
+			} else {
+				item.InsertText = buildLocalMethodInsertText(m)
+				item.InsertTextFormat = InsertTextFormatSnippet
+			}
+			items = append(items, item)
 		}
 	}
 
@@ -936,7 +945,13 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		if kind == CompletionKindMethod || kind == CompletionKindConstructor {
 			sortText += signatureSortSuffix(s.Signature)
 		}
-		item := methodCompletionItem(s.Name, kind, s.Signature, sortText, s.Doc)
+		item := methodCompletionItem(s.Name, kind, s.Signature, sortText, s.Doc, cctx.ParenFollows)
+
+		// When completing after "new", add parentheses for type completions.
+		if cctx.AfterNew && isTypeCompletionKind(kind) && !cctx.ParenFollows {
+			item.InsertText = s.Name + "($0)"
+			item.InsertTextFormat = InsertTextFormatSnippet
+		}
 
 		// Auto-import for type symbols from other packages.
 		if s.Kind == sdb.SymbolInformation_CLASS || s.Kind == sdb.SymbolInformation_INTERFACE {
@@ -1111,7 +1126,9 @@ func simplifyTypeName(name string) string {
 
 // methodCompletionItem builds a CompletionItem for a member (method or field).
 // Methods get snippet format with parentheses; fields get plain text.
-func methodCompletionItem(name string, kind int, sig *index.SignatureInfo, sortText, doc string) CompletionItem {
+// When parenFollows is true, parentheses are already present after the cursor
+// and will not be inserted.
+func methodCompletionItem(name string, kind int, sig *index.SignatureInfo, sortText, doc string, parenFollows bool) CompletionItem {
 	item := CompletionItem{
 		Label:      name,
 		Kind:       kind,
@@ -1129,12 +1146,16 @@ func methodCompletionItem(name string, kind int, sig *index.SignatureInfo, sortT
 		item.Documentation = &MarkupContent{Kind: "markdown", Value: doc}
 	}
 	if kind == CompletionKindMethod || kind == CompletionKindConstructor {
-		if sig != nil && sig.HasParams {
+		if parenFollows {
+			item.InsertText = name
+		} else if sig != nil && sig.HasParams {
 			item.InsertText = buildMethodInsertText(name, sig)
 		} else {
 			item.InsertText = name + "()$0"
 		}
-		item.InsertTextFormat = InsertTextFormatSnippet
+		if !parenFollows {
+			item.InsertTextFormat = InsertTextFormatSnippet
+		}
 	}
 	return item
 }

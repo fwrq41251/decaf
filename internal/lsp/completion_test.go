@@ -18,7 +18,7 @@ func TestMethodCompletionItem(t *testing.T) {
 			{Name: "name", Type: "String"},
 		},
 	}
-	item := methodCompletionItem("doWork", CompletionKindMethod, sig, "", "")
+	item := methodCompletionItem("doWork", CompletionKindMethod, sig, "", "", false)
 	if item.Label != "doWork(String name)" {
 		t.Errorf("method with params: Label = %q, want %q", item.Label, "doWork(String name)")
 	}
@@ -33,7 +33,7 @@ func TestMethodCompletionItem(t *testing.T) {
 	sigNoParams := &index.SignatureInfo{
 		Label: "int getCount()",
 	}
-	item2 := methodCompletionItem("getCount", CompletionKindMethod, sigNoParams, "", "")
+	item2 := methodCompletionItem("getCount", CompletionKindMethod, sigNoParams, "", "", false)
 	if item2.Label != "getCount()" {
 		t.Errorf("method no params: Label = %q, want %q", item2.Label, "getCount()")
 	}
@@ -45,7 +45,7 @@ func TestMethodCompletionItem(t *testing.T) {
 	}
 
 	// Field (non-method kind): plain text, no parens.
-	item3 := methodCompletionItem("value", CompletionKindField, nil, "", "")
+	item3 := methodCompletionItem("value", CompletionKindField, nil, "", "", false)
 	if item3.InsertText != "value" {
 		t.Errorf("field: InsertText = %q, want %q", item3.InsertText, "value")
 	}
@@ -59,9 +59,31 @@ func TestMethodCompletionItem_FallbackSnippet(t *testing.T) {
 		Label:     "void doWork(String)",
 		HasParams: true,
 	}
-	item := methodCompletionItem("doWork", CompletionKindMethod, sig, "", "")
+	item := methodCompletionItem("doWork", CompletionKindMethod, sig, "", "", false)
 	if item.InsertText != "doWork($1)$0" {
 		t.Errorf("fallback snippet InsertText = %q, want %q", item.InsertText, "doWork($1)$0")
+	}
+}
+
+func TestMethodCompletionItem_ParenFollows(t *testing.T) {
+	// When parens already follow, InsertText should be just the name (no parens, no snippet).
+	sig := &index.SignatureInfo{
+		Label:     "void doWork(String name)",
+		HasParams: true,
+		Params: []index.ParamInfo{
+			{Name: "name", Type: "String"},
+		},
+	}
+	item := methodCompletionItem("doWork", CompletionKindMethod, sig, "", "", true)
+	if item.InsertText != "doWork" {
+		t.Errorf("parenFollows: InsertText = %q, want %q", item.InsertText, "doWork")
+	}
+	if item.InsertTextFormat != 0 {
+		t.Errorf("parenFollows: InsertTextFormat = %d, want 0", item.InsertTextFormat)
+	}
+	// Label should still show the full signature.
+	if item.Label != "doWork(String name)" {
+		t.Errorf("parenFollows: Label = %q, want %q", item.Label, "doWork(String name)")
 	}
 }
 

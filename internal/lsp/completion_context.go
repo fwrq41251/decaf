@@ -71,6 +71,8 @@ type CompletionCtx struct {
 	Imports        []ImportSpec
 	Package        string
 	EnclosingClass string       // simple name of the enclosing class
+	AfterNew       bool         // true when cursor is after "new" keyword (e.g. "new Arr|")
+	ParenFollows   bool         // true when '(' follows the cursor (after remaining identifier chars)
 	Call           *CallContext // non-nil when cursor is inside method call arguments
 }
 
@@ -105,6 +107,14 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 
 	// 2. Determine completion kind and extract receiver/prefix.
 	ctx.Kind, ctx.Receiver, ctx.Prefix = determineCompletionKind(content, cursorOffset, root)
+
+	// 2b. Detect if prefix is preceded by "new" keyword.
+	if ctx.Kind == CompletionLexical {
+		ctx.AfterNew = isAfterNewKeyword(content, cursorOffset, ctx.Prefix)
+	}
+
+	// 2c. Detect if '(' follows the cursor position.
+	ctx.ParenFollows = hasParenAfterCursor(content, cursorOffset)
 
 	// 3. Extract imports and package from root.
 	extractImportsAndPackage(root, content, ctx)
@@ -151,6 +161,32 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 	}
 
 	return ctx
+}
+
+// hasParenAfterCursor checks if a '(' follows the cursor position,
+// skipping any remaining identifier characters and whitespace.
+func hasParenAfterCursor(content []byte, cursorOffset int) bool {
+	pos := cursorOffset
+	for pos < len(content) && isIdentChar(content[pos]) {
+		pos++
+	}
+	for pos < len(content) && (content[pos] == ' ' || content[pos] == '\t') {
+		pos++
+	}
+	return pos < len(content) && content[pos] == '('
+}
+
+// isAfterNewKeyword checks if the prefix is preceded by the "new" keyword
+// (with only whitespace in between), e.g. "new Arr|" → true.
+func isAfterNewKeyword(content []byte, cursorOffset int, prefix string) bool {
+	pos := cursorOffset - len(prefix)
+	for pos > 0 && (content[pos-1] == ' ' || content[pos-1] == '\t') {
+		pos--
+	}
+	if pos >= 3 && string(content[pos-3:pos]) == "new" {
+		return pos-3 == 0 || !isIdentChar(content[pos-4])
+	}
+	return false
 }
 
 // determineCompletionKind examines text before cursor to detect dot completion,
