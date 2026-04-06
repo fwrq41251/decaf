@@ -1,9 +1,12 @@
 package lsp
 
 import (
+	"reflect"
 	"testing"
+	"unsafe"
 
 	"github.com/fwrq41251/decaf/internal/index"
+	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
 )
 
 func TestMethodCompletionItem(t *testing.T) {
@@ -115,6 +118,41 @@ func TestExtractParamTypeName(t *testing.T) {
 	}
 }
 
+func TestReturnTypeFromMethodLabel(t *testing.T) {
+	tests := []struct {
+		label string
+		want  string
+	}{
+		{"String getName()", "String"},
+		{"Map<String, Integer> index()", "Map<String, Integer>"},
+		{"void work(String name)", "void"},
+		{"broken", ""},
+	}
+	for _, tt := range tests {
+		got := returnTypeFromMethodLabel(tt.label)
+		if got != tt.want {
+			t.Errorf("returnTypeFromMethodLabel(%q) = %q, want %q", tt.label, got, tt.want)
+		}
+	}
+}
+
+func TestValueTypeFromLabel(t *testing.T) {
+	tests := []struct {
+		label string
+		want  string
+	}{
+		{"name: String", "String"},
+		{"items: List<String>", "List<String>"},
+		{"broken", ""},
+	}
+	for _, tt := range tests {
+		got := valueTypeFromLabel(tt.label)
+		if got != tt.want {
+			t.Errorf("valueTypeFromLabel(%q) = %q, want %q", tt.label, got, tt.want)
+		}
+	}
+}
+
 func TestTypeMatchesExpected(t *testing.T) {
 	tests := []struct {
 		candidate string
@@ -190,4 +228,393 @@ func TestCompleteSnippets(t *testing.T) {
 			t.Error("did not expect 'main' snippet in ScopeBlock")
 		}
 	}
+}
+
+func TestCompleteDot_InferredLambdaParam(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "pkg/Box#", DisplayName: "Box", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "pkg/Container#", DisplayName: "Container", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "pkg/Stream#", DisplayName: "Stream", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "pkg/Function#", DisplayName: "Function", Kind: sdb.SymbolInformation_INTERFACE},
+			},
+		}},
+	})
+
+	setIndexField(t, idx, "classTypeParams", map[string][]string{
+		"pkg/Container#": {"pkg/Container#[T]"},
+		"pkg/Stream#":    {"pkg/Stream#[T]"},
+		"pkg/Function#":  {"pkg/Function#[T]", "pkg/Function#[R]"},
+	})
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"pkg/Box#": {
+			{Name: "length", Symbol: "pkg/Box#length.", Kind: sdb.SymbolInformation_METHOD},
+		},
+		"pkg/Container#": {
+			{Name: "stream", Symbol: "pkg/Container#stream().", Kind: sdb.SymbolInformation_METHOD},
+		},
+		"pkg/Stream#": {
+			{
+				Name:   "map",
+				Symbol: "pkg/Stream#map().",
+				Kind:   sdb.SymbolInformation_METHOD,
+				Signature: &index.SignatureInfo{
+					Label:     "Stream<R> map(Function<T, R> mapper)",
+					HasParams: true,
+					Params: []index.ParamInfo{
+						{Name: "mapper", Type: "Function<T, R>", TypeSym: "pkg/Function#"},
+					},
+				},
+			},
+		},
+	})
+	setIndexField(t, idx, "symbolDeclType", map[string]*index.TypeExpr{
+		"pkg/Container#stream().": {
+			Sym:  "pkg/Stream#",
+			Args: []*index.TypeExpr{{Sym: "pkg/Container#[T]"}},
+		},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:         CompletionDot,
+		Receiver:     "a",
+		Prefix:       "le",
+		Package:      "pkg",
+		Locals:       []ValueDecl{{Name: "list", Type: &index.TypeExpr{Sym: "Container", Args: []*index.TypeExpr{{Sym: "Box"}}}}},
+		LambdaParams: []ValueDecl{{Name: "a"}},
+		Call:         &CallContext{Receiver: "list.stream", MethodName: "map", ParamIndex: 0},
+	}
+
+	items := h.completeDot(cctx, "file://"+tmpDir+"/src/Test.java")
+	if len(items) != 1 {
+		t.Fatalf("expected 1 completion item, got %d: %+v", len(items), items)
+	}
+	if items[0].Label != "length()" {
+		t.Fatalf("expected length() completion, got %+v", items[0])
+	}
+}
+
+func TestCompleteLexical_IncludesLambdaParams(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+	items := h.completeLexical(&CompletionCtx{
+		Prefix:       "us",
+		LambdaParams: []ValueDecl{{Name: "user"}},
+	}, "", nil)
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 completion item, got %d: %+v", len(items), items)
+	}
+	if items[0].Label != "user" {
+		t.Fatalf("expected lambda param completion 'user', got %+v", items[0])
+	}
+}
+
+func TestCompleteLexical_LambdaParamsShadowLocalsAndParams(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+	items := h.completeLexical(&CompletionCtx{
+		Prefix:       "va",
+		LambdaParams: []ValueDecl{{Name: "value", Type: &index.TypeExpr{Sym: "String"}}},
+		Locals:       []ValueDecl{{Name: "value", Type: &index.TypeExpr{Sym: "int"}}},
+		Params:       []ValueDecl{{Name: "value", Type: &index.TypeExpr{Sym: "long"}}},
+	}, "", nil)
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 completion item after dedup, got %d: %+v", len(items), items)
+	}
+	if items[0].Label != "value" {
+		t.Fatalf("expected completion 'value', got %+v", items[0])
+	}
+	if items[0].Detail != "String" {
+		t.Fatalf("expected lambda param detail to win shadowing, got %+v", items[0])
+	}
+}
+
+func TestCompleteLexical_NearestLambdaParamWins(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+	items := h.completeLexical(&CompletionCtx{
+		Prefix:       "it",
+		LambdaParams: []ValueDecl{{Name: "item", Type: &index.TypeExpr{Sym: "Outer"}}, {Name: "item", Type: &index.TypeExpr{Sym: "Inner"}}},
+	}, "", nil)
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 completion item after dedup, got %d: %+v", len(items), items)
+	}
+	if items[0].Detail != "Inner" {
+		t.Fatalf("expected nearest lambda param to win, got %+v", items[0])
+	}
+}
+
+func TestCompleteLexical_SemanticCandidatesBeatSnippets(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	items := h.completeLexical(&CompletionCtx{
+		Scope:       ScopeBlock,
+		Prefix:      "so",
+		Locals:      []ValueDecl{{Name: "source", Type: &index.TypeExpr{Sym: "String"}}},
+		ClassFields: []ValueDecl{{Name: "socket", Type: &index.TypeExpr{Sym: "Socket"}}},
+		ClassMethods: []MethodDecl{
+			{Name: "solve", Params: []string{}},
+		},
+	}, "", nil)
+	sortCompletionItems(items)
+
+	if len(items) < 4 {
+		t.Fatalf("expected semantic items plus snippet, got %d: %+v", len(items), items)
+	}
+	if items[0].Label != "source" {
+		t.Fatalf("expected local variable to rank first, got %+v", items[0])
+	}
+
+	snippetIndex := -1
+	for i, item := range items {
+		if item.Label == "sout" {
+			snippetIndex = i
+			break
+		}
+	}
+	if snippetIndex < 0 {
+		t.Fatalf("expected sout snippet in completion list, got %+v", items)
+	}
+	if snippetIndex < 3 {
+		t.Fatalf("expected snippet to rank below semantic candidates, index=%d items=%+v", snippetIndex, items)
+	}
+}
+
+func TestCompleteLexical_ExpectedTypeBoostsClassMethods(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"test": {
+			{Name: "Test", Symbol: "pkg/Test#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"pkg/Test#": {
+			{
+				Name:   "setValue",
+				Symbol: "pkg/Test#setValue().",
+				Kind:   sdb.SymbolInformation_METHOD,
+				Signature: &index.SignatureInfo{
+					Label:     "void setValue(String value)",
+					HasParams: true,
+					Params: []index.ParamInfo{
+						{Name: "value", Type: "String"},
+					},
+				},
+			},
+		},
+	})
+
+	items := h.completeLexical(&CompletionCtx{
+		Scope:          ScopeBlock,
+		Prefix:         "ge",
+		Package:        "pkg",
+		EnclosingClass: "Test",
+		Call:           &CallContext{MethodName: "setValue", ParamIndex: 0},
+		ClassMethods: []MethodDecl{
+			{Name: "getInt", Params: nil, ReturnType: &index.TypeExpr{Sym: "int"}},
+			{Name: "getString", Params: nil, ReturnType: &index.TypeExpr{Sym: "String"}},
+		},
+	}, "", nil)
+	sortCompletionItems(items)
+
+	if len(items) < 2 {
+		t.Fatalf("expected class method completions, got %d: %+v", len(items), items)
+	}
+	if items[0].Label != "getString()" {
+		t.Fatalf("expected String-returning method to rank first, got %+v", items[0])
+	}
+}
+
+func TestCompleteDot_FallbackUsesClassContextAndObjectMethods(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"java/lang/Object#": {
+			{Name: "hashCode", Symbol: "java/lang/Object#hashCode().", Kind: sdb.SymbolInformation_METHOD},
+			{Name: "toString", Symbol: "java/lang/Object#toString().", Kind: sdb.SymbolInformation_METHOD},
+			{Name: "wait", Symbol: "java/lang/Object#wait().", Kind: sdb.SymbolInformation_METHOD},
+		},
+	})
+
+	items := h.completeDot(&CompletionCtx{
+		Kind:        CompletionDot,
+		Receiver:    "unknown",
+		Prefix:      "ha",
+		ClassFields: []ValueDecl{{Name: "handler", Type: &index.TypeExpr{Sym: "Handler"}}},
+		ClassMethods: []MethodDecl{
+			{Name: "handle", Params: []string{"value"}},
+		},
+	}, "")
+
+	if len(items) < 2 {
+		t.Fatalf("expected fallback completion items, got %d: %+v", len(items), items)
+	}
+	if items[0].Label != "handler" {
+		t.Fatalf("expected class field fallback first, got %+v", items[0])
+	}
+
+	foundHandle := false
+	foundHashCode := false
+	for _, item := range items {
+		if item.Label == "handle(value)" {
+			foundHandle = true
+		}
+		if item.Label == "hashCode()" {
+			foundHashCode = true
+		}
+	}
+	if !foundHandle {
+		t.Fatalf("expected class method fallback item, got %+v", items)
+	}
+	if !foundHashCode {
+		t.Fatalf("expected Object method fallback item, got %+v", items)
+	}
+}
+
+func TestCompleteDot_FallbackStaysEmptyWhenNothingMatches(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	items := h.completeDot(&CompletionCtx{
+		Kind:     CompletionDot,
+		Receiver: "unknown",
+		Prefix:   "zzz",
+	}, "")
+
+	if len(items) != 0 {
+		t.Fatalf("expected no fallback items for unmatched prefix, got %+v", items)
+	}
+}
+
+func TestCompleteDot_CustomSAMLambdaParam(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "pkg/Box#", DisplayName: "Box", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "pkg/Processor#", DisplayName: "Processor", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "pkg/Mapper#", DisplayName: "Mapper", Kind: sdb.SymbolInformation_INTERFACE},
+			},
+		}},
+	})
+
+	setIndexField(t, idx, "classTypeParams", map[string][]string{
+		"pkg/Processor#": {"pkg/Processor#[T]"},
+		"pkg/Mapper#":    {"pkg/Mapper#[T]", "pkg/Mapper#[R]"},
+	})
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"pkg/Box#": {
+			{Name: "length", Symbol: "pkg/Box#length().", Kind: sdb.SymbolInformation_METHOD},
+		},
+		"pkg/Processor#": {
+			{
+				Name:   "map",
+				Symbol: "pkg/Processor#map().",
+				Kind:   sdb.SymbolInformation_METHOD,
+				Signature: &index.SignatureInfo{
+					Label:     "String map(Mapper<T, String> mapper)",
+					HasParams: true,
+					Params: []index.ParamInfo{
+						{Name: "mapper", Type: "Mapper<T, String>", TypeSym: "pkg/Mapper#"},
+					},
+				},
+			},
+		},
+		"pkg/Mapper#": {
+			{
+				Name:   "apply",
+				Symbol: "pkg/Mapper#apply().",
+				Kind:   sdb.SymbolInformation_METHOD,
+				Signature: &index.SignatureInfo{
+					Label:     "R apply(T value)",
+					HasParams: true,
+					Params: []index.ParamInfo{
+						{Name: "value", Type: "T"},
+					},
+				},
+			},
+		},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:         CompletionDot,
+		Receiver:     "item",
+		Prefix:       "le",
+		Package:      "pkg",
+		Locals:       []ValueDecl{{Name: "processor", Type: &index.TypeExpr{Sym: "Processor", Args: []*index.TypeExpr{{Sym: "Box"}}}}},
+		LambdaParams: []ValueDecl{{Name: "item"}},
+		Call:         &CallContext{Receiver: "processor", MethodName: "map", ParamIndex: 0},
+	}
+
+	items := h.completeDot(cctx, "file://"+tmpDir+"/src/Test.java")
+	if len(items) != 1 {
+		t.Fatalf("expected 1 completion item, got %d: %+v", len(items), items)
+	}
+	if items[0].Label != "length()" {
+		t.Fatalf("expected custom SAM lambda completion, got %+v", items[0])
+	}
+}
+
+func TestResolveIdentifierTypeExpr_LambdaShadowBeatsLocal(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"string":  {{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS}},
+		"integer": {{Name: "Integer", Symbol: "java/lang/Integer#", Kind: sdb.SymbolInformation_CLASS}},
+	})
+
+	resolver := &typeResolver{idx: idx}
+	typeExpr, staticAccess := h.resolveIdentifierTypeExpr("value", &CompletionCtx{
+		LambdaParams: []ValueDecl{{Name: "value", Type: &index.TypeExpr{Sym: "String"}}},
+		Locals:       []ValueDecl{{Name: "value", Type: &index.TypeExpr{Sym: "Integer"}}},
+	}, resolver)
+
+	if staticAccess {
+		t.Fatalf("expected instance binding, got static")
+	}
+	if typeExpr == nil || typeExpr.Sym != "java/lang/String#" {
+		t.Fatalf("expected lambda param type to win, got %+v", typeExpr)
+	}
+}
+
+func TestCompleteLexical_OuterLambdaCaptureVisible(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	items := h.completeLexical(&CompletionCtx{
+		Prefix:       "ou",
+		LambdaParams: []ValueDecl{{Name: "outer"}, {Name: "inner"}},
+	}, "", nil)
+
+	if len(items) != 1 {
+		t.Fatalf("expected outer lambda capture completion, got %d: %+v", len(items), items)
+	}
+	if items[0].Label != "outer" {
+		t.Fatalf("expected outer lambda capture candidate, got %+v", items[0])
+	}
+}
+
+func setIndexField(t *testing.T, idx *index.Index, field string, value any) {
+	t.Helper()
+	v := reflect.ValueOf(idx).Elem().FieldByName(field)
+	if !v.IsValid() {
+		t.Fatalf("field %s not found", field)
+	}
+	reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem().Set(reflect.ValueOf(value))
 }

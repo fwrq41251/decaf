@@ -88,9 +88,9 @@ func (h *Handler) completeSnippets(cctx *CompletionCtx) []CompletionItem {
 					Kind:             CompletionKindSnippet,
 					InsertText:       s.insertText,
 					InsertTextFormat: InsertTextFormatSnippet,
-					// Give snippets high priority so they appear at the top
-					// of the completion list when the prefix matches.
-					SortText: "000_" + s.label,
+					// Keep snippets available, but rank them below semantic matches
+					// so they don't displace locals/fields/methods.
+					SortText: "18_" + s.label,
 				})
 			}
 		}

@@ -58,6 +58,71 @@ public class MyClass {
 	}
 }
 
+func TestParseCompletionCtx_LambdaSingleParam(t *testing.T) {
+	src := []byte(`package com.example;
+
+import java.util.List;
+
+public class MyClass {
+    public void doSomething(List<String> items) {
+        items.stream().map(a -> a.le)
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 6, 36)
+	if ctx.Kind != CompletionDot {
+		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
+	}
+	if ctx.Receiver != "a" {
+		t.Fatalf("expected receiver 'a', got %q", ctx.Receiver)
+	}
+	if len(ctx.LambdaParams) != 1 || ctx.LambdaParams[0].Name != "a" {
+		t.Fatalf("expected lambda param 'a', got %+v", ctx.LambdaParams)
+	}
+}
+
+func TestParseCompletionCtx_LambdaTypedParam(t *testing.T) {
+	src := []byte(`package com.example;
+
+public class MyClass {
+    interface Mapper {
+        int map(String value);
+    }
+
+    public void doSomething(Mapper mapper) {
+        mapper.map(((String value) -> value.len))
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 8, 46)
+	if len(ctx.LambdaParams) != 1 {
+		t.Fatalf("expected 1 lambda param, got %+v", ctx.LambdaParams)
+	}
+	if ctx.LambdaParams[0].Name != "value" {
+		t.Fatalf("expected lambda param 'value', got %+v", ctx.LambdaParams[0])
+	}
+	if ctx.LambdaParams[0].Type == nil || ctx.LambdaParams[0].Type.String() != "String" {
+		t.Fatalf("expected lambda param type String, got %+v", ctx.LambdaParams[0].Type)
+	}
+}
+
+func TestParseCompletionCtx_NestedLambdaKeepsOuterCapture(t *testing.T) {
+	src := []byte(`package com.example;
+
+import java.util.List;
+
+public class MyClass {
+    public void doSomething(List<String> items) {
+        items.stream().map(outer -> items.stream().map(inner -> outer.len))
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 6, 66)
+	if len(ctx.LambdaParams) != 2 {
+		t.Fatalf("expected 2 lambda params, got %+v", ctx.LambdaParams)
+	}
+	if ctx.LambdaParams[0].Name != "outer" || ctx.LambdaParams[1].Name != "inner" {
+		t.Fatalf("expected outer then inner lambda params, got %+v", ctx.LambdaParams)
+	}
+}
+
 func TestParseCompletionCtx_ChainedCallNewline(t *testing.T) {
 	// Chained call with dot on the next line:
 	//   items.stream()

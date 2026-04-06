@@ -51,8 +51,9 @@ type CallContext struct {
 }
 
 type MethodDecl struct {
-	Name   string
-	Params []string
+	Name       string
+	Params     []string
+	ReturnType *index.TypeExpr
 }
 
 // CompletionCtx holds the parsed context for a completion request.
@@ -61,6 +62,7 @@ type CompletionCtx struct {
 	Scope          CompletionScope
 	Receiver       string       // the text before the dot (for dot completion)
 	Prefix         string       // the identifier prefix being typed
+	LambdaParams   []ValueDecl  // parameters of the nearest enclosing lambda
 	Locals         []ValueDecl  // local variables visible at cursor
 	Params         []ValueDecl  // method parameters
 	ClassFields    []ValueDecl  // fields of enclosing class
@@ -142,6 +144,9 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 
 		// 9. Detect if cursor is inside a method call's argument list.
 		ctx.Call = extractCallContext(cursorNode, content, cursorOffset)
+
+		// 10. Extract parameters from the nearest enclosing lambda body.
+		extractLambdaParams(cursorNode, content, ctx)
 	}
 
 	return ctx
@@ -434,6 +439,11 @@ func extractMethodDecl(methodNode *slog.Node, content []byte) MethodDecl {
 			}
 		case "formal_parameters":
 			decl.Params = extractParameterNames(child, content)
+		case "type_identifier", "primitive_type", "generic_type", "array_type",
+			"scoped_type_identifier", "void_type", "boolean_type":
+			if decl.ReturnType == nil {
+				decl.ReturnType = extractType(child, content)
+			}
 		}
 	}
 	return decl
@@ -488,6 +498,74 @@ func extractMethodParams(methodNode *slog.Node, content []byte, ctx *CompletionC
 			break
 		}
 	}
+}
+
+func extractLambdaParams(cursorNode *slog.Node, content []byte, ctx *CompletionCtx) {
+	var lambdas []*slog.Node
+	for n := cursorNode; n != nil; n = n.Parent() {
+		if n.Type() != "lambda_expression" {
+			continue
+		}
+		body := n.ChildByFieldName("body")
+		if body == nil || !nodeContains(body, cursorNode) {
+			continue
+		}
+		lambdas = append(lambdas, n)
+	}
+
+	// Store parameters from outermost to innermost so later lookups can walk
+	// the slice in reverse to apply Java's nearest-scope shadowing.
+	for i := len(lambdas) - 1; i >= 0; i-- {
+		appendLambdaParams(lambdas[i], content, ctx)
+	}
+}
+
+func appendLambdaParams(lambdaNode *slog.Node, content []byte, ctx *CompletionCtx) {
+	paramsNode := lambdaNode.ChildByFieldName("parameters")
+	if paramsNode == nil {
+		return
+	}
+
+	switch paramsNode.Type() {
+	case "identifier", "_reserved_identifier":
+		ctx.LambdaParams = append(ctx.LambdaParams, ValueDecl{Name: paramsNode.Content(content)})
+	case "inferred_parameters":
+		for i := 0; i < int(paramsNode.NamedChildCount()); i++ {
+			child := paramsNode.NamedChild(i)
+			if child.Type() == "identifier" || child.Type() == "_reserved_identifier" {
+				ctx.LambdaParams = append(ctx.LambdaParams, ValueDecl{Name: child.Content(content)})
+			}
+		}
+	case "formal_parameters":
+		for i := 0; i < int(paramsNode.NamedChildCount()); i++ {
+			param := paramsNode.NamedChild(i)
+			if param.Type() != "formal_parameter" && param.Type() != "spread_parameter" {
+				continue
+			}
+			var typeExpr *index.TypeExpr
+			paramName := ""
+			for j := 0; j < int(param.NamedChildCount()); j++ {
+				child := param.NamedChild(j)
+				switch child.Type() {
+				case "type_identifier", "primitive_type", "generic_type", "array_type",
+					"scoped_type_identifier", "void_type", "boolean_type":
+					typeExpr = extractType(child, content)
+				case "identifier", "_reserved_identifier":
+					paramName = child.Content(content)
+				}
+			}
+			if paramName != "" {
+				ctx.LambdaParams = append(ctx.LambdaParams, ValueDecl{Name: paramName, Type: typeExpr})
+			}
+		}
+	}
+}
+
+func nodeContains(parent, child *slog.Node) bool {
+	if parent == nil || child == nil {
+		return false
+	}
+	return parent.StartByte() <= child.StartByte() && parent.EndByte() >= child.EndByte()
 }
 
 // extractLocals extracts local variable declarations that are visible at the cursor.
