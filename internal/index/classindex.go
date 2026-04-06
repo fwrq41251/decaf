@@ -69,8 +69,8 @@ type classSymbols struct {
 	parents []string // SemanticDB symbols
 
 	// Generic type information parsed from Signature attributes.
-	typeParams     []string     // type parameter symbols, e.g. ["java/util/List#[E]"]
-	parentTypesGen []*TypeExpr  // parent types with generic args
+	typeParams     []string    // type parameter symbols, e.g. ["java/util/List#[E]"]
+	parentTypesGen []*TypeExpr // parent types with generic args
 
 	// Members.
 	members []memberSymbol
@@ -82,12 +82,12 @@ type classSymbols struct {
 }
 
 type memberSymbol struct {
-	sym       string // e.g. "java/util/ArrayList#add(+1)."
-	name      string // e.g. "add"
-	kind      sdb.SymbolInformation_Kind
-	typeSym   string         // return type / field type as SemanticDB symbol
-	declType  *TypeExpr      // declared type preserving generics (from Signature attribute)
-	signature *SignatureInfo // human-readable signature
+	sym        string // e.g. "java/util/ArrayList#add(+1)."
+	name       string // e.g. "add"
+	kind       sdb.SymbolInformation_Kind
+	typeSym    string         // return type / field type as SemanticDB symbol
+	declType   *TypeExpr      // declared type preserving generics (from Signature attribute)
+	signature  *SignatureInfo // human-readable signature
 	isStatic   bool
 	isAbstract bool
 }
@@ -302,8 +302,19 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 
 			// Parse method generic signature for return type with generics.
 			if m.Signature != "" {
-				if minfo := parseMethodGenericSig(m.Signature, classSym, typeParamNames); minfo != nil && minfo.returnType != nil {
-					ms.declType = minfo.returnType
+				if minfo := parseMethodGenericSig(m.Signature, classSym, typeParamNames); minfo != nil {
+					if minfo.returnType != nil {
+						ms.declType = minfo.returnType
+					}
+					if sig != nil && len(minfo.paramTypes) > 0 {
+						for i := range minfo.paramTypes {
+							if i >= len(sig.Params) {
+								break
+							}
+							sig.Params[i].Type = typeExprToDisplay(minfo.paramTypes[i])
+							sig.Params[i].TypeSym = typeExprBaseSym(minfo.paramTypes[i])
+						}
+					}
 				}
 			}
 
@@ -474,4 +485,3 @@ func (idx *Index) indexClassMembers(jarPath, entryName string) (*classSymbols, e
 	cs.entryName = entryName
 	return cs, nil
 }
-

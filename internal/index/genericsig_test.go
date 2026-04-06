@@ -4,10 +4,10 @@ import "testing"
 
 func TestParseClassGenericSig(t *testing.T) {
 	tests := []struct {
-		name       string
-		sig        string
-		classSym   string
-		wantParams []string
+		name        string
+		sig         string
+		classSym    string
+		wantParams  []string
 		wantParents []struct {
 			sym      string
 			firstArg string // Sym of the first type arg, or "" if no args
@@ -148,6 +148,14 @@ func TestParseMethodGenericSig(t *testing.T) {
 			info := parseMethodGenericSig(tt.sig, tt.classSym, tt.params)
 			if info == nil {
 				t.Fatal("parseMethodGenericSig returned nil")
+			}
+			if tt.sig == "<T:Ljava/lang/Object;>(TT;)Ljava/util/List<TT;>;" {
+				if len(info.paramTypes) != 1 {
+					t.Fatalf("expected 1 param type, got %+v", info.paramTypes)
+				}
+				if info.paramTypes[0] == nil || info.paramTypes[0].Sym != "com/example/Foo#[T]" {
+					t.Fatalf("expected param type T, got %+v", info.paramTypes[0])
+				}
 			}
 			if info.returnType == nil {
 				t.Fatal("returnType is nil")

@@ -80,6 +80,53 @@ public class MyClass {
 	}
 }
 
+func TestParseCompletionCtx_LambdaSingleParamReceiverDoesNotIncludeArrow(t *testing.T) {
+	src := []byte(`package com.example;
+
+import java.util.List;
+
+public class MyClass {
+    public void doSomething(List<String> items) {
+        items.stream().map(m1 -> m1.tol)
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 6, 39)
+	if ctx.Kind != CompletionDot {
+		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
+	}
+	if ctx.Receiver != "m1" {
+		t.Fatalf("expected receiver 'm1', got %q", ctx.Receiver)
+	}
+	if ctx.Prefix != "tol" {
+		t.Fatalf("expected prefix 'tol', got %q", ctx.Prefix)
+	}
+}
+
+func TestParseCompletionCtx_LambdaSingleParamEmptyPrefixKeepsLambdaParam(t *testing.T) {
+	src := []byte(`package com.example;
+
+import java.util.List;
+
+public class MyClass {
+    public void doSomething(List<String> items) {
+        items.stream().map(m1 -> m1.)
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 6, 36)
+	if ctx.Kind != CompletionDot {
+		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
+	}
+	if ctx.Receiver != "m1" {
+		t.Fatalf("expected receiver 'm1', got %q", ctx.Receiver)
+	}
+	if len(ctx.LambdaParams) != 1 || ctx.LambdaParams[0].Name != "m1" {
+		t.Fatalf("expected lambda param 'm1', got %+v", ctx.LambdaParams)
+	}
+	if ctx.Prefix != "" {
+		t.Fatalf("expected empty prefix, got %q", ctx.Prefix)
+	}
+}
+
 func TestParseCompletionCtx_LambdaTypedParam(t *testing.T) {
 	src := []byte(`package com.example;
 
@@ -634,6 +681,12 @@ public class MyClass {
 			}
 			if l.Initializer.MethodName != "of" {
 				t.Fatalf("expected method 'of', got %q", l.Initializer.MethodName)
+			}
+			if len(l.Initializer.ArgTypes) != 2 {
+				t.Fatalf("expected 2 initializer arg types, got %+v", l.Initializer.ArgTypes)
+			}
+			if l.Initializer.ArgTypes[0] == nil || l.Initializer.ArgTypes[0].Sym != "String" {
+				t.Fatalf("expected first arg type String, got %+v", l.Initializer.ArgTypes[0])
 			}
 		}
 	}

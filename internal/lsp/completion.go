@@ -53,14 +53,6 @@ func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) 
 		items = h.completeLexical(cctx, p.TextDocument.URI, contentBytes)
 	}
 	sortCompletionItems(items)
-	for _, item := range items {
-		if item.Kind == CompletionKindMethod || item.Kind == CompletionKindConstructor {
-			if item.InsertTextFormat == InsertTextFormatSnippet {
-				h.logger.Printf("completion snippet item label=%q insert=%q format=%d detail=%q",
-					item.Label, item.InsertText, item.InsertTextFormat, item.Detail)
-			}
-		}
-	}
 
 	h.logger.Printf("completion at %s:%d:%d kind=%d prefix=%q receiver=%q -> %d items",
 		p.TextDocument.URI, p.Position.Line, p.Position.Character,
@@ -78,7 +70,6 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 	if typeExpr == nil {
 		return h.completeDotFallback(cctx)
 	}
-	h.logger.Printf("completeDot: receiver=%q resolvedType=%q static=%v prefix=%q", cctx.Receiver, typeExpr.Sym, staticAccess, cctx.Prefix)
 
 	// Get members of the resolved type.
 	members := h.idx.MembersOfType(typeExpr.Sym)
@@ -87,13 +78,6 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 	var items []CompletionItem
 	seen := make(map[string]struct{})
 	for _, m := range members {
-		if m.Name == cctx.Prefix || strings.HasPrefix(m.Name, cctx.Prefix) {
-			sigLabel := ""
-			if m.Signature != nil {
-				sigLabel = m.Signature.Label
-			}
-			h.logger.Printf("completeDot candidate: owner=%q name=%q symbol=%q kind=%v static=%v sig=%q", typeExpr.Sym, m.Name, m.Symbol, m.Kind, m.IsStatic, sigLabel)
-		}
 		if !index.FuzzyMatch(m.Name, query) {
 			continue
 		}
@@ -314,13 +298,15 @@ func (h *Handler) resolveIdentifierTypeExpr(name string, cctx *CompletionCtx, re
 	// Search params.
 	for _, p := range cctx.Params {
 		if p.Name == name {
-			return resolver.resolveParameterized(p.Type), false
+			te := resolver.resolveParameterized(p.Type)
+			return te, false
 		}
 	}
 	// Search class fields.
 	for _, f := range cctx.ClassFields {
 		if f.Name == name {
-			return resolver.resolveParameterized(f.Type), false
+			te := resolver.resolveParameterized(f.Type)
+			return te, false
 		}
 	}
 	// Maybe it's a class name (static access).
@@ -590,7 +576,91 @@ func (h *Handler) resolveVarInitializer(vi *VarInitializer, cctx *CompletionCtx,
 		}
 	}
 
-	return h.resolveMemberTypeExpr(typeExpr, vi.MethodName)
+	result := h.resolveMemberTypeExpr(typeExpr, vi.MethodName)
+	if result == nil {
+		return nil
+	}
+	return refineVarInitializerType(result, vi, resolver)
+}
+
+func refineVarInitializerType(te *index.TypeExpr, vi *VarInitializer, resolver *typeResolver) *index.TypeExpr {
+	if te == nil || vi == nil || len(te.Args) == 0 {
+		return te
+	}
+
+	// Heuristic for common static generic factory methods such as
+	// List.of("x"), Set.of("x"), Optional.of("x"), Stream.of("x").
+	if vi.MethodName != "of" {
+		return te
+	}
+	if vi.Receiver != "List" && vi.Receiver != "Set" && vi.Receiver != "Optional" && vi.Receiver != "Stream" {
+		return te
+	}
+
+	argType := commonResolvedArgType(vi.ArgTypes, resolver)
+	if argType == nil {
+		return te
+	}
+
+	result := &index.TypeExpr{Sym: te.Sym, Args: make([]*index.TypeExpr, len(te.Args))}
+	for i, arg := range te.Args {
+		if isUnresolvedTypeParam(arg) {
+			result.Args[i] = argType
+			continue
+		}
+		result.Args[i] = arg
+	}
+	return result
+}
+
+func commonResolvedArgType(argTypes []*index.TypeExpr, resolver *typeResolver) *index.TypeExpr {
+	if len(argTypes) == 0 {
+		return nil
+	}
+
+	var resolved *index.TypeExpr
+	for _, arg := range argTypes {
+		if arg == nil {
+			return nil
+		}
+		current := resolver.resolveParameterized(arg)
+		if current == nil {
+			return nil
+		}
+		if resolved == nil {
+			resolved = current
+			continue
+		}
+		if !sameTypeExpr(resolved, current) {
+			return nil
+		}
+	}
+	return resolved
+}
+
+func isUnresolvedTypeParam(te *index.TypeExpr) bool {
+	if te == nil {
+		return false
+	}
+	if strings.Contains(te.Sym, "[") {
+		return true
+	}
+	return len(te.Args) == 0 && len(te.Sym) == 1 && te.Sym[0] >= 'A' && te.Sym[0] <= 'Z'
+}
+
+func sameTypeExpr(a, b *index.TypeExpr) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Sym != b.Sym || len(a.Args) != len(b.Args) {
+		return false
+	}
+	for i := range a.Args {
+		if !sameTypeExpr(a.Args[i], b.Args[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveMemberTypeExpr resolves the type of a member on a given type,

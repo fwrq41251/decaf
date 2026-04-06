@@ -18,12 +18,13 @@ import "strings"
 
 // classGenericInfo holds parsed generic information from a class Signature attribute.
 type classGenericInfo struct {
-	typeParams []string     // type parameter names, e.g. ["E", "K", "V"]
-	parents    []*TypeExpr  // parent types with generic args
+	typeParams []string    // type parameter names, e.g. ["E", "K", "V"]
+	parents    []*TypeExpr // parent types with generic args
 }
 
 // memberGenericInfo holds parsed generic information from a field/method Signature attribute.
 type memberGenericInfo struct {
+	paramTypes []*TypeExpr
 	returnType *TypeExpr // for methods: the return type; for fields: the field type
 }
 
@@ -56,7 +57,7 @@ func parseClassGenericSig(sig, classSym string) *classGenericInfo {
 }
 
 // parseMethodGenericSig parses a method-level generic signature and returns
-// the return type as a TypeExpr.
+// parameter and return types as TypeExprs.
 //
 // Example: "(I)TE;" or "<T:Ljava/lang/Object;>(TT;)Ljava/util/List<TT;>;"
 func parseMethodGenericSig(sig, classSym string, classTypeParamNames []string) *memberGenericInfo {
@@ -75,11 +76,12 @@ func parseMethodGenericSig(sig, classSym string, classTypeParamNames []string) *
 	// Merge class + method type params for resolution.
 	allParams := append(classTypeParamNames, methodTypeParams...)
 
-	// Skip parameter types: (...)
+	var paramTypes []*TypeExpr
+	// Parse parameter types: (...)
 	if p.peek() == '(' {
 		p.advance() // skip '('
 		for !p.eof() && p.peek() != ')' {
-			p.skipTypeSignature()
+			paramTypes = append(paramTypes, p.parseTypeExpr(classSym, allParams))
 		}
 		if !p.eof() {
 			p.advance() // skip ')'
@@ -89,7 +91,7 @@ func parseMethodGenericSig(sig, classSym string, classTypeParamNames []string) *
 	// Parse return type.
 	retType := p.parseTypeExpr(classSym, allParams)
 
-	return &memberGenericInfo{returnType: retType}
+	return &memberGenericInfo{paramTypes: paramTypes, returnType: retType}
 }
 
 // parseFieldGenericSig parses a field-level generic signature.

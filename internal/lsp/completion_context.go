@@ -31,6 +31,7 @@ const (
 type VarInitializer struct {
 	Receiver   string // receiver expression, e.g. "List" for List.of(), "builder.name" for builder.name().build()
 	MethodName string // method name, e.g. "of", "build"
+	ArgTypes   []*index.TypeExpr
 }
 
 // ValueDecl represents a variable/field/parameter declaration with its type.
@@ -146,7 +147,7 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 		ctx.Call = extractCallContext(cursorNode, content, cursorOffset)
 
 		// 10. Extract parameters from the nearest enclosing lambda body.
-		extractLambdaParams(cursorNode, content, ctx)
+		extractLambdaParams(root, cursorNode, content, cursorOffset, ctx)
 	}
 
 	return ctx
@@ -233,6 +234,11 @@ func exprToReceiver(node *slog.Node, content []byte) string {
 		return "super"
 	case "string_literal":
 		return node.Content(content)
+	case "lambda_expression":
+		body := node.ChildByFieldName("body")
+		if body != nil {
+			return exprToReceiver(body, content)
+		}
 	case "parenthesized_expression":
 		return node.Content(content)
 	case "field_access":
@@ -500,17 +506,32 @@ func extractMethodParams(methodNode *slog.Node, content []byte, ctx *CompletionC
 	}
 }
 
-func extractLambdaParams(cursorNode *slog.Node, content []byte, ctx *CompletionCtx) {
+func extractLambdaParams(root, cursorNode *slog.Node, content []byte, cursorOffset int, ctx *CompletionCtx) {
+	probeNodes := []*slog.Node{cursorNode}
+	prevOffset := previousNonWhitespaceOffset(content, cursorOffset)
+	if prev := nodeAtByteOffset(root, content, prevOffset); prev != nil && prev != cursorNode {
+		probeNodes = append(probeNodes, prev)
+	}
+
 	var lambdas []*slog.Node
-	for n := cursorNode; n != nil; n = n.Parent() {
-		if n.Type() != "lambda_expression" {
-			continue
+	seen := make(map[*slog.Node]struct{})
+	for _, start := range probeNodes {
+		for n := start; n != nil; n = n.Parent() {
+			if n.Type() != "lambda_expression" {
+				continue
+			}
+			if _, ok := seen[n]; ok {
+				continue
+			}
+			if n.ChildByFieldName("body") == nil {
+				continue
+			}
+			seen[n] = struct{}{}
+			lambdas = append(lambdas, n)
 		}
-		body := n.ChildByFieldName("body")
-		if body == nil || !nodeContains(body, cursorNode) {
-			continue
-		}
-		lambdas = append(lambdas, n)
+	}
+	if len(lambdas) == 0 {
+		collectEnclosingLambdas(root, prevOffset, &lambdas, seen)
 	}
 
 	// Store parameters from outermost to innermost so later lookups can walk
@@ -518,6 +539,148 @@ func extractLambdaParams(cursorNode *slog.Node, content []byte, ctx *CompletionC
 	for i := len(lambdas) - 1; i >= 0; i-- {
 		appendLambdaParams(lambdas[i], content, ctx)
 	}
+	if len(ctx.LambdaParams) == 0 {
+		ctx.LambdaParams = append(ctx.LambdaParams, parseNearestLambdaParamsText(content, cursorOffset)...)
+	}
+}
+
+func nodeBeforeOffset(root *slog.Node, content []byte, cursorOffset int) *slog.Node {
+	if root == nil {
+		return nil
+	}
+	prevOffset := previousNonWhitespaceOffset(content, cursorOffset)
+	return nodeAtByteOffset(root, content, prevOffset)
+}
+
+func previousNonWhitespaceOffset(content []byte, cursorOffset int) int {
+	if cursorOffset <= 0 {
+		return 0
+	}
+	prevOffset := cursorOffset - 1
+	for prevOffset > 0 && (content[prevOffset] == ' ' || content[prevOffset] == '\t' || content[prevOffset] == '\n' || content[prevOffset] == '\r') {
+		prevOffset--
+	}
+	if content[prevOffset] == '.' && prevOffset > 0 {
+		prevOffset--
+		for prevOffset > 0 && (content[prevOffset] == ' ' || content[prevOffset] == '\t' || content[prevOffset] == '\n' || content[prevOffset] == '\r') {
+			prevOffset--
+		}
+	}
+	return prevOffset
+}
+
+func nodeAtByteOffset(root *slog.Node, content []byte, offset int) *slog.Node {
+	if root == nil || offset < 0 {
+		return nil
+	}
+	line, col := byteOffsetToPosition(content, offset)
+	return nodeAtPosition(root, line, col)
+}
+
+func collectEnclosingLambdas(node *slog.Node, probeOffset int, lambdas *[]*slog.Node, seen map[*slog.Node]struct{}) {
+	if node == nil {
+		return
+	}
+	if node.Type() == "lambda_expression" {
+		if body := node.ChildByFieldName("body"); body != nil {
+			if probeOffset >= int(body.StartByte()) && probeOffset <= int(body.EndByte()) {
+				if _, ok := seen[node]; !ok {
+					seen[node] = struct{}{}
+					*lambdas = append(*lambdas, node)
+				}
+			}
+		}
+	}
+	for i := 0; i < int(node.ChildCount()); i++ {
+		collectEnclosingLambdas(node.Child(i), probeOffset, lambdas, seen)
+	}
+}
+
+func parseNearestLambdaParamsText(content []byte, cursorOffset int) []ValueDecl {
+	if cursorOffset <= 1 {
+		return nil
+	}
+
+	arrow := -1
+	for i := cursorOffset - 1; i > 0; i-- {
+		if content[i] == '>' && content[i-1] == '-' {
+			arrow = i - 1
+			break
+		}
+	}
+	if arrow < 0 {
+		return nil
+	}
+
+	end := arrow - 1
+	for end >= 0 && isSpace(content[end]) {
+		end--
+	}
+	if end < 0 {
+		return nil
+	}
+
+	if content[end] == ')' {
+		start := findMatchingParenBackward(content, end)
+		if start < 0 {
+			return nil
+		}
+		return parseLambdaParamListText(string(content[start+1 : end]))
+	}
+
+	start := end
+	for start >= 0 && isIdentChar(content[start]) {
+		start--
+	}
+	name := strings.TrimSpace(string(content[start+1 : end+1]))
+	if name == "" {
+		return nil
+	}
+	return []ValueDecl{{Name: name}}
+}
+
+func parseLambdaParamListText(text string) []ValueDecl {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+
+	var result []ValueDecl
+	for _, part := range strings.Split(text, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		fields := strings.Fields(part)
+		if len(fields) == 0 {
+			continue
+		}
+		name := fields[len(fields)-1]
+		if name != "" {
+			result = append(result, ValueDecl{Name: name})
+		}
+	}
+	return result
+}
+
+func findMatchingParenBackward(content []byte, end int) int {
+	depth := 0
+	for i := end; i >= 0; i-- {
+		switch content[i] {
+		case ')':
+			depth++
+		case '(':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func isSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
 
 func appendLambdaParams(lambdaNode *slog.Node, content []byte, ctx *CompletionCtx) {
@@ -819,9 +982,18 @@ func extractMethodInvocationInfo(node *slog.Node, content []byte) *VarInitialize
 	if recv == "" {
 		return nil
 	}
+	var argTypes []*index.TypeExpr
+	if argsNode := node.ChildByFieldName("arguments"); argsNode != nil {
+		for i := 0; i < int(argsNode.NamedChildCount()); i++ {
+			arg := argsNode.NamedChild(i)
+			te, _ := inferTypeFromExpr(arg, content)
+			argTypes = append(argTypes, te)
+		}
+	}
 	return &VarInitializer{
 		Receiver:   recv,
 		MethodName: name.Content(content),
+		ArgTypes:   argTypes,
 	}
 }
 

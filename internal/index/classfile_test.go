@@ -230,9 +230,9 @@ func TestParseClassFile(t *testing.T) {
 
 func TestDescriptorConversion(t *testing.T) {
 	tests := []struct {
-		desc    string
-		symbol  string
-		simple  string
+		desc   string
+		symbol string
+		simple string
 	}{
 		{"I", "", "int"},
 		{"Z", "", "boolean"},
@@ -720,6 +720,28 @@ func TestIndexClasspathJARs_GenericSignatures(t *testing.T) {
 	}
 	if getDeclType.Sym != "com/example/MyList#[E]" {
 		t.Errorf("DeclTypeOf(get).Sym = %q, want %q", getDeclType.Sym, "com/example/MyList#[E]")
+	}
+
+	// Verify generic parameter type for add(E) is preserved in SignatureInfo.
+	addMembers := idx.MembersOfType("com/example/MyList#")
+	foundAdd := false
+	for _, m := range addMembers {
+		if m.Symbol != "com/example/MyList#add()." {
+			continue
+		}
+		foundAdd = true
+		if m.Signature == nil || len(m.Signature.Params) != 1 {
+			t.Fatalf("add signature params = %+v, want one generic param", m.Signature)
+		}
+		if m.Signature.Params[0].Type != "E" {
+			t.Fatalf("add param type = %q, want %q", m.Signature.Params[0].Type, "E")
+		}
+		if m.Signature.Params[0].TypeSym != "" {
+			t.Fatalf("add param TypeSym = %q, want empty for type variable", m.Signature.Params[0].TypeSym)
+		}
+	}
+	if !foundAdd {
+		t.Fatal("missing add() member")
 	}
 
 	// Verify size() has no declType (primitive return, no generic signature).

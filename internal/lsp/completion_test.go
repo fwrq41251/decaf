@@ -570,6 +570,90 @@ func TestCompleteDot_CustomSAMLambdaParam(t *testing.T) {
 	}
 }
 
+func TestCompleteDot_ListOfStringLambdaParam(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "java/lang/String#", DisplayName: "String", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "java/util/List#", DisplayName: "List", Kind: sdb.SymbolInformation_INTERFACE},
+				{Symbol: "java/util/stream/Stream#", DisplayName: "Stream", Kind: sdb.SymbolInformation_INTERFACE},
+				{Symbol: "java/util/function/Function#", DisplayName: "Function", Kind: sdb.SymbolInformation_INTERFACE},
+			},
+		}},
+	})
+
+	setIndexField(t, idx, "classTypeParams", map[string][]string{
+		"java/util/List#":              {"java/util/List#[E]"},
+		"java/util/stream/Stream#":     {"java/util/stream/Stream#[T]"},
+		"java/util/function/Function#": {"java/util/function/Function#[T]", "java/util/function/Function#[R]"},
+	})
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"java/lang/String#": {
+			{Name: "toLowerCase", Symbol: "java/lang/String#toLowerCase().", Kind: sdb.SymbolInformation_METHOD},
+		},
+		"java/util/List#": {
+			{Name: "of", Symbol: "java/util/List#of().", Kind: sdb.SymbolInformation_METHOD, IsStatic: true},
+			{Name: "stream", Symbol: "java/util/List#stream().", Kind: sdb.SymbolInformation_METHOD},
+		},
+		"java/util/stream/Stream#": {
+			{
+				Name:   "map",
+				Symbol: "java/util/stream/Stream#map().",
+				Kind:   sdb.SymbolInformation_METHOD,
+				Signature: &index.SignatureInfo{
+					Label:     "Stream<R> map(Function<T, R> mapper)",
+					HasParams: true,
+					Params: []index.ParamInfo{
+						{Name: "mapper", Type: "Function<T, R>", TypeSym: "java/util/function/Function#"},
+					},
+				},
+			},
+		},
+	})
+	setIndexField(t, idx, "symbolDeclType", map[string]*index.TypeExpr{
+		"java/util/List#of().": {
+			Sym:  "java/util/List#",
+			Args: []*index.TypeExpr{{Sym: "java/util/List#[E]"}},
+		},
+		"java/util/List#stream().": {
+			Sym:  "java/util/stream/Stream#",
+			Args: []*index.TypeExpr{{Sym: "java/util/List#[E]"}},
+		},
+	})
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"string": {{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS}},
+		"list":   {{Name: "List", Symbol: "java/util/List#", Kind: sdb.SymbolInformation_INTERFACE}},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:     CompletionDot,
+		Receiver: "a",
+		Prefix:   "tol",
+		Locals: []ValueDecl{{
+			Name: "list",
+			Initializer: &VarInitializer{
+				Receiver:   "List",
+				MethodName: "of",
+				ArgTypes:   []*index.TypeExpr{{Sym: "String"}},
+			},
+		}},
+		LambdaParams: []ValueDecl{{Name: "a"}},
+		Call:         &CallContext{Receiver: "list.stream", MethodName: "map", ParamIndex: 0},
+	}
+
+	items := h.completeDot(cctx, "file://"+tmpDir+"/src/Test.java")
+	if len(items) != 1 {
+		t.Fatalf("expected 1 completion item, got %d: %+v", len(items), items)
+	}
+	if items[0].Label != "toLowerCase()" {
+		t.Fatalf("expected String lambda completion from List.of inference, got %+v", items[0])
+	}
+}
+
 func TestResolveIdentifierTypeExpr_LambdaShadowBeatsLocal(t *testing.T) {
 	h, idx, _ := newTestHandler(t)
 	defer idx.Close()
