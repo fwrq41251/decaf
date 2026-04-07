@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/fwrq41251/decaf/internal/bsp"
 	"github.com/fwrq41251/decaf/internal/index"
@@ -102,16 +101,16 @@ func TestLifecycle(t *testing.T) {
 
 func TestDefinition(t *testing.T) {
 	tmpDir := t.TempDir()
-	
+
 	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
 	transport := jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{})
 	h := NewHandler(logger, transport)
-	
+
 	// Mock Index with one workspace definition and one external symbol.
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
 	close(h.indexReady) // signal index is ready for test
-	
+
 	// 1. Workspace symbol
 	docs := &sdb.TextDocuments{
 		Documents: []*sdb.TextDocument{
@@ -135,6 +134,11 @@ func TestDefinition(t *testing.T) {
 						Role:   sdb.SymbolOccurrence_REFERENCE,
 						Range:  &sdb.Range{StartLine: 10, StartCharacter: 8, EndLine: 10, EndCharacter: 12},
 					},
+					{
+						Symbol: "com/example/Lib#",
+						Role:   sdb.SymbolOccurrence_REFERENCE,
+						Range:  &sdb.Range{StartLine: 15, StartCharacter: 5, EndLine: 15, EndCharacter: 8},
+					},
 				},
 			},
 		},
@@ -146,7 +150,7 @@ func TestDefinition(t *testing.T) {
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "Main.java.semanticdb"), data, 0644)
 	idx.Load()
-	
+
 	// 2. External symbol setup (mock JAR)
 	jarPath := filepath.Join(tmpDir, "lib.jar")
 	f, _ := os.Create(jarPath)
@@ -165,7 +169,7 @@ func TestDefinition(t *testing.T) {
 		Position:     Position{Line: 10, Character: 9},
 	}
 	rawParams, _ := json.Marshal(params)
-	
+
 	got, err := h.handleDefinition(context.Background(), rawParams)
 	if err != nil {
 		t.Fatalf("handleDefinition failed: %v", err)
@@ -179,32 +183,12 @@ func TestDefinition(t *testing.T) {
 	}
 
 	// Test case: External definition (using a reference to com/example/Lib# in Main.java)
-	// Add an occurrence for the external symbol in the index.
-	docsExt := &sdb.TextDocuments{
-		Documents: []*sdb.TextDocument{
-			{
-				Uri: "src/Main.java",
-				Occurrences: []*sdb.SymbolOccurrence{
-					{
-						Symbol: "com/example/Lib#",
-						Role:   sdb.SymbolOccurrence_REFERENCE,
-						Range:  &sdb.Range{StartLine: 15, StartCharacter: 5, EndLine: 15, EndCharacter: 8},
-					},
-				},
-			},
-		},
-	}
-	dataExt, _ := proto.Marshal(docsExt)
-	os.WriteFile(filepath.Join(sdbDir, "External.java.semanticdb"), dataExt, 0644)
-	time.Sleep(100 * time.Millisecond) // let watcher pick up the new file
-	idx.Load()                         // Re-load to get the new occurrence.
-
 	paramsExt := TextDocumentPositionParams{
 		TextDocument: TextDocumentIdentifier{URI: "file://" + tmpDir + "/src/Main.java"},
 		Position:     Position{Line: 15, Character: 6},
 	}
 	rawParamsExt, _ := json.Marshal(paramsExt)
-	
+
 	gotExt, err := h.handleDefinition(context.Background(), rawParamsExt)
 	if err != nil {
 		t.Fatalf("handleDefinition failed for external symbol: %v", err)
@@ -222,7 +206,7 @@ func TestPrepareRename(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
 	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	
+
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
 	close(h.indexReady) // signal index is ready for test
@@ -262,15 +246,15 @@ func TestPrepareRename(t *testing.T) {
 		},
 	}
 	rawParamsRef, _ := json.Marshal(paramsRef)
-	
+
 	gotRef, err := h.handlePrepareRename(context.Background(), rawParamsRef)
 	if err != nil {
 		t.Fatalf("handlePrepareRename failed: %v", err)
 	}
-	
+
 	resRef := gotRef.(map[string]any)
 	rngRef := resRef["range"].(Range)
-	
+
 	// Should return the range of the reference (line 10), not the definition (line 2).
 	if rngRef.Start.Line != 10 {
 		t.Errorf("expected range at line 10, got %d", rngRef.Start.Line)
@@ -287,17 +271,73 @@ func TestPrepareRename(t *testing.T) {
 		},
 	}
 	rawParamsDef, _ := json.Marshal(paramsDef)
-	
+
 	gotDef, err := h.handlePrepareRename(context.Background(), rawParamsDef)
 	if err != nil {
 		t.Fatalf("handlePrepareRename failed: %v", err)
 	}
-	
+
 	resDef := gotDef.(map[string]any)
 	rngDef := resDef["range"].(Range)
-	
+
 	if rngDef.Start.Line != 2 {
 		t.Errorf("expected range at line 2, got %d", rngDef.Start.Line)
+	}
+}
+
+func TestHandleBSPTaskFinish_DoesNotReindexOnCompileReport(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+
+	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	h.idx = idx
+
+	if idx.HasFiles() {
+		t.Fatal("expected empty index before test")
+	}
+
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	if err := os.MkdirAll(sdbDir, 0755); err != nil {
+		t.Fatalf("mkdir semanticdb dir: %v", err)
+	}
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{
+			{
+				Uri: "src/Main.java",
+				Occurrences: []*sdb.SymbolOccurrence{
+					{
+						Symbol: "com/example/Main#",
+						Role:   sdb.SymbolOccurrence_DEFINITION,
+						Range:  &sdb.Range{StartLine: 0, StartCharacter: 0, EndLine: 0, EndCharacter: 4},
+					},
+				},
+			},
+		},
+	}
+	data, err := proto.Marshal(docs)
+	if err != nil {
+		t.Fatalf("marshal semanticdb: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sdbDir, "Main.java.semanticdb"), data, 0644); err != nil {
+		t.Fatalf("write semanticdb: %v", err)
+	}
+
+	h.handleBSPTaskFinish(bsp.TaskFinishParams{
+		TaskID:   bsp.TaskID{ID: "compile-1"},
+		Status:   bsp.StatusOK,
+		DataKind: "compile-report",
+	})
+
+	if idx.HasFiles() {
+		t.Fatal("compile-report notification should not reindex on its own")
+	}
+
+	h.reindex()
+	if !idx.HasFiles() {
+		t.Fatal("expected explicit reindex to load semanticdb data")
 	}
 }
 
@@ -955,7 +995,7 @@ func TestDiagnosticsClearing(t *testing.T) {
 
 	// Check output
 	outTransport := jsonrpc.NewTransport(&output, nil)
-	
+
 	// Skip first notification
 	_, err := outTransport.Read()
 	if err != nil {
@@ -1025,7 +1065,7 @@ func TestDiagnosticsMerging(t *testing.T) {
 
 	// Check output
 	outTransport := jsonrpc.NewTransport(&output, nil)
-	
+
 	// Skip first notification (only A)
 	_, _ = outTransport.Read()
 

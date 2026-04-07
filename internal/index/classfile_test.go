@@ -575,6 +575,66 @@ func TestIndexClasspathJARs_MergesWithSemanticDB(t *testing.T) {
 	}
 }
 
+func TestIndexClasspathJARs_PreservesOverloadedMethods(t *testing.T) {
+	tmpDir := t.TempDir()
+	jarPath := filepath.Join(tmpDir, "overloads.jar")
+
+	fooClass := writeClass(t,
+		"com/example/Foo",
+		"java/lang/Object",
+		accPublic,
+		nil,
+		nil,
+		[]classMember{
+			{accPublic, "overload", "()V", ""},
+			{accPublic, "overload", "(I)V", ""},
+		},
+	)
+
+	f, err := os.Create(jarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, _ := zw.Create("com/example/Foo.class")
+	w.Write(fooClass)
+	zw.Close()
+	f.Close()
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	defer idx.Close()
+
+	idx.IndexClasspathJARs([]string{jarPath})
+
+	members := idx.MembersOfType("com/example/Foo#")
+	var overloads []Symbol
+	for _, m := range members {
+		if m.Name == "overload" {
+			overloads = append(overloads, m)
+		}
+	}
+
+	if len(overloads) != 2 {
+		t.Fatalf("expected 2 overload members, got %d: %+v", len(overloads), overloads)
+	}
+
+	want := map[string]bool{
+		"com/example/Foo#overload().":   false,
+		"com/example/Foo#overload(+1).": false,
+	}
+	for _, m := range overloads {
+		if _, ok := want[m.Symbol]; ok {
+			want[m.Symbol] = true
+		}
+	}
+	for sym, seen := range want {
+		if !seen {
+			t.Fatalf("missing overload symbol %q in %+v", sym, overloads)
+		}
+	}
+}
+
 func TestIndexClasspathJARs_StaticFlag(t *testing.T) {
 	tmpDir := t.TempDir()
 	jarPath := filepath.Join(tmpDir, "lib.jar")

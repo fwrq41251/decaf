@@ -349,11 +349,9 @@ func (h *Handler) handleBSPTaskFinish(params bsp.TaskFinishParams) {
 		prog.end(msg)
 	}
 
-	// If this was a compile task, trigger reindex.
-	if params.DataKind == "compile-report" {
-		h.logger.Printf("BSP compile task finished (%s), triggering reindex", params.TaskID.ID)
-		h.reindex()
-	}
+	// Do not reindex on compile-report notifications.
+	// All compile entry points in the handler reindex explicitly after the BSP
+	// compile RPC returns, so reindexing here duplicates work for the same build.
 }
 
 func (h *Handler) logCompileError(msg string, err error) {

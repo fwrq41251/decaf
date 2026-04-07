@@ -233,6 +233,8 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 	var members []memberSymbol
 
 	if includeMembers {
+		methodOverloads := make(map[string]int)
+
 		for _, f := range cf.Fields {
 			if f.AccessFlags&accPublic == 0 && f.AccessFlags&accProtected == 0 {
 				continue
@@ -289,7 +291,13 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 			_, ret := parseMethodDescriptor(m.Descriptor)
 			retSym := descriptorToSymbol(ret)
 
-			methodSym := cf.ThisClass + "#" + m.Name + "()."
+			overloadIndex := methodOverloads[m.Name]
+			methodOverloads[m.Name]++
+			methodSuffix := "()."
+			if overloadIndex > 0 {
+				methodSuffix = fmt.Sprintf("(+%d).", overloadIndex)
+			}
+			methodSym := cf.ThisClass + "#" + m.Name + methodSuffix
 			sig := formatMethodSignature(methodName, m.Descriptor)
 
 			ms := memberSymbol{
@@ -401,10 +409,10 @@ func (idx *Index) mergeLazyClassData(cs classSymbols) {
 
 	existingMembers := make(map[string]struct{})
 	for _, id := range idx.ownerMembers[classSym] {
-		existingMembers[idx.symbol(id).Name] = struct{}{}
+		existingMembers[idx.symbol(id).Symbol] = struct{}{}
 	}
 	for _, m := range cs.members {
-		if _, ok := existingMembers[m.name]; ok {
+		if _, ok := existingMembers[m.sym]; ok {
 			continue
 		}
 		memberSym := idx.intern(m.sym)
@@ -418,6 +426,7 @@ func (idx *Index) mergeLazyClassData(cs classSymbols) {
 		})
 		idx.definitions[memberSym] = append(idx.definitions[memberSym], sid)
 		idx.ownerMembers[classSym] = append(idx.ownerMembers[classSym], sid)
+		existingMembers[m.sym] = struct{}{}
 
 		if m.typeSym != "" {
 			idx.symbolType[memberSym] = m.typeSym

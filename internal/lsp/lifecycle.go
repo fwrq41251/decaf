@@ -215,7 +215,6 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 			prog.report("indexing…", intPtr(90))
 			h.reindex()
 			h.idx.LogStatsSnapshot("after compile + reindex")
-			close(h.indexReady)
 		} else {
 			h.logger.Println("Existing index found, skipping initial full compilation.")
 		}
