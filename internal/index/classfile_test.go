@@ -517,13 +517,14 @@ func TestIndexClasspathJARs_MergesWithSemanticDB(t *testing.T) {
 		Symbol: "com/example/Foo#getValue().",
 		Kind:   sdb.SymbolInformation_METHOD,
 	}
-	idx.ownerMembers["com/example/Foo#"] = []*Symbol{sdbMethod}
-	idx.definitions["com/example/Foo#"] = []*Symbol{{
+	sdbMethodID := idx.addSymbol(*sdbMethod)
+	idx.ownerMembers["com/example/Foo#"] = []SymbolID{sdbMethodID}
+	idx.definitions["com/example/Foo#"] = []SymbolID{idx.addSymbol(Symbol{
 		Name:   "Foo",
 		Symbol: "com/example/Foo#",
 		Kind:   sdb.SymbolInformation_CLASS,
 		URI:    "src/Foo.java",
-	}}
+	})}
 
 	// Build JAR with same class having 3 methods (getValue, setValue, reset).
 	jarPath := filepath.Join(tmpDir, "lib.jar")
@@ -557,15 +558,15 @@ func TestIndexClasspathJARs_MergesWithSemanticDB(t *testing.T) {
 	members := idx.ownerMembers["com/example/Foo#"]
 	if len(members) != 3 {
 		names := make([]string, len(members))
-		for i, m := range members {
-			names[i] = m.Name
+		for i, id := range members {
+			names[i] = idx.symbol(id).Name
 		}
 		t.Fatalf("expected 3 members, got %d: %v", len(members), names)
 	}
 
 	nameSet := make(map[string]bool)
-	for _, m := range members {
-		nameSet[m.Name] = true
+	for _, id := range members {
+		nameSet[idx.symbol(id).Name] = true
 	}
 	for _, want := range []string{"getValue", "setValue", "reset"} {
 		if !nameSet[want] {
@@ -612,7 +613,8 @@ func TestIndexClasspathJARs_StaticFlag(t *testing.T) {
 
 	members := idx.ownerMembers["com/example/Foo#"]
 	staticMap := make(map[string]bool)
-	for _, m := range members {
+	for _, id := range members {
+		m := idx.symbol(id)
 		staticMap[m.Name] = m.IsStatic
 	}
 
@@ -639,13 +641,13 @@ func TestIndexClasspathJARs_ProjectTakesPriority(t *testing.T) {
 	defer idx.Close()
 
 	// Pre-populate with a "project" definition.
-	projectSym := &Symbol{
+	projectSymID := idx.addSymbol(Symbol{
 		Name:   "Foo",
 		Symbol: "com/example/Foo#",
 		Kind:   sdb.SymbolInformation_CLASS,
 		URI:    "src/Foo.java",
-	}
-	idx.definitions["com/example/Foo#"] = []*Symbol{projectSym}
+	})
+	idx.definitions["com/example/Foo#"] = []SymbolID{projectSymID}
 
 	// Build JAR with same class.
 	jarPath := filepath.Join(tmpDir, "lib.jar")
@@ -661,7 +663,7 @@ func TestIndexClasspathJARs_ProjectTakesPriority(t *testing.T) {
 
 	// Should still have the project definition, not replaced.
 	defs := idx.definitions["com/example/Foo#"]
-	if len(defs) != 1 || defs[0].URI != "src/Foo.java" {
+	if len(defs) != 1 || idx.symbol(defs[0]).URI != "src/Foo.java" {
 		t.Errorf("project definition was overwritten: %+v", defs)
 	}
 }

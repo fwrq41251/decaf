@@ -307,7 +307,7 @@ func (idx *Index) LogStatsSnapshot(label string) {
 	modTimes := len(idx.modTimes)
 	sdbToURIs := len(idx.sdbToURIs)
 	indexedJARs := len(idx.indexedJARs)
-	classToJAR := len(idx.classToJAR)
+	classLocations := len(idx.classLocations)
 	fullyIndexedClasses := len(idx.fullyIndexedClasses)
 	externalTypes := len(idx.externalTypeInfo)
 	files := len(idx.fileOccurrences)
@@ -326,8 +326,8 @@ func (idx *Index) LogStatsSnapshot(label string) {
 		symbolType, symbolDeclType, classTypeParams, parentTypes)
 	idx.logger.Printf("index stats: internPool=%d modTimes=%d sdbToURIs=%d",
 		internPool, modTimes, sdbToURIs)
-	idx.logger.Printf("index stats: indexedJARs=%d classToJAR=%d externalTypes=%d fullyIndexedClasses=%d",
-		indexedJARs, classToJAR, externalTypes, fullyIndexedClasses)
+	idx.logger.Printf("index stats: indexedJARs=%d classLocations=%d externalTypes=%d fullyIndexedClasses=%d",
+		indexedJARs, classLocations, externalTypes, fullyIndexedClasses)
 	idx.logger.Printf("mem stats: Alloc=%dMB TotalAlloc=%dMB Sys=%dMB HeapInuse=%dMB HeapIdle=%dMB HeapObjects=%d GCCycles=%d",
 		mem.Alloc/1024/1024,
 		mem.TotalAlloc/1024/1024,
@@ -377,17 +377,17 @@ func (idx *Index) removeFile(path string) {
 func (idx *Index) removeDocument(uri string) {
 	// Collect symbols defined in this document for cleanup.
 	var docSymbols []string
-	for _, s := range idx.fileSymbols[uri] {
-		docSymbols = append(docSymbols, s.Symbol)
+	for _, id := range idx.fileSymbols[uri] {
+		docSymbols = append(docSymbols, idx.symbol(id).Symbol)
 	}
 
 	// Remove definitions belonging to this URI.
 	for _, sym := range docSymbols {
 		if defs, ok := idx.definitions[sym]; ok {
 			filtered := defs[:0]
-			for _, d := range defs {
-				if d.URI != uri {
-					filtered = append(filtered, d)
+			for _, id := range defs {
+				if idx.symbol(id).URI != uri {
+					filtered = append(filtered, id)
 				}
 			}
 			if len(filtered) > 0 {
@@ -400,7 +400,7 @@ func (idx *Index) removeDocument(uri string) {
 
 	// Remove references belonging to this URI using reverse index.
 	if refSyms, ok := idx.uriRefSymbols[uri]; ok {
-		for sym := range refSyms {
+		for _, sym := range refSyms {
 			if refs, ok := idx.references[sym]; ok {
 				filtered := refs[:0]
 				for _, r := range refs {
@@ -454,9 +454,9 @@ func (idx *Index) removeDocument(uri string) {
 	for owner := range ownersToUpdate {
 		if members, ok := idx.ownerMembers[owner]; ok {
 			filtered := members[:0]
-			for _, m := range members {
-				if m.URI != uri {
-					filtered = append(filtered, m)
+			for _, id := range members {
+				if idx.symbol(id).URI != uri {
+					filtered = append(filtered, id)
 				}
 			}
 			if len(filtered) > 0 {
@@ -468,14 +468,15 @@ func (idx *Index) removeDocument(uri string) {
 	}
 
 	// Remove typeBySimpleName entries.
-	for _, s := range idx.fileSymbols[uri] {
+	for _, id := range idx.fileSymbols[uri] {
+		s := idx.symbol(id)
 		if isTypeKind(s.Kind) {
 			name := strings.ToLower(s.Name)
 			if syms, ok := idx.typeBySimpleName[name]; ok {
 				filtered := syms[:0]
-				for _, sym := range syms {
-					if sym.URI != uri {
-						filtered = append(filtered, sym)
+				for _, sid := range syms {
+					if idx.symbol(sid).URI != uri {
+						filtered = append(filtered, sid)
 					}
 				}
 				if len(filtered) > 0 {
@@ -528,7 +529,7 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			displayName = normalizeEnumConstantName(displayName)
 		}
 
-		s := &Symbol{
+		sid := idx.addSymbol(Symbol{
 			Name:       displayName,
 			Symbol:     symStr,
 			Kind:       kind,
@@ -537,7 +538,8 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			Doc:        docStr,
 			IsStatic:   sym.Properties&int32(sdb.SymbolInformation_STATIC) != 0,
 			IsAbstract: sym.Properties&int32(sdb.SymbolInformation_ABSTRACT) != 0,
-		}
+		})
+		s := idx.symbol(sid)
 
 		// For enum constants, override the signature to field-style (name: Type)
 		// instead of method-style with parameters.
@@ -547,18 +549,18 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 				s.Signature = &SignatureInfo{Label: fmt.Sprintf("%s: %s", displayName, typeName)}
 			}
 		}
-		idx.definitions[symStr] = append(idx.definitions[symStr], s)
-		idx.fileSymbols[uri] = append(idx.fileSymbols[uri], s)
+		idx.definitions[symStr] = append(idx.definitions[symStr], sid)
+		idx.fileSymbols[uri] = append(idx.fileSymbols[uri], sid)
 
 		// Build typeBySimpleName index.
 		if isTypeKind(sym.Kind) {
 			name := strings.ToLower(sym.DisplayName)
-			idx.typeBySimpleName[name] = append(idx.typeBySimpleName[name], s)
+			idx.typeBySimpleName[name] = append(idx.typeBySimpleName[name], sid)
 		}
 
 		// Build ownerMembers: extract owner type from symbol string.
 		if owner != "" {
-			idx.ownerMembers[owner] = append(idx.ownerMembers[owner], s)
+			idx.ownerMembers[owner] = append(idx.ownerMembers[owner], sid)
 		}
 
 		// Extract type information from signature for completion.
@@ -619,7 +621,8 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 		if occ.Role == sdb.SymbolOccurrence_DEFINITION {
 			// Update the definition's range if we have it from occurrences.
 			if defs, ok := idx.definitions[occSym]; ok {
-				for _, d := range defs {
+				for _, id := range defs {
+					d := idx.symbol(id)
 					if d.URI == uri && d.Range.IsEmpty() {
 						d.Range = FromSDB(occ.Range)
 					}
@@ -627,10 +630,17 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			}
 		} else {
 			idx.references[occSym] = append(idx.references[occSym], o)
-			if idx.uriRefSymbols[uri] == nil {
-				idx.uriRefSymbols[uri] = make(map[string]struct{})
+			refSyms := idx.uriRefSymbols[uri]
+			seen := false
+			for _, sym := range refSyms {
+				if sym == occSym {
+					seen = true
+					break
+				}
 			}
-			idx.uriRefSymbols[uri][occSym] = struct{}{}
+			if !seen {
+				idx.uriRefSymbols[uri] = append(refSyms, occSym)
+			}
 		}
 
 		idx.fileOccurrences[uri] = append(idx.fileOccurrences[uri], o)

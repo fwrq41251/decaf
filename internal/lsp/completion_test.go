@@ -1091,5 +1091,20 @@ func setIndexField(t *testing.T, idx *index.Index, field string, value any) {
 	if !v.IsValid() {
 		t.Fatalf("field %s not found", field)
 	}
+	switch typed := value.(type) {
+	case map[string][]*index.Symbol:
+		converted := make(map[string][]index.SymbolID, len(typed))
+		for key, syms := range typed {
+			ids := make([]index.SymbolID, len(syms))
+			for i, sym := range syms {
+				if sym == nil {
+					continue
+				}
+				ids[i] = idx.AddSymbolForTest(*sym)
+			}
+			converted[key] = ids
+		}
+		value = converted
+	}
 	reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem().Set(reflect.ValueOf(value))
 }

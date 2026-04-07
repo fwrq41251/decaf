@@ -44,9 +44,10 @@ func setOwnerMemberSignature(t *testing.T, idx *index.Index, owner, memberName, 
 
 	v := reflect.ValueOf(idx).Elem().FieldByName("ownerMembers")
 	membersValue := reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem()
-	members := membersValue.Interface().(map[string][]*index.Symbol)
+	members := membersValue.Interface().(map[string][]index.SymbolID)
 
-	for _, member := range members[owner] {
+	for _, id := range members[owner] {
+		member := idx.SymbolForTest(id)
 		if member.Name == memberName {
 			member.Signature = &index.SignatureInfo{Label: label, HasParams: hasParams}
 			return

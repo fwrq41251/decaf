@@ -32,7 +32,7 @@ func (idx *Index) Definition(uri string, line, character int) []Symbol {
 
 	// If it's an internal symbol with definitions that have source locations, return them.
 	if len(defs) > 0 {
-		result := deduplicateSymbols(copySymbols(defs))
+		result := deduplicateSymbols(copySymbols(idx, defs))
 		// Only return results if at least one symbol has a valid range.
 		// ClassIndexer may have added symbols to definitions without ranges
 		// for completion/hover support; these should not block external resolution.
@@ -97,7 +97,7 @@ func (idx *Index) Hover(uri string, line, character int) *Symbol {
 
 	defs := idx.definitions[sym]
 	if len(defs) > 0 {
-		result := *defs[0]
+		result := *idx.symbol(defs[0])
 		idx.mu.RUnlock()
 		return &result
 	}
@@ -117,7 +117,7 @@ func (idx *Index) FileSymbols(uri string) []Symbol {
 	defer idx.mu.RUnlock()
 
 	relURI := idx.toRelativeURI(uri)
-	return copySymbols(idx.fileSymbols[relURI])
+	return copySymbols(idx, idx.fileSymbols[relURI])
 }
 
 // symbolAt returns the SemanticDB symbol string at the given position.
@@ -169,8 +169,8 @@ func (idx *Index) AllSymbols() []Symbol {
 
 	var result []Symbol
 	for _, defs := range idx.definitions {
-		for _, d := range defs {
-			result = append(result, *d)
+		for _, id := range defs {
+			result = append(result, *idx.symbol(id))
 		}
 	}
 	for sym, info := range idx.externalTypeInfo {
@@ -204,7 +204,8 @@ func (idx *Index) SearchSymbols(query string) []Symbol {
 	query = strings.ToLower(query)
 	var result []Symbol
 	for _, defs := range idx.definitions {
-		for _, d := range defs {
+		for _, id := range defs {
+			d := idx.symbol(id)
 			if strings.Contains(strings.ToLower(d.Name), query) {
 				result = append(result, *d)
 			}
@@ -235,7 +236,8 @@ func (idx *Index) CompletionSymbols(uri string, query string) []Symbol {
 	var sameFileTypes, sameFileOther []Symbol
 	var otherTypes, otherOther []Symbol
 	for _, defs := range idx.definitions {
-		for _, d := range defs {
+		for _, id := range defs {
+			d := idx.symbol(id)
 			if !FuzzyMatch(d.Name, query) {
 				continue
 			}
@@ -321,8 +323,8 @@ func (idx *Index) SymbolSignatures(uri string, line, character int) []Symbol {
 	defs := idx.definitions[sym]
 	if len(defs) > 0 {
 		result := make([]Symbol, len(defs))
-		for i, d := range defs {
-			result[i] = *d
+		for i, id := range defs {
+			result[i] = *idx.symbol(id)
 		}
 		idx.mu.RUnlock()
 		return result
@@ -351,7 +353,8 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 	var result []Occurrence
 
 	// Collect definition occurrences.
-	for _, d := range idx.definitions[sym] {
+	for _, id := range idx.definitions[sym] {
+		d := idx.symbol(id)
 		if !d.Range.IsEmpty() {
 			result = append(result, Occurrence{
 				Symbol: d.Symbol,
@@ -431,7 +434,7 @@ func (idx *Index) SymbolDefinition(sym string) *Symbol {
 
 	defs := idx.definitions[sym]
 	if len(defs) > 0 {
-		s := *defs[0]
+		s := *idx.symbol(defs[0])
 		return &s
 	}
 	if info, ok := idx.externalTypeInfo[sym]; ok {
@@ -479,8 +482,8 @@ func (idx *Index) Implementations(uri string, line, character int) []Symbol {
 	var result []Symbol
 	for _, implSym := range implSymbols {
 		if defs, ok := idx.definitions[implSym]; ok {
-			for _, d := range defs {
-				result = append(result, *d)
+			for _, id := range defs {
+				result = append(result, *idx.symbol(id))
 			}
 		}
 	}
@@ -498,8 +501,8 @@ func (idx *Index) DirectMembersOfType(typeSym string) []Symbol {
 		return nil
 	}
 	result := make([]Symbol, len(members))
-	for i, m := range members {
-		result[i] = *m
+	for i, id := range members {
+		result[i] = *idx.symbol(id)
 	}
 	return result
 }
@@ -523,8 +526,8 @@ func (idx *Index) collectMembers(typeSym string, seen map[string]struct{}, resul
 	}
 	seen[typeSym] = struct{}{}
 
-	for _, m := range idx.ownerMembers[typeSym] {
-		*result = append(*result, *m)
+	for _, id := range idx.ownerMembers[typeSym] {
+		*result = append(*result, *idx.symbol(id))
 	}
 
 	// Recurse into parent types for inherited members.
@@ -574,7 +577,8 @@ func (idx *Index) TypeBySimpleName(name string) []Symbol {
 	lowerName := strings.ToLower(name)
 	var result []Symbol
 	seen := make(map[string]struct{})
-	for _, d := range idx.typeBySimpleName[lowerName] {
+	for _, id := range idx.typeBySimpleName[lowerName] {
+		d := idx.symbol(id)
 		result = append(result, *d)
 		seen[d.Symbol] = struct{}{}
 	}
@@ -658,13 +662,13 @@ func containsPosition(r Range, line, character int) bool {
 	return true
 }
 
-func copySymbols(ptrs []*Symbol) []Symbol {
-	if len(ptrs) == 0 {
+func copySymbols(idx *Index, ids []SymbolID) []Symbol {
+	if len(ids) == 0 {
 		return nil
 	}
-	out := make([]Symbol, len(ptrs))
-	for i, p := range ptrs {
-		out[i] = *p
+	out := make([]Symbol, len(ids))
+	for i, id := range ids {
+		out[i] = *idx.symbol(id)
 	}
 	return out
 }

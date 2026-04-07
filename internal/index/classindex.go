@@ -344,8 +344,10 @@ func (idx *Index) mergeTypeDirectoryEntry(cs classSymbols) bool {
 
 	// Store lazy indexing info.
 	if cs.jarPath != "" {
-		idx.classToJAR[classSym] = cs.jarPath
-		idx.classToEntryName[classSym] = cs.entryName
+		idx.classLocations[classSym] = classLocation{
+			jarPath:   cs.jarPath,
+			entryName: cs.entryName,
+		}
 	}
 
 	// If the class is already defined (e.g. from SemanticDB), keep the
@@ -398,24 +400,24 @@ func (idx *Index) mergeLazyClassData(cs classSymbols) {
 	}
 
 	existingMembers := make(map[string]struct{})
-	for _, m := range idx.ownerMembers[classSym] {
-		existingMembers[m.Name] = struct{}{}
+	for _, id := range idx.ownerMembers[classSym] {
+		existingMembers[idx.symbol(id).Name] = struct{}{}
 	}
 	for _, m := range cs.members {
 		if _, ok := existingMembers[m.name]; ok {
 			continue
 		}
 		memberSym := idx.intern(m.sym)
-		ms := &Symbol{
+		sid := idx.addSymbol(Symbol{
 			Name:       m.name,
 			Symbol:     memberSym,
 			Kind:       m.kind,
 			Signature:  m.signature,
 			IsStatic:   m.isStatic,
 			IsAbstract: m.isAbstract,
-		}
-		idx.definitions[memberSym] = append(idx.definitions[memberSym], ms)
-		idx.ownerMembers[classSym] = append(idx.ownerMembers[classSym], ms)
+		})
+		idx.definitions[memberSym] = append(idx.definitions[memberSym], sid)
+		idx.ownerMembers[classSym] = append(idx.ownerMembers[classSym], sid)
 
 		if m.typeSym != "" {
 			idx.symbolType[memberSym] = m.typeSym
@@ -441,16 +443,15 @@ func (idx *Index) ensureMembersIndexed(classSym string) {
 		idx.mu.RUnlock()
 		return
 	}
-	jarPath, ok := idx.classToJAR[classSym]
-	entryName := idx.classToEntryName[classSym]
+	loc, ok := idx.classLocations[classSym]
 	idx.mu.RUnlock()
 
-	if !ok || jarPath == "" {
+	if !ok || loc.jarPath == "" {
 		return
 	}
 
 	// Perform I/O outside the lock.
-	cs, err := idx.indexClassMembers(jarPath, entryName)
+	cs, err := idx.indexClassMembers(loc.jarPath, loc.entryName)
 	if err != nil || cs == nil {
 		return
 	}
@@ -472,15 +473,14 @@ func (idx *Index) ensureClassSkeletonIndexed(classSym string) {
 		idx.mu.RUnlock()
 		return
 	}
-	jarPath, ok := idx.classToJAR[classSym]
-	entryName := idx.classToEntryName[classSym]
+	loc, ok := idx.classLocations[classSym]
 	idx.mu.RUnlock()
 
-	if !ok || jarPath == "" {
+	if !ok || loc.jarPath == "" {
 		return
 	}
 
-	cs, err := idx.indexClassSkeleton(jarPath, entryName)
+	cs, err := idx.indexClassSkeleton(loc.jarPath, loc.entryName)
 	if err != nil || cs == nil {
 		return
 	}

@@ -143,6 +143,8 @@ type Symbol struct {
 	SameFile   bool
 }
 
+type SymbolID int
+
 // Occurrence represents a symbol occurrence (reference or definition).
 type Occurrence struct {
 	Symbol string

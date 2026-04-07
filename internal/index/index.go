@@ -15,27 +15,29 @@ type Index struct {
 	logger     *log.Logger
 	sourceRoot string // workspace root (file path, not URI)
 
+	// central symbol storage; secondary indexes keep SymbolIDs into this slice
+	symbols []Symbol
 	// symbol string -> list of definition locations
-	definitions map[string][]*Symbol
+	definitions map[string][]SymbolID
 	// symbol string -> list of reference occurrences
 	references map[string][]Occurrence
 	// uri -> all occurrences in that file (for position-based lookups)
 	fileOccurrences map[string][]Occurrence
 	// uri -> all symbol infos in that file
-	fileSymbols map[string][]*Symbol
+	fileSymbols map[string][]SymbolID
 	// parent symbol -> list of child symbols that extend/implement it
 	implementors map[string][]string
 
 	// Reverse indexes for efficient removeDocument.
-	// uri -> set of symbols whose references appear in that file
-	uriRefSymbols map[string]map[string]struct{}
+	// uri -> unique symbols whose references appear in that file
+	uriRefSymbols map[string][]string
 	// child symbol -> list of parent symbols it implements/extends
 	childToParents map[string][]string
 	// simple name (lowercase) -> list of matching type symbols
-	typeBySimpleName map[string][]*Symbol
+	typeBySimpleName map[string][]SymbolID
 	// ownerMembers maps a type symbol to its direct member definitions.
 	// e.g. "com/example/Foo#" → [bar, baz, ...]
-	ownerMembers map[string][]*Symbol
+	ownerMembers map[string][]SymbolID
 	// symbolType maps a symbol to its type's SemanticDB symbol string.
 	// For fields/params: the declared type. For methods: the return type.
 	// e.g. "com/example/Foo#items." → "java/util/List#"
@@ -80,10 +82,8 @@ type Index struct {
 	externalTypesBySimpleName map[string][]string
 
 	// Lazy indexing state for third-party classes.
-	// class symbol -> path to JAR/jmod containing it
-	classToJAR map[string]string
-	// class symbol -> entry name within the JAR (e.g. "java/util/ArrayList.class")
-	classToEntryName map[string]string
+	// class symbol -> JAR/jmod path and entry name for lazy loading
+	classLocations map[string]classLocation
 	// set of class symbols whose hierarchy/type-parameter skeleton has been indexed
 	skeletonIndexedClasses map[string]struct{}
 	// set of class symbols whose members have been indexed
@@ -95,20 +95,25 @@ type externalTypeInfo struct {
 	kind sdb.SymbolInformation_Kind
 }
 
+type classLocation struct {
+	jarPath   string
+	entryName string
+}
+
 // NewIndex creates a new empty index.
 func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 	return &Index{
 		logger:                    logger,
 		sourceRoot:                sourceRoot,
-		definitions:               make(map[string][]*Symbol),
+		definitions:               make(map[string][]SymbolID),
 		references:                make(map[string][]Occurrence),
 		fileOccurrences:           make(map[string][]Occurrence),
-		fileSymbols:               make(map[string][]*Symbol),
+		fileSymbols:               make(map[string][]SymbolID),
 		implementors:              make(map[string][]string),
-		uriRefSymbols:             make(map[string]map[string]struct{}),
+		uriRefSymbols:             make(map[string][]string),
 		childToParents:            make(map[string][]string),
-		typeBySimpleName:          make(map[string][]*Symbol),
-		ownerMembers:              make(map[string][]*Symbol),
+		typeBySimpleName:          make(map[string][]SymbolID),
+		ownerMembers:              make(map[string][]SymbolID),
 		symbolType:                make(map[string]string),
 		symbolDeclType:            make(map[string]*TypeExpr),
 		classTypeParams:           make(map[string][]string),
@@ -121,11 +126,19 @@ func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 		indexedJARs:               make(map[string]struct{}),
 		externalTypeInfo:          make(map[string]externalTypeInfo),
 		externalTypesBySimpleName: make(map[string][]string),
-		classToJAR:                make(map[string]string),
-		classToEntryName:          make(map[string]string),
+		classLocations:            make(map[string]classLocation),
 		skeletonIndexedClasses:    make(map[string]struct{}),
 		fullyIndexedClasses:       make(map[string]struct{}),
 	}
+}
+
+func (idx *Index) addSymbol(s Symbol) SymbolID {
+	idx.symbols = append(idx.symbols, s)
+	return SymbolID(len(idx.symbols) - 1)
+}
+
+func (idx *Index) symbol(id SymbolID) *Symbol {
+	return &idx.symbols[int(id)]
 }
 
 // SetDependencySources sets the list of third-party library source JARs.
