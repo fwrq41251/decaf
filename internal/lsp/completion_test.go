@@ -716,6 +716,375 @@ func TestCompleteLexical_OuterLambdaCaptureVisible(t *testing.T) {
 	}
 }
 
+func TestResolveStaticMemberType_Structured(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	// Mock data: a class with a static method that returns another class.
+	// We deliberately use a misleading Label "WrongType assertThat(Object actual)"
+	// but set ReturnTypeSym to the correct "org/assertj/core/api/AbstractAssert#".
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"org/assertj/core/api/Assertions#": {
+			{
+				Name:     "assertThat",
+				Symbol:   "org/assertj/core/api/Assertions#assertThat().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+				Signature: &index.SignatureInfo{
+					Label:         "WrongType assertThat(Object actual)",
+					ReturnTypeSym: "org/assertj/core/api/AbstractAssert#",
+					HasParams:     true,
+				},
+			},
+		},
+		"org/assertj/core/api/AbstractAssert#": {
+			{
+				Name:   "isNotNull",
+				Symbol: "org/assertj/core/api/AbstractAssert#isNotNull().",
+				Kind:   sdb.SymbolInformation_METHOD,
+			},
+		},
+	})
+
+	resolver := &typeResolver{idx: h.idx}
+	te := h.resolveStaticMemberType("org/assertj/core/api/Assertions#", "assertThat", resolver)
+
+	if te == nil {
+		t.Fatal("failed to resolve static member type")
+	}
+	if te.Sym != "org/assertj/core/api/AbstractAssert#" {
+		t.Errorf("resolved type = %q, want %q (should use ReturnTypeSym, not Label)", te.Sym, "org/assertj/core/api/AbstractAssert#")
+	}
+}
+
+func TestCompleteLexical_StaticImport(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"org/assertj/core/api/Assertions#": {
+			{
+				Name:     "assertThat",
+				Symbol:   "org/assertj/core/api/Assertions#assertThat().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+				Signature: &index.SignatureInfo{
+					Label:     "AbstractAssert assertThat(Object actual)",
+					HasParams: true,
+					Params:    []index.ParamInfo{{Name: "actual", Type: "Object"}},
+				},
+			},
+			{
+				Name:     "assertThatCode",
+				Symbol:   "org/assertj/core/api/Assertions#assertThatCode().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+			},
+			{
+				Name:   "instanceMethod",
+				Symbol: "org/assertj/core/api/Assertions#instanceMethod().",
+				Kind:   sdb.SymbolInformation_METHOD,
+			},
+		},
+	})
+
+	items := h.completeLexical(&CompletionCtx{
+		Prefix: "assert",
+		Imports: []ImportSpec{
+			{Path: "org.assertj.core.api.Assertions.assertThat", Static: true},
+		},
+	}, "", nil)
+
+	found := false
+	for _, item := range items {
+		if item.FilterText == "assertThat" {
+			found = true
+			break
+		}
+		// Instance methods should not appear.
+		if item.FilterText == "instanceMethod" {
+			t.Fatal("instance method should not appear from static import")
+		}
+	}
+	if !found {
+		t.Fatalf("expected assertThat from static import, got %+v", items)
+	}
+}
+
+func TestCompleteLexical_WildcardStaticImport(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"org/junit/jupiter/api/Assertions#": {
+			{
+				Name:     "assertEquals",
+				Symbol:   "org/junit/jupiter/api/Assertions#assertEquals().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+				Signature: &index.SignatureInfo{
+					Label:     "void assertEquals(Object expected, Object actual)",
+					HasParams: true,
+					Params: []index.ParamInfo{
+						{Name: "expected", Type: "Object"},
+						{Name: "actual", Type: "Object"},
+					},
+				},
+			},
+			{
+				Name:     "assertTrue",
+				Symbol:   "org/junit/jupiter/api/Assertions#assertTrue().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+			},
+			{
+				Name:   "notStatic",
+				Symbol: "org/junit/jupiter/api/Assertions#notStatic().",
+				Kind:   sdb.SymbolInformation_METHOD,
+			},
+		},
+	})
+
+	items := h.completeLexical(&CompletionCtx{
+		Prefix: "assert",
+		Imports: []ImportSpec{
+			{Path: "org.junit.jupiter.api.Assertions.*", Static: true, Wildcard: true},
+		},
+	}, "", nil)
+
+	foundEquals := false
+	foundTrue := false
+	for _, item := range items {
+		if item.FilterText == "assertEquals" {
+			foundEquals = true
+		}
+		if item.FilterText == "assertTrue" {
+			foundTrue = true
+		}
+		if item.FilterText == "notStatic" {
+			t.Fatal("instance method should not appear from wildcard static import")
+		}
+	}
+	if !foundEquals {
+		t.Fatalf("expected assertEquals from wildcard static import, got %+v", items)
+	}
+	if !foundTrue {
+		t.Fatalf("expected assertTrue from wildcard static import, got %+v", items)
+	}
+}
+
+func TestCompleteDot_StaticImportChainedCall(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "org/assertj/core/api/Assertions#", DisplayName: "Assertions", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "org/assertj/core/api/AbstractAssert#", DisplayName: "AbstractAssert", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"org/assertj/core/api/Assertions#": {
+			{
+				Name:     "assertThat",
+				Symbol:   "org/assertj/core/api/Assertions#assertThat().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+				Signature: &index.SignatureInfo{
+					Label:     "AbstractAssert assertThat(Object actual)",
+					HasParams: true,
+					Params:    []index.ParamInfo{{Name: "actual", Type: "Object"}},
+				},
+			},
+		},
+		"org/assertj/core/api/AbstractAssert#": {
+			{
+				Name:   "isEqualTo",
+				Symbol: "org/assertj/core/api/AbstractAssert#isEqualTo().",
+				Kind:   sdb.SymbolInformation_METHOD,
+				Signature: &index.SignatureInfo{
+					Label:     "AbstractAssert isEqualTo(Object expected)",
+					HasParams: true,
+					Params:    []index.ParamInfo{{Name: "expected", Type: "Object"}},
+				},
+			},
+			{
+				Name:   "isNotNull",
+				Symbol: "org/assertj/core/api/AbstractAssert#isNotNull().",
+				Kind:   sdb.SymbolInformation_METHOD,
+			},
+		},
+	})
+	setIndexField(t, idx, "symbolDeclType", map[string]*index.TypeExpr{
+		"org/assertj/core/api/Assertions#assertThat().": {Sym: "org/assertj/core/api/AbstractAssert#"},
+	})
+
+	// Simulate: assertThat(firstAdjustment).is|
+	cctx := &CompletionCtx{
+		Kind:     CompletionDot,
+		Receiver: "assertThat",
+		Prefix:   "is",
+		Imports: []ImportSpec{
+			{Path: "org.assertj.core.api.Assertions.assertThat", Static: true},
+		},
+	}
+
+	items := h.completeDot(cctx, "file://"+tmpDir+"/src/Test.java")
+
+	foundIsEqualTo := false
+	foundIsNotNull := false
+	for _, item := range items {
+		if item.FilterText == "isEqualTo" {
+			foundIsEqualTo = true
+		}
+		if item.FilterText == "isNotNull" {
+			foundIsNotNull = true
+		}
+	}
+	if !foundIsEqualTo {
+		t.Fatalf("expected isEqualTo from assertThat() return type, got %+v", items)
+	}
+	if !foundIsNotNull {
+		t.Fatalf("expected isNotNull from assertThat() return type, got %+v", items)
+	}
+}
+
+func TestCompleteDot_StaticImportChainedCall_SkipsEmptyOverload(t *testing.T) {
+	// Simulates real assertThat() scenario: first overload returns AssertDelegateTarget (no members),
+	// second overload's DeclTypeOf returns a type parameter, but its Signature.Label has the useful
+	// return type. The code should skip overloads with no members and find the right one.
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "org/assertj/core/api/Assertions#", DisplayName: "Assertions", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "org/assertj/core/api/AssertDelegateTarget#", DisplayName: "AssertDelegateTarget", Kind: sdb.SymbolInformation_INTERFACE},
+				{Symbol: "org/assertj/core/api/AbstractAssert#", DisplayName: "AbstractAssert", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"org/assertj/core/api/Assertions#": {
+			// Single assertThat entry: TypeOfSymbol returns AssertDelegateTarget (no members),
+			// but Signature.Label has AbstractAssert (has members).
+			{
+				Name:     "assertThat",
+				Symbol:   "org/assertj/core/api/Assertions#assertThat().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+				Signature: &index.SignatureInfo{
+					Label:     "AbstractAssert assertThat(Object actual)",
+					HasParams: true,
+					Params:    []index.ParamInfo{{Name: "actual", Type: "Object"}},
+				},
+			},
+		},
+		// AssertDelegateTarget has no members.
+		"org/assertj/core/api/AbstractAssert#": {
+			{
+				Name:   "isEqualTo",
+				Symbol: "org/assertj/core/api/AbstractAssert#isEqualTo().",
+				Kind:   sdb.SymbolInformation_METHOD,
+			},
+		},
+	})
+	setIndexField(t, idx, "symbolType", map[string]string{
+		"org/assertj/core/api/Assertions#assertThat().": "org/assertj/core/api/AssertDelegateTarget#",
+	})
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"abstractassert": {{Name: "AbstractAssert", Symbol: "org/assertj/core/api/AbstractAssert#", Kind: sdb.SymbolInformation_CLASS}},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:     CompletionDot,
+		Receiver: "assertThat",
+		Prefix:   "is",
+		Imports: []ImportSpec{
+			{Path: "org.assertj.core.api.Assertions.assertThat", Static: true},
+		},
+	}
+
+	items := h.completeDot(cctx, "file://"+tmpDir+"/src/Test.java")
+
+	found := false
+	for _, item := range items {
+		if item.FilterText == "isEqualTo" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected isEqualTo after skipping overload with no members, got %+v", items)
+	}
+}
+
+func TestCompleteDot_WildcardStaticImportChainedCall(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "org/mockito/Mockito#", DisplayName: "Mockito", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "org/mockito/stubbing/OngoingStubbing#", DisplayName: "OngoingStubbing", Kind: sdb.SymbolInformation_INTERFACE},
+			},
+		}},
+	})
+
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"org/mockito/Mockito#": {
+			{
+				Name:     "when",
+				Symbol:   "org/mockito/Mockito#when().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+			},
+		},
+		"org/mockito/stubbing/OngoingStubbing#": {
+			{
+				Name:   "thenReturn",
+				Symbol: "org/mockito/stubbing/OngoingStubbing#thenReturn().",
+				Kind:   sdb.SymbolInformation_METHOD,
+			},
+		},
+	})
+	setIndexField(t, idx, "symbolDeclType", map[string]*index.TypeExpr{
+		"org/mockito/Mockito#when().": {Sym: "org/mockito/stubbing/OngoingStubbing#"},
+	})
+
+	// Simulate: when(mock.call()).then|
+	cctx := &CompletionCtx{
+		Kind:     CompletionDot,
+		Receiver: "when",
+		Prefix:   "then",
+		Imports: []ImportSpec{
+			{Path: "org.mockito.Mockito.*", Static: true, Wildcard: true},
+		},
+	}
+
+	items := h.completeDot(cctx, "file://"+tmpDir+"/src/Test.java")
+
+	found := false
+	for _, item := range items {
+		if item.FilterText == "thenReturn" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected thenReturn from when() return type via wildcard static import, got %+v", items)
+	}
+}
+
 func setIndexField(t *testing.T, idx *index.Index, field string, value any) {
 	t.Helper()
 	v := reflect.ValueOf(idx).Elem().FieldByName(field)

@@ -16,9 +16,10 @@ type ParamInfo struct {
 }
 
 type SignatureInfo struct {
-	Label     string // formatted signature, e.g. "void main(String[] args)"
-	HasParams bool   // true if method has parameters (for snippet generation)
-	Params    []ParamInfo
+	Label         string // formatted signature, e.g. "void main(String[] args)"
+	ReturnTypeSym string // symbol of the return type (for structured resolution)
+	HasParams     bool   // true if method has parameters (for snippet generation)
+	Params        []ParamInfo
 }
 
 func (p ParamInfo) Label() string {

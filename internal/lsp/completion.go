@@ -54,9 +54,9 @@ func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) 
 	}
 	sortCompletionItems(items)
 
-	h.logger.Printf("completion at %s:%d:%d kind=%d prefix=%q receiver=%q -> %d items",
+	h.logger.Printf("completion at %s:%d:%d kind=%d prefix=%q receiver=%q imports=%d staticImports=%d -> %d items",
 		p.TextDocument.URI, p.Position.Line, p.Position.Character,
-		cctx.Kind, cctx.Prefix, cctx.Receiver, len(items))
+		cctx.Kind, cctx.Prefix, cctx.Receiver, len(cctx.Imports), countStaticImports(cctx.Imports), len(items))
 	return CompletionList{IsIncomplete: len(items) >= 100, Items: items}, nil
 }
 
@@ -68,8 +68,10 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 	// Also track whether this is a static access (e.g. "Objects.") vs instance access (e.g. "obj.").
 	typeExpr, staticAccess := h.resolveReceiverTypeExpr(cctx, resolver)
 	if typeExpr == nil {
+		h.logger.Printf("completeDot: receiver=%q resolved to nil, falling back", cctx.Receiver)
 		return h.completeDotFallback(cctx)
 	}
+	h.logger.Printf("completeDot: receiver=%q resolved to type=%s static=%v", cctx.Receiver, typeExpr.Sym, staticAccess)
 
 	// Get members of the resolved type.
 	members := h.idx.MembersOfType(typeExpr.Sym)
@@ -318,7 +320,115 @@ func (h *Handler) resolveIdentifierTypeExpr(name string, cctx *CompletionCtx, re
 	if sym := resolver.resolve(name); sym != "" {
 		return &index.TypeExpr{Sym: sym}, true
 	}
+	// Maybe it's a statically imported method/field.
+	if te := h.resolveStaticImportType(name, cctx.Imports, resolver); te != nil {
+		return te, false
+	}
 	return nil, false
+}
+
+// resolveStaticImportType resolves the return type of a statically imported method or
+// the type of a statically imported field. For example, with
+// "import static org.assertj.core.api.Assertions.assertThat", resolving "assertThat"
+// returns the return type of Assertions.assertThat().
+func (h *Handler) resolveStaticImportType(name string, imports []ImportSpec, resolver *typeResolver) *index.TypeExpr {
+	h.logger.Printf("resolveStaticImportType: looking for %q in %d imports", name, len(imports))
+	for _, imp := range imports {
+		if !imp.Static {
+			continue
+		}
+		if imp.Wildcard {
+			// Wildcard: resolve the class and search all static members.
+			classFQN := strings.TrimSuffix(imp.Path, ".*")
+			classSym := resolver.resolve(simpleNameFromFQN(classFQN))
+			if classSym == "" {
+				classSym = fqnToSymbol(classFQN)
+			}
+			h.logger.Printf("resolveStaticImportType: wildcard import %q -> classSym=%s", imp.Path, classSym)
+			if te := h.resolveStaticMemberType(classSym, name, resolver); te != nil {
+				h.logger.Printf("resolveStaticImportType: resolved %q -> %s", name, te.Sym)
+				return te
+			}
+		} else {
+			// Specific: check if the last segment matches the name.
+			lastDot := strings.LastIndex(imp.Path, ".")
+			if lastDot < 0 || imp.Path[lastDot+1:] != name {
+				continue
+			}
+			classFQN := imp.Path[:lastDot]
+			classSym := resolver.resolve(simpleNameFromFQN(classFQN))
+			if classSym == "" {
+				classSym = fqnToSymbol(classFQN)
+			}
+			h.logger.Printf("resolveStaticImportType: specific import %q -> classSym=%s", imp.Path, classSym)
+			if te := h.resolveStaticMemberType(classSym, name, resolver); te != nil {
+				h.logger.Printf("resolveStaticImportType: resolved %q -> %s", name, te.Sym)
+				return te
+			}
+		}
+	}
+	h.logger.Printf("resolveStaticImportType: %q not resolved", name)
+	return nil
+}
+
+// resolveStaticMemberType finds a static member by name on the given class and returns its type.
+// Because a method may have many overloads (e.g. assertThat has 30+), and the first overload's
+// return type may not have useful members, this tries all overloads and prefers the one whose
+// return type actually has indexed members.
+func (h *Handler) resolveStaticMemberType(classSym, memberName string, resolver *typeResolver) *index.TypeExpr {
+	members := h.idx.MembersOfType(classSym)
+	h.logger.Printf("resolveStaticMemberType: classSym=%s memberName=%q totalMembers=%d", classSym, memberName, len(members))
+
+	var firstCandidate *index.TypeExpr
+	for _, m := range members {
+		if m.Name != memberName || !m.IsStatic {
+			continue
+		}
+
+		// Collect all candidate return types from different sources for this overload.
+		var candidates []*index.TypeExpr
+		if retType := h.idx.DeclTypeOf(m.Symbol); retType != nil && !isTypeParamSymbol(retType.Sym) {
+			candidates = append(candidates, retType)
+		}
+		if sym := h.idx.TypeOfSymbol(m.Symbol); sym != "" && !isTypeParamSymbol(sym) {
+			candidates = append(candidates, &index.TypeExpr{Sym: sym})
+		}
+		if m.Signature != nil {
+			// 1. Structured symbol (most accurate)
+			if m.Signature.ReturnTypeSym != "" && !isTypeParamSymbol(m.Signature.ReturnTypeSym) {
+				candidates = append(candidates, &index.TypeExpr{Sym: m.Signature.ReturnTypeSym})
+			}
+			// 2. Heuristic from label (fallback)
+			retTypeName := returnTypeFromMethodLabel(m.Signature.Label)
+			if retTypeName != "" {
+				baseName := retTypeName
+				if ltIdx := strings.IndexByte(baseName, '<'); ltIdx > 0 {
+					baseName = baseName[:ltIdx]
+				}
+				if sym := resolver.resolve(baseName); sym != "" {
+					candidates = append(candidates, &index.TypeExpr{Sym: sym})
+				}
+			}
+		}
+
+		// Prefer the candidate whose return type has indexed members.
+		for _, te := range candidates {
+			if len(h.idx.MembersOfType(te.Sym)) > 0 {
+				h.logger.Printf("resolveStaticMemberType: %s -> %s (has members)", m.Symbol, te.Sym)
+				return te
+			}
+			if firstCandidate == nil {
+				firstCandidate = te
+				h.logger.Printf("resolveStaticMemberType: %s -> %s (no members yet, saved as fallback)", m.Symbol, te.Sym)
+			}
+		}
+	}
+	return firstCandidate
+}
+
+// isTypeParamSymbol returns true if sym is a type parameter symbol (e.g. "com/example/Foo#[T]").
+func isTypeParamSymbol(sym string) bool {
+	return strings.Contains(sym, "#[")
 }
 
 func (h *Handler) resolveInferredLambdaParamType(paramIndex int, cctx *CompletionCtx, resolver *typeResolver) *index.TypeExpr {
@@ -888,6 +998,60 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		}
 	}
 
+	// 5b. Static imports (scope "5").
+	// For "import static org.assertj.core.api.Assertions.assertThat" → offer assertThat().
+	// For "import static org.assertj.core.api.Assertions.*" → offer all static members.
+	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
+	addStaticMembers := func(classSym string, targetName string) {
+		for _, m := range h.idx.MembersOfType(classSym) {
+			if !m.IsStatic || !matchPrefix(m.Name) {
+				continue
+			}
+			if targetName != "" && m.Name != targetName {
+				continue
+			}
+			kind := sdbKindToCompletionKind(m.Kind)
+			key := completionItemKeyForSymbol(m)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			sortText := methodTypePrefix(m.Name) + casePrefix(m.Name) + "5" + m.Name
+			if (kind == CompletionKindMethod || kind == CompletionKindConstructor) && m.Signature != nil {
+				sortText = methodTypePrefix(signatureReturnTypeSimpleName(m.Signature)) + casePrefix(m.Name) + "5" + m.Name + signatureSortSuffix(m.Signature)
+			}
+			items = append(items, methodCompletionItem(m.Name, kind, m.Signature, sortText, m.Doc, cctx.ParenFollows))
+		}
+	}
+
+	for _, imp := range cctx.Imports {
+		if !imp.Static {
+			continue
+		}
+		if imp.Wildcard {
+			// Wildcard static import: resolve the class and offer all static members.
+			classFQN := strings.TrimSuffix(imp.Path, ".*")
+			classSym := resolver.resolve(simpleNameFromFQN(classFQN))
+			if classSym == "" {
+				classSym = fqnToSymbol(classFQN)
+			}
+			addStaticMembers(classSym, "")
+		} else {
+			// Specific static import: extract the member name from the FQN.
+			lastDot := strings.LastIndex(imp.Path, ".")
+			if lastDot < 0 {
+				continue
+			}
+			memberName := imp.Path[lastDot+1:]
+			classFQN := imp.Path[:lastDot]
+			classSym := resolver.resolve(simpleNameFromFQN(classFQN))
+			if classSym == "" {
+				classSym = fqnToSymbol(classFQN)
+			}
+			addStaticMembers(classSym, memberName)
+		}
+	}
+
 	// 6. Keywords and Literals (scope "8").
 	// Only suggest keywords in lexical completion.
 	for _, kw := range javaKeywords {
@@ -976,12 +1140,24 @@ func completionTypePrefix(kind int, candidateType, expectedType string) string {
 	return "1"
 }
 
+func signatureReturnTypeSimpleName(sig *index.SignatureInfo) string {
+	if sig == nil {
+		return ""
+	}
+	if sig.ReturnTypeSym != "" {
+		sym := strings.TrimSuffix(sig.ReturnTypeSym, "#")
+		sym = strings.TrimSuffix(sym, ".")
+		if lastSlash := strings.LastIndexByte(sym, '/'); lastSlash >= 0 {
+			return sym[lastSlash+1:]
+		}
+		return sym
+	}
+	return returnTypeFromMethodLabel(sig.Label)
+}
+
 func itemTypeDetailForSort(sym index.Symbol, kind int) string {
 	if kind == CompletionKindMethod || kind == CompletionKindConstructor {
-		if sym.Signature != nil {
-			return returnTypeFromMethodLabel(sym.Signature.Label)
-		}
-		return ""
+		return signatureReturnTypeSimpleName(sym.Signature)
 	}
 	if sym.Signature != nil {
 		return valueTypeFromLabel(sym.Signature.Label)
@@ -1258,6 +1434,23 @@ func packageName(fqn string) string {
 		return fqn[:idx]
 	}
 	return ""
+}
+
+func countStaticImports(imports []ImportSpec) int {
+	n := 0
+	for _, imp := range imports {
+		if imp.Static {
+			n++
+		}
+	}
+	return n
+}
+
+func simpleNameFromFQN(fqn string) string {
+	if idx := strings.LastIndexByte(fqn, '.'); idx >= 0 {
+		return fqn[idx+1:]
+	}
+	return fqn
 }
 
 func sortCompletionItems(items []CompletionItem) {

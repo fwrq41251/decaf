@@ -19,7 +19,10 @@ func buildSignatureInfo(name string, sig *sdb.Signature, lookup map[string]*sdb.
 	case *sdb.Signature_ClassSignature:
 		return &SignatureInfo{Label: formatClassSig(name, s.ClassSignature)}
 	case *sdb.Signature_ValueSignature:
-		return &SignatureInfo{Label: fmt.Sprintf("%s: %s", name, formatType(s.ValueSignature.Tpe))}
+		return &SignatureInfo{
+			Label:         fmt.Sprintf("%s: %s", name, formatType(s.ValueSignature.Tpe)),
+			ReturnTypeSym: typeRefSymbol(s.ValueSignature.Tpe),
+		}
 	case *sdb.Signature_TypeSignature:
 		return &SignatureInfo{Label: name}
 	default:
@@ -57,9 +60,10 @@ func buildMethodSignatureInfo(name string, sig *sdb.MethodSignature, lookup map[
 	b.WriteString(")")
 
 	return &SignatureInfo{
-		Label:     b.String(),
-		HasParams: len(params) > 0,
-		Params:    paramInfos,
+		Label:         b.String(),
+		ReturnTypeSym: typeRefSymbol(sig.ReturnType),
+		HasParams:     len(params) > 0,
+		Params:        paramInfos,
 	}
 }
 
