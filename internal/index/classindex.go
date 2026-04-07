@@ -7,7 +7,6 @@ import (
 	"io"
 	"runtime"
 	"strings"
-	"sync"
 
 	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
 	"golang.org/x/sync/errgroup"
@@ -38,22 +37,13 @@ func (idx *Index) IndexClasspathJARs(jars []string) {
 
 	idx.logger.Printf("classindex: scanning %d classpath JARs", len(toIndex))
 
-	// Phase 1: Concurrent JAR scanning.
-	allSymbols := scanJARsConcurrently(toIndex)
+	merged := idx.streamJARsIntoIndex(toIndex)
 
-	// Phase 2: Merge into index under write lock.
 	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	merged := 0
-	for _, cs := range allSymbols {
-		if idx.mergeClassSymbols(cs) {
-			merged++
-		}
-	}
 	for _, jar := range toIndex {
 		idx.indexedJARs[jar] = struct{}{}
 	}
+	idx.mu.Unlock()
 	idx.logger.Printf("classindex: indexed %d classes from %d JARs", merged, len(toIndex))
 }
 
@@ -92,46 +82,59 @@ type memberSymbol struct {
 	isAbstract bool
 }
 
-// scanJARsConcurrently reads all .class files from the given JARs in parallel,
-// extracts public/protected symbols, and returns them.
-func scanJARsConcurrently(jars []string) []classSymbols {
+// streamJARsIntoIndex reads classpath JARs concurrently and incrementally
+// merges each parsed class summary into the index to avoid retaining a large
+// intermediate slice in memory.
+func (idx *Index) streamJARsIntoIndex(jars []string) int {
 	workers := runtime.NumCPU()
 	if workers > len(jars) {
 		workers = len(jars)
 	}
 
-	var mu sync.Mutex
-	var allSymbols []classSymbols
+	classCh := make(chan classSymbols, workers)
+	done := make(chan struct{})
 
-	g := new(errgroup.Group)
-	g.SetLimit(workers)
+	go func() {
+		defer close(classCh)
 
-	for _, jar := range jars {
-		g.Go(func() error {
-			syms, err := scanJAR(jar, false) // lazy: skip members
-			if err != nil {
-				// Non-fatal: skip this JAR.
+		g := new(errgroup.Group)
+		g.SetLimit(workers)
+
+		for _, jar := range jars {
+			jar := jar
+			g.Go(func() error {
+				scanJAR(jar, false, func(cs classSymbols) {
+					classCh <- cs
+				})
 				return nil
-			}
-			mu.Lock()
-			allSymbols = append(allSymbols, syms...)
-			mu.Unlock()
-			return nil
-		})
+			})
+		}
+
+		_ = g.Wait()
+		close(done)
+	}()
+
+	merged := 0
+	for cs := range classCh {
+		idx.mu.Lock()
+		if idx.mergeTypeDirectoryEntry(cs) {
+			merged++
+		}
+		idx.mu.Unlock()
 	}
-	_ = g.Wait()
-	return allSymbols
+	<-done
+	return merged
 }
 
-// scanJAR opens a single JAR and parses all .class files within it.
-func scanJAR(jarPath string, includeMembers bool) ([]classSymbols, error) {
+// scanJAR opens a single JAR and parses all .class files within it, invoking
+// emit for each extracted public/protected class summary.
+func scanJAR(jarPath string, includeMembers bool, emit func(classSymbols)) {
 	r, err := zip.OpenReader(jarPath)
 	if err != nil {
-		return nil, err
+		return
 	}
 	defer r.Close()
 
-	var result []classSymbols
 	for _, f := range r.File {
 		if !strings.HasSuffix(f.Name, ".class") {
 			continue
@@ -149,9 +152,8 @@ func scanJAR(jarPath string, includeMembers bool) ([]classSymbols, error) {
 		if err != nil || cs == nil {
 			continue
 		}
-		result = append(result, *cs)
+		emit(*cs)
 	}
-	return result, nil
 }
 
 // parseClassEntry reads and parses a single .class file from a ZIP entry.
@@ -334,9 +336,10 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 	}
 }
 
-// mergeClassSymbols adds the symbols from a parsed class into the index maps.
-// Returns true if the class was newly added (not a duplicate).
-func (idx *Index) mergeClassSymbols(cs classSymbols) bool {
+// mergeTypeDirectoryEntry adds the lightweight class directory entry used for
+// type-name completion and later lazy loading. It intentionally avoids eagerly
+// merging hierarchy/member data.
+func (idx *Index) mergeTypeDirectoryEntry(cs classSymbols) bool {
 	classSym := idx.intern(cs.classSym)
 
 	// Store lazy indexing info.
@@ -346,8 +349,7 @@ func (idx *Index) mergeClassSymbols(cs classSymbols) bool {
 	}
 
 	// If the class is already defined (e.g. from SemanticDB), keep the
-	// existing class definition but still merge members and parent info
-	// that SemanticDB doesn't provide for external types.
+	// existing class definition. Hierarchy/member data is loaded lazily.
 	alreadyDefined := len(idx.definitions[classSym]) > 0
 
 	if !alreadyDefined {
@@ -364,61 +366,67 @@ func (idx *Index) mergeClassSymbols(cs classSymbols) bool {
 		idx.typeBySimpleName[name] = append(idx.typeBySimpleName[name], s)
 	}
 
-	// Merge parent types if not already set (SemanticDB may or may not have them).
+	return !alreadyDefined
+}
+
+// mergeLazyClassData merges hierarchy, generic type information, and optional
+// members for a class parsed on-demand from a classfile.
+func (idx *Index) mergeLazyClassData(cs classSymbols) {
+	classSym := idx.intern(cs.classSym)
+
 	if len(idx.childToParents[classSym]) == 0 {
 		for _, parent := range cs.parents {
-			parentSym := idx.intern(parent)
+			parentSym := parent
 			idx.implementors[parentSym] = append(idx.implementors[parentSym], classSym)
 			idx.childToParents[classSym] = append(idx.childToParents[classSym], parentSym)
 		}
 	}
 
-	// Merge generic type information if not already set.
 	if len(cs.typeParams) > 0 && len(idx.classTypeParams[classSym]) == 0 {
 		idx.classTypeParams[classSym] = cs.typeParams
 	}
 	if len(cs.parentTypesGen) > 0 && len(idx.parentTypes[classSym]) == 0 {
 		idx.parentTypes[classSym] = cs.parentTypesGen
 	}
+	idx.skeletonIndexedClasses[classSym] = struct{}{}
 
-	// Merge members from classfile. SemanticDB may have already added some
-	// members (only those referenced by project code), so we deduplicate
-	// by member name to avoid duplicates while ensuring the full method list
-	// from the classfile is available.
-	if len(cs.members) > 0 {
-		existingMembers := make(map[string]struct{})
-		for _, m := range idx.ownerMembers[classSym] {
-			existingMembers[m.Name] = struct{}{}
+	if len(cs.members) == 0 {
+		if cs.membersScanned {
+			idx.fullyIndexedClasses[classSym] = struct{}{}
 		}
-		for _, m := range cs.members {
-			if _, ok := existingMembers[m.name]; ok {
-				continue
-			}
-			memberSym := idx.intern(m.sym)
-			ms := &Symbol{
-				Name:       m.name,
-				Symbol:     memberSym,
-				Kind:       m.kind,
-				Signature:  m.signature,
-				IsStatic:   m.isStatic,
-				IsAbstract: m.isAbstract,
-			}
-			idx.definitions[memberSym] = append(idx.definitions[memberSym], ms)
-			idx.ownerMembers[classSym] = append(idx.ownerMembers[classSym], ms)
+		return
+	}
 
-			if m.typeSym != "" {
-				idx.symbolType[memberSym] = idx.intern(m.typeSym)
-			}
-			if m.declType != nil {
-				idx.symbolDeclType[memberSym] = m.declType
-			}
+	existingMembers := make(map[string]struct{})
+	for _, m := range idx.ownerMembers[classSym] {
+		existingMembers[m.Name] = struct{}{}
+	}
+	for _, m := range cs.members {
+		if _, ok := existingMembers[m.name]; ok {
+			continue
+		}
+		memberSym := idx.intern(m.sym)
+		ms := &Symbol{
+			Name:       m.name,
+			Symbol:     memberSym,
+			Kind:       m.kind,
+			Signature:  m.signature,
+			IsStatic:   m.isStatic,
+			IsAbstract: m.isAbstract,
+		}
+		idx.definitions[memberSym] = append(idx.definitions[memberSym], ms)
+		idx.ownerMembers[classSym] = append(idx.ownerMembers[classSym], ms)
+
+		if m.typeSym != "" {
+			idx.symbolType[memberSym] = m.typeSym
+		}
+		if m.declType != nil {
+			idx.symbolDeclType[memberSym] = m.declType
 		}
 	}
 	if cs.membersScanned {
 		idx.fullyIndexedClasses[classSym] = struct{}{}
 	}
-
-	return !alreadyDefined
 }
 
 // ensureMembersIndexed ensures that all public/protected members of the given
@@ -449,10 +457,48 @@ func (idx *Index) ensureMembersIndexed(classSym string) {
 
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	idx.mergeClassSymbols(*cs)
+	idx.mergeLazyClassData(*cs)
+}
+
+// ensureClassSkeletonIndexed ensures hierarchy and generic type information is
+// indexed for the given external class without requiring members.
+func (idx *Index) ensureClassSkeletonIndexed(classSym string) {
+	if !strings.HasSuffix(classSym, "#") {
+		return
+	}
+
+	idx.mu.RLock()
+	if _, ok := idx.skeletonIndexedClasses[classSym]; ok {
+		idx.mu.RUnlock()
+		return
+	}
+	jarPath, ok := idx.classToJAR[classSym]
+	entryName := idx.classToEntryName[classSym]
+	idx.mu.RUnlock()
+
+	if !ok || jarPath == "" {
+		return
+	}
+
+	cs, err := idx.indexClassSkeleton(jarPath, entryName)
+	if err != nil || cs == nil {
+		return
+	}
+
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.mergeLazyClassData(*cs)
 }
 
 func (idx *Index) indexClassMembers(jarPath, entryName string) (*classSymbols, error) {
+	return idx.indexClass(jarPath, entryName, true)
+}
+
+func (idx *Index) indexClassSkeleton(jarPath, entryName string) (*classSymbols, error) {
+	return idx.indexClass(jarPath, entryName, false)
+}
+
+func (idx *Index) indexClass(jarPath, entryName string, includeMembers bool) (*classSymbols, error) {
 	r, err := zip.OpenReader(jarPath)
 	if err != nil {
 		return nil, err
@@ -480,7 +526,7 @@ func (idx *Index) indexClassMembers(jarPath, entryName string) (*classSymbols, e
 		return nil, nil
 	}
 
-	cs := convertClassFile(cf, true)
+	cs := convertClassFile(cf, includeMembers)
 	cs.jarPath = jarPath
 	cs.entryName = entryName
 	return cs, nil

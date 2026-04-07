@@ -276,6 +276,67 @@ func (idx *Index) logStats() {
 	idx.logger.Printf("index totals: %d definitions, %d references", totalDefs, totalRefs)
 }
 
+// LogStatsSnapshot emits a detailed index/memory snapshot for profiling.
+func (idx *Index) LogStatsSnapshot(label string) {
+	idx.mu.RLock()
+	definitions := 0
+	for _, defs := range idx.definitions {
+		definitions += len(defs)
+	}
+	references := 0
+	for _, refs := range idx.references {
+		references += len(refs)
+	}
+	fileOccurrences := 0
+	for _, occs := range idx.fileOccurrences {
+		fileOccurrences += len(occs)
+	}
+	ownerMembersEntries := 0
+	for _, members := range idx.ownerMembers {
+		ownerMembersEntries += len(members)
+	}
+	implementors := len(idx.implementors)
+	childToParents := len(idx.childToParents)
+	typeBySimpleName := len(idx.typeBySimpleName)
+	ownerMembers := len(idx.ownerMembers)
+	symbolType := len(idx.symbolType)
+	symbolDeclType := len(idx.symbolDeclType)
+	classTypeParams := len(idx.classTypeParams)
+	parentTypes := len(idx.parentTypes)
+	internPool := len(idx.internPool)
+	modTimes := len(idx.modTimes)
+	sdbToURIs := len(idx.sdbToURIs)
+	indexedJARs := len(idx.indexedJARs)
+	classToJAR := len(idx.classToJAR)
+	fullyIndexedClasses := len(idx.fullyIndexedClasses)
+	files := len(idx.fileOccurrences)
+	fileSymbols := len(idx.fileSymbols)
+	idx.mu.RUnlock()
+
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+
+	idx.logger.Printf("--- stats snapshot [%s] ---", label)
+	idx.logger.Printf("index stats: definitions=%d references=%d fileOccurrences=%d files=%d fileSymbols=%d",
+		definitions, references, fileOccurrences, files, fileSymbols)
+	idx.logger.Printf("index stats: implementors=%d childToParents=%d typeBySimpleName=%d ownerMembers=%d(%d entries)",
+		implementors, childToParents, typeBySimpleName, ownerMembers, ownerMembersEntries)
+	idx.logger.Printf("index stats: symbolType=%d symbolDeclType=%d classTypeParams=%d parentTypes=%d",
+		symbolType, symbolDeclType, classTypeParams, parentTypes)
+	idx.logger.Printf("index stats: internPool=%d modTimes=%d sdbToURIs=%d",
+		internPool, modTimes, sdbToURIs)
+	idx.logger.Printf("index stats: indexedJARs=%d classToJAR=%d fullyIndexedClasses=%d",
+		indexedJARs, classToJAR, fullyIndexedClasses)
+	idx.logger.Printf("mem stats: Alloc=%dMB TotalAlloc=%dMB Sys=%dMB HeapInuse=%dMB HeapIdle=%dMB HeapObjects=%d GCCycles=%d",
+		mem.Alloc/1024/1024,
+		mem.TotalAlloc/1024/1024,
+		mem.Sys/1024/1024,
+		mem.HeapInuse/1024/1024,
+		mem.HeapIdle/1024/1024,
+		mem.HeapObjects,
+		mem.NumGC)
+}
+
 // Close stops the file watcher. Safe to call multiple times.
 func (idx *Index) Close() {
 	idx.mu.Lock()
@@ -467,12 +528,12 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 		}
 
 		s := &Symbol{
-			Name:      displayName,
-			Symbol:    symStr,
-			Kind:      kind,
-			URI:       uri,
-			Signature: buildSignatureInfo(displayName, sym.Signature, symbolLookup),
-			Doc:       docStr,
+			Name:       displayName,
+			Symbol:     symStr,
+			Kind:       kind,
+			URI:        uri,
+			Signature:  buildSignatureInfo(displayName, sym.Signature, symbolLookup),
+			Doc:        docStr,
 			IsStatic:   sym.Properties&int32(sdb.SymbolInformation_STATIC) != 0,
 			IsAbstract: sym.Properties&int32(sdb.SymbolInformation_ABSTRACT) != 0,
 		}
@@ -502,7 +563,7 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 		// Extract type information from signature for completion.
 		if sig := sym.Signature; sig != nil {
 			if typeSym := extractTypeSym(sig); typeSym != "" {
-				idx.symbolType[symStr] = idx.intern(typeSym)
+				idx.symbolType[symStr] = typeSym
 			}
 			if te := extractTypeExpr(sig); te != nil {
 				idx.symbolDeclType[symStr] = te
@@ -514,7 +575,7 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			if cs, ok := sig.SealedValue.(*sdb.Signature_ClassSignature); ok {
 				for _, parent := range cs.ClassSignature.Parents {
 					if tr, ok := parent.SealedValue.(*sdb.Type_TypeRef); ok {
-						parentSym := idx.intern(tr.TypeRef.Symbol)
+						parentSym := tr.TypeRef.Symbol
 						idx.implementors[parentSym] = append(idx.implementors[parentSym], symStr)
 						idx.childToParents[symStr] = append(idx.childToParents[symStr], parentSym)
 					}

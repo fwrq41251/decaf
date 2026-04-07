@@ -86,6 +86,7 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 
 	// Initial scan of existing .semanticdb files.
 	h.reindex()
+	h.idx.LogStatsSnapshot("after initial workspace index")
 
 	// Decide if we need a full build.
 	needsFullBuild := !h.idx.HasFiles()
@@ -187,11 +188,14 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 			return
 		}
 
+		h.idx.LogStatsSnapshot("before dependency indexing")
+
 		// Index classpath JARs for third-party dependency completion/hover.
 		if len(classpathJARs) > 0 {
 			prog.report("indexing dependencies…", intPtr(55))
 			h.idx.IndexClasspathJARs(classpathJARs)
 		}
+		h.idx.LogStatsSnapshot("after dependency indexing")
 
 		if needsFullBuild {
 			// Step 3: Full Compile.
@@ -210,6 +214,7 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 			}
 			prog.report("indexing…", intPtr(90))
 			h.reindex()
+			h.idx.LogStatsSnapshot("after compile + reindex")
 			close(h.indexReady)
 		} else {
 			h.logger.Println("Existing index found, skipping initial full compilation.")

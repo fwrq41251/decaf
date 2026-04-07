@@ -554,6 +554,7 @@ func (idx *Index) DeclTypeOf(sym string) *TypeExpr {
 
 // ClassTypeParams returns the type parameter symbols for a class (in declaration order).
 func (idx *Index) ClassTypeParams(sym string) []string {
+	idx.ensureClassSkeletonIndexed(sym)
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return idx.classTypeParams[sym]
@@ -561,6 +562,7 @@ func (idx *Index) ClassTypeParams(sym string) []string {
 
 // ParentTypesOf returns parent types with their generic arguments.
 func (idx *Index) ParentTypesOf(sym string) []*TypeExpr {
+	idx.ensureClassSkeletonIndexed(sym)
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return idx.parentTypes[sym]
@@ -568,6 +570,7 @@ func (idx *Index) ParentTypesOf(sym string) []*TypeExpr {
 
 // ParentsOf returns the parent type symbols for a given type symbol.
 func (idx *Index) ParentsOf(typeSym string) []string {
+	idx.ensureClassSkeletonIndexed(typeSym)
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return idx.childToParents[typeSym]
@@ -591,7 +594,6 @@ func (idx *Index) ensureMembersOf(sym string) {
 		idx.ensureMembersIndexed(sym)
 	}
 }
-
 
 func containsPosition(r Range, line, character int) bool {
 	if int(r.StartLine) > line || int(r.EndLine) < line {

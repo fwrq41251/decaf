@@ -437,6 +437,14 @@ func TestIndexClasspathJARs(t *testing.T) {
 
 	idx.IndexClasspathJARs([]string{jarPath})
 
+	// Startup indexing should only create the lightweight type directory.
+	if got := idx.ownerMembers["com/example/Foo#"]; len(got) != 0 {
+		t.Fatalf("Foo members eagerly indexed = %d, want 0", len(got))
+	}
+	if got := idx.implementors["com/example/Foo#"]; len(got) != 0 {
+		t.Fatalf("Foo implementors eagerly indexed = %d, want 0", len(got))
+	}
+
 	// Trigger lazy indexing.
 	idx.MembersOfType("com/example/Foo#")
 
@@ -455,7 +463,11 @@ func TestIndexClasspathJARs(t *testing.T) {
 		t.Fatalf("Foo members = %d, want 3", len(fooMembers))
 	}
 
-	// Check Bar extends Foo.
+	// Check Bar extends Foo after Bar's skeleton is loaded lazily.
+	parents := idx.ParentsOf("com/example/Bar#")
+	if len(parents) == 0 {
+		t.Fatal("ParentsOf(Bar) returned empty")
+	}
 	barChildren := idx.implementors["com/example/Foo#"]
 	found := false
 	for _, child := range barChildren {
