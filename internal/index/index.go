@@ -4,6 +4,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
 )
 
 // Index stores SemanticDB data for the workspace, providing lookups for
@@ -16,9 +18,9 @@ type Index struct {
 	// symbol string -> list of definition locations
 	definitions map[string][]*Symbol
 	// symbol string -> list of reference occurrences
-	references map[string][]*Occurrence
+	references map[string][]Occurrence
 	// uri -> all occurrences in that file (for position-based lookups)
-	fileOccurrences map[string][]*Occurrence
+	fileOccurrences map[string][]Occurrence
 	// uri -> all symbol infos in that file
 	fileSymbols map[string][]*Symbol
 	// parent symbol -> list of child symbols that extend/implement it
@@ -72,6 +74,10 @@ type Index struct {
 
 	// set of classpath JARs already indexed by the class indexer
 	indexedJARs map[string]struct{}
+	// lightweight external type directory used for completion and lazy loading
+	externalTypeInfo map[string]externalTypeInfo
+	// simple name (lowercase) -> external type symbols
+	externalTypesBySimpleName map[string][]string
 
 	// Lazy indexing state for third-party classes.
 	// class symbol -> path to JAR/jmod containing it
@@ -84,34 +90,41 @@ type Index struct {
 	fullyIndexedClasses map[string]struct{}
 }
 
+type externalTypeInfo struct {
+	name string
+	kind sdb.SymbolInformation_Kind
+}
+
 // NewIndex creates a new empty index.
 func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 	return &Index{
-		logger:                 logger,
-		sourceRoot:             sourceRoot,
-		definitions:            make(map[string][]*Symbol),
-		references:             make(map[string][]*Occurrence),
-		fileOccurrences:        make(map[string][]*Occurrence),
-		fileSymbols:            make(map[string][]*Symbol),
-		implementors:           make(map[string][]string),
-		uriRefSymbols:          make(map[string]map[string]struct{}),
-		childToParents:         make(map[string][]string),
-		typeBySimpleName:       make(map[string][]*Symbol),
-		ownerMembers:           make(map[string][]*Symbol),
-		symbolType:             make(map[string]string),
-		symbolDeclType:         make(map[string]*TypeExpr),
-		classTypeParams:        make(map[string][]string),
-		parentTypes:            make(map[string][]*TypeExpr),
-		internPool:             make(map[string]string),
-		modTimes:               make(map[string]time.Time),
-		sdbToURIs:              make(map[string][]string),
-		dependencySources:      []string{},
-		depSourcesSet:          make(map[string]struct{}),
-		indexedJARs:            make(map[string]struct{}),
-		classToJAR:             make(map[string]string),
-		classToEntryName:       make(map[string]string),
-		skeletonIndexedClasses: make(map[string]struct{}),
-		fullyIndexedClasses:    make(map[string]struct{}),
+		logger:                    logger,
+		sourceRoot:                sourceRoot,
+		definitions:               make(map[string][]*Symbol),
+		references:                make(map[string][]Occurrence),
+		fileOccurrences:           make(map[string][]Occurrence),
+		fileSymbols:               make(map[string][]*Symbol),
+		implementors:              make(map[string][]string),
+		uriRefSymbols:             make(map[string]map[string]struct{}),
+		childToParents:            make(map[string][]string),
+		typeBySimpleName:          make(map[string][]*Symbol),
+		ownerMembers:              make(map[string][]*Symbol),
+		symbolType:                make(map[string]string),
+		symbolDeclType:            make(map[string]*TypeExpr),
+		classTypeParams:           make(map[string][]string),
+		parentTypes:               make(map[string][]*TypeExpr),
+		internPool:                make(map[string]string),
+		modTimes:                  make(map[string]time.Time),
+		sdbToURIs:                 make(map[string][]string),
+		dependencySources:         []string{},
+		depSourcesSet:             make(map[string]struct{}),
+		indexedJARs:               make(map[string]struct{}),
+		externalTypeInfo:          make(map[string]externalTypeInfo),
+		externalTypesBySimpleName: make(map[string][]string),
+		classToJAR:                make(map[string]string),
+		classToEntryName:          make(map[string]string),
+		skeletonIndexedClasses:    make(map[string]struct{}),
+		fullyIndexedClasses:       make(map[string]struct{}),
 	}
 }
 

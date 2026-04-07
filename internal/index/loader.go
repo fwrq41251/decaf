@@ -309,6 +309,7 @@ func (idx *Index) LogStatsSnapshot(label string) {
 	indexedJARs := len(idx.indexedJARs)
 	classToJAR := len(idx.classToJAR)
 	fullyIndexedClasses := len(idx.fullyIndexedClasses)
+	externalTypes := len(idx.externalTypeInfo)
 	files := len(idx.fileOccurrences)
 	fileSymbols := len(idx.fileSymbols)
 	idx.mu.RUnlock()
@@ -325,8 +326,8 @@ func (idx *Index) LogStatsSnapshot(label string) {
 		symbolType, symbolDeclType, classTypeParams, parentTypes)
 	idx.logger.Printf("index stats: internPool=%d modTimes=%d sdbToURIs=%d",
 		internPool, modTimes, sdbToURIs)
-	idx.logger.Printf("index stats: indexedJARs=%d classToJAR=%d fullyIndexedClasses=%d",
-		indexedJARs, classToJAR, fullyIndexedClasses)
+	idx.logger.Printf("index stats: indexedJARs=%d classToJAR=%d externalTypes=%d fullyIndexedClasses=%d",
+		indexedJARs, classToJAR, externalTypes, fullyIndexedClasses)
 	idx.logger.Printf("mem stats: Alloc=%dMB TotalAlloc=%dMB Sys=%dMB HeapInuse=%dMB HeapIdle=%dMB HeapObjects=%d GCCycles=%d",
 		mem.Alloc/1024/1024,
 		mem.TotalAlloc/1024/1024,
@@ -608,7 +609,7 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 	// Index occurrences (both definitions and references with ranges).
 	for _, occ := range doc.Occurrences {
 		occSym := idx.intern(occ.Symbol)
-		o := &Occurrence{
+		o := Occurrence{
 			Symbol: occSym,
 			Role:   occ.Role,
 			URI:    uri,

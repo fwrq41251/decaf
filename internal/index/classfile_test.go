@@ -448,13 +448,16 @@ func TestIndexClasspathJARs(t *testing.T) {
 	// Trigger lazy indexing.
 	idx.MembersOfType("com/example/Foo#")
 
-	// Check that Foo is indexed.
-	fooDefs := idx.definitions["com/example/Foo#"]
-	if len(fooDefs) == 0 {
-		t.Fatal("Foo# not in definitions")
+	// Check that Foo is resolvable from the lightweight external type directory.
+	if defs := idx.definitions["com/example/Foo#"]; len(defs) != 0 {
+		t.Fatalf("Foo# should not be stored in workspace definitions, got %d entries", len(defs))
 	}
-	if fooDefs[0].Name != "Foo" {
-		t.Errorf("Foo name = %q", fooDefs[0].Name)
+	fooDef := idx.SymbolDefinition("com/example/Foo#")
+	if fooDef == nil {
+		t.Fatal("Foo# not resolvable via SymbolDefinition")
+	}
+	if fooDef.Name != "Foo" {
+		t.Errorf("Foo name = %q", fooDef.Name)
 	}
 
 	// Check members.

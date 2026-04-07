@@ -173,6 +173,13 @@ func (idx *Index) AllSymbols() []Symbol {
 			result = append(result, *d)
 		}
 	}
+	for sym, info := range idx.externalTypeInfo {
+		result = append(result, Symbol{
+			Name:   info.name,
+			Symbol: sym,
+			Kind:   info.kind,
+		})
+	}
 	return result
 }
 
@@ -201,6 +208,15 @@ func (idx *Index) SearchSymbols(query string) []Symbol {
 			if strings.Contains(strings.ToLower(d.Name), query) {
 				result = append(result, *d)
 			}
+		}
+	}
+	for sym, info := range idx.externalTypeInfo {
+		if strings.Contains(strings.ToLower(info.name), query) {
+			result = append(result, Symbol{
+				Name:   info.name,
+				Symbol: sym,
+				Kind:   info.kind,
+			})
 		}
 	}
 	return result
@@ -240,6 +256,16 @@ func (idx *Index) CompletionSymbols(uri string, query string) []Symbol {
 				}
 			}
 		}
+	}
+	for sym, info := range idx.externalTypeInfo {
+		if !FuzzyMatch(info.name, query) {
+			continue
+		}
+		otherTypes = append(otherTypes, Symbol{
+			Name:   info.name,
+			Symbol: sym,
+			Kind:   info.kind,
+		})
 	}
 
 	// Priority: same-file types > other types > same-file members > other members.
@@ -338,7 +364,7 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 
 	// Collect reference occurrences.
 	for _, occ := range idx.references[sym] {
-		result = append(result, *occ)
+		result = append(result, occ)
 	}
 
 	return sym, result
@@ -381,7 +407,8 @@ func (idx *Index) OccurrenceAt(uri string, line, character int) *Occurrence {
 			break
 		}
 		if containsPosition(r, line, character) {
-			return occs[j]
+			occ := occs[j]
+			return &occ
 		}
 	}
 	return nil
@@ -403,11 +430,18 @@ func (idx *Index) SymbolDefinition(sym string) *Symbol {
 	defer idx.mu.RUnlock()
 
 	defs := idx.definitions[sym]
-	if len(defs) == 0 {
-		return nil
+	if len(defs) > 0 {
+		s := *defs[0]
+		return &s
 	}
-	s := *defs[0]
-	return &s
+	if info, ok := idx.externalTypeInfo[sym]; ok {
+		return &Symbol{
+			Name:   info.name,
+			Symbol: sym,
+			Kind:   info.kind,
+		}
+	}
+	return nil
 }
 
 // FileOccurrencesOf returns all occurrences of a symbol in a specific file.
@@ -424,7 +458,7 @@ func (idx *Index) FileOccurrencesOf(uri string, line, character int) []Occurrenc
 	var result []Occurrence
 	for _, occ := range idx.fileOccurrences[relURI] {
 		if occ.Symbol == sym {
-			result = append(result, *occ)
+			result = append(result, occ)
 		}
 	}
 	return result
@@ -539,8 +573,24 @@ func (idx *Index) TypeBySimpleName(name string) []Symbol {
 
 	lowerName := strings.ToLower(name)
 	var result []Symbol
+	seen := make(map[string]struct{})
 	for _, d := range idx.typeBySimpleName[lowerName] {
 		result = append(result, *d)
+		seen[d.Symbol] = struct{}{}
+	}
+	for _, sym := range idx.externalTypesBySimpleName[lowerName] {
+		if _, ok := seen[sym]; ok {
+			continue
+		}
+		info, ok := idx.externalTypeInfo[sym]
+		if !ok {
+			continue
+		}
+		result = append(result, Symbol{
+			Name:   info.name,
+			Symbol: sym,
+			Kind:   info.kind,
+		})
 	}
 	return result
 }
@@ -619,14 +669,12 @@ func copySymbols(ptrs []*Symbol) []Symbol {
 	return out
 }
 
-func copyOccurrences(ptrs []*Occurrence) []Occurrence {
-	if len(ptrs) == 0 {
+func copyOccurrences(occs []Occurrence) []Occurrence {
+	if len(occs) == 0 {
 		return nil
 	}
-	out := make([]Occurrence, len(ptrs))
-	for i, p := range ptrs {
-		out[i] = *p
-	}
+	out := make([]Occurrence, len(occs))
+	copy(out, occs)
 	return out
 }
 

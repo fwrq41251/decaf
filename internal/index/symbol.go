@@ -131,13 +131,13 @@ func FromSDB(r *sdb.Range) Range {
 
 // Symbol represents an indexed symbol definition.
 type Symbol struct {
-	Name      string
-	Symbol    string // SemanticDB symbol string, e.g. "com/example/Foo#"
-	Kind      sdb.SymbolInformation_Kind
-	URI       string // relative URI from SemanticDB
-	Range     Range  // compact range (was *sdb.Range)
-	Signature *SignatureInfo
-	Doc       string // Javadoc/Scaladoc documentation text
+	Name       string
+	Symbol     string // SemanticDB symbol string, e.g. "com/example/Foo#"
+	Kind       sdb.SymbolInformation_Kind
+	URI        string // relative URI from SemanticDB
+	Range      Range  // compact range (was *sdb.Range)
+	Signature  *SignatureInfo
+	Doc        string // Javadoc/Scaladoc documentation text
 	IsStatic   bool
 	IsAbstract bool
 	SameFile   bool

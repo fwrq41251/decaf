@@ -351,19 +351,19 @@ func (idx *Index) mergeTypeDirectoryEntry(cs classSymbols) bool {
 	// If the class is already defined (e.g. from SemanticDB), keep the
 	// existing class definition. Hierarchy/member data is loaded lazily.
 	alreadyDefined := len(idx.definitions[classSym]) > 0
+	if _, ok := idx.externalTypeInfo[classSym]; ok {
+		return false
+	}
 
 	if !alreadyDefined {
-		// Add class definition.
-		s := &Symbol{
-			Name:   cs.className,
-			Symbol: classSym,
-			Kind:   cs.classKind,
+		// Store in the lightweight external type directory instead of
+		// reusing workspace definitions.
+		idx.externalTypeInfo[classSym] = externalTypeInfo{
+			name: cs.className,
+			kind: cs.classKind,
 		}
-		idx.definitions[classSym] = append(idx.definitions[classSym], s)
-
-		// typeBySimpleName index.
 		name := strings.ToLower(cs.className)
-		idx.typeBySimpleName[name] = append(idx.typeBySimpleName[name], s)
+		idx.externalTypesBySimpleName[name] = append(idx.externalTypesBySimpleName[name], classSym)
 	}
 
 	return !alreadyDefined
