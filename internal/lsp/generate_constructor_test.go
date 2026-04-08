@@ -190,7 +190,7 @@ func TestFormatConstructor(t *testing.T) {
 		{Name: "age", Signature: &index.SignatureInfo{Label: "age: int"}},
 	}
 
-	result := formatConstructor("User", fields)
+	result := formatConstructor("User", fields, nil)
 	if !strings.Contains(result, "public User(String name, int age)") {
 		t.Errorf("wrong constructor signature: %s", result)
 	}
@@ -202,8 +202,40 @@ func TestFormatConstructor(t *testing.T) {
 	}
 }
 
+func TestFormatConstructor_UsesStructuredFieldType(t *testing.T) {
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := index.NewIndex(logger, t.TempDir())
+	defer idx.Close()
+
+	setIndexField(t, idx, "symbolDeclType", map[string]*index.TypeExpr{
+		"com/example/User#items.": {
+			Sym: "java/util/Map#",
+			Args: []*index.TypeExpr{
+				{Sym: "java/lang/String#"},
+				{
+					Sym:  "java/util/List#",
+					Args: []*index.TypeExpr{{Sym: "java/lang/Integer#"}},
+				},
+			},
+		},
+	})
+
+	fields := []index.Symbol{
+		{
+			Name:      "items",
+			Symbol:    "com/example/User#items.",
+			Signature: &index.SignatureInfo{Label: "items: BrokenLabel"},
+		},
+	}
+
+	result := formatConstructor("User", fields, idx)
+	if !strings.Contains(result, "public User(Map<String, List<Integer>> items)") {
+		t.Errorf("expected structured field type in constructor signature, got: %s", result)
+	}
+}
+
 func TestFormatConstructor_NoFields(t *testing.T) {
-	result := formatConstructor("Empty", nil)
+	result := formatConstructor("Empty", nil, nil)
 	if !strings.Contains(result, "public Empty()") {
 		t.Errorf("wrong no-arg constructor: %s", result)
 	}

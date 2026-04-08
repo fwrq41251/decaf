@@ -301,6 +301,7 @@ func (idx *Index) LogStatsSnapshot(label string) {
 	ownerMembers := len(idx.ownerMembers)
 	symbolType := len(idx.symbolType)
 	symbolDeclType := len(idx.symbolDeclType)
+	symbolDeclParamTypes := len(idx.symbolDeclParamTypes)
 	classTypeParams := len(idx.classTypeParams)
 	parentTypes := len(idx.parentTypes)
 	internPool := len(idx.internPool)
@@ -322,8 +323,8 @@ func (idx *Index) LogStatsSnapshot(label string) {
 		definitions, references, fileOccurrences, files, fileSymbols)
 	idx.logger.Printf("index stats: implementors=%d childToParents=%d typeBySimpleName=%d ownerMembers=%d(%d entries)",
 		implementors, childToParents, typeBySimpleName, ownerMembers, ownerMembersEntries)
-	idx.logger.Printf("index stats: symbolType=%d symbolDeclType=%d classTypeParams=%d parentTypes=%d",
-		symbolType, symbolDeclType, classTypeParams, parentTypes)
+	idx.logger.Printf("index stats: symbolType=%d symbolDeclType=%d symbolDeclParamTypes=%d classTypeParams=%d parentTypes=%d",
+		symbolType, symbolDeclType, symbolDeclParamTypes, classTypeParams, parentTypes)
 	idx.logger.Printf("index stats: internPool=%d modTimes=%d sdbToURIs=%d",
 		internPool, modTimes, sdbToURIs)
 	idx.logger.Printf("index stats: indexedJARs=%d classLocations=%d externalTypes=%d fullyIndexedClasses=%d",
@@ -445,6 +446,7 @@ func (idx *Index) removeDocument(uri string) {
 	for _, sym := range docSymbols {
 		delete(idx.symbolType, sym)
 		delete(idx.symbolDeclType, sym)
+		delete(idx.symbolDeclParamTypes, sym)
 		delete(idx.classTypeParams, sym)
 		delete(idx.parentTypes, sym)
 		if owner := extractOwner(sym); owner != "" {
@@ -587,6 +589,9 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			if te := extractTypeExpr(sig); te != nil {
 				idx.symbolDeclType[symStr] = te
 			}
+			if pts := extractParamTypeExprs(sig); len(pts) > 0 {
+				idx.symbolDeclParamTypes[symStr] = pts
+			}
 		}
 
 		// Build implementors index from class signatures.
@@ -716,6 +721,32 @@ func extractTypeExpr(sig *sdb.Signature) *TypeExpr {
 	default:
 		return nil
 	}
+}
+
+// extractParamTypeExprs extracts parameter types as TypeExprs from a SemanticDB MethodSignature.
+func extractParamTypeExprs(sig *sdb.Signature) []*TypeExpr {
+	ms, ok := sig.SealedValue.(*sdb.Signature_MethodSignature)
+	if !ok || ms.MethodSignature == nil {
+		return nil
+	}
+	var result []*TypeExpr
+	for _, paramList := range ms.MethodSignature.ParameterLists {
+		for _, hl := range paramList.Hardlinks {
+			if hl.Signature == nil {
+				continue
+			}
+			vs, ok := hl.Signature.SealedValue.(*sdb.Signature_ValueSignature)
+			if !ok || vs.ValueSignature == nil {
+				continue
+			}
+			te := typeToExpr(vs.ValueSignature.Tpe)
+			result = append(result, te)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func isEnumValueSymbol(sym *sdb.SymbolInformation, owner string) bool {

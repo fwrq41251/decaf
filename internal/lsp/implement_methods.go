@@ -97,8 +97,8 @@ func implementMethodsEdit(fileURI string, idx *index.Index, overlay string, diag
 	// Collect unimplemented abstract methods from all parents.
 	var stubs []string
 	seen := make(map[string]bool)
-	for _, parentSym := range idx.ParentsOf(classSym.Symbol) {
-		for _, m := range idx.DirectMembersOfType(parentSym) {
+	for _, parentType := range parentTypesForStub(classSym.Symbol, idx) {
+		for _, m := range idx.DirectMembersOfType(parentType.Sym) {
 			if m.Kind == sdb.SymbolInformation_CONSTRUCTOR {
 				continue
 			}
@@ -112,7 +112,7 @@ func implementMethodsEdit(fileURI string, idx *index.Index, overlay string, diag
 				continue
 			}
 			seen[m.Name] = true
-			stubs = append(stubs, generateMethodStub(m))
+			stubs = append(stubs, generateMethodStubForOwner(m, parentType, idx))
 		}
 	}
 
@@ -136,30 +136,12 @@ func implementMethodsEdit(fileURI string, idx *index.Index, overlay string, diag
 
 // generateMethodStub generates a Java method stub from an index Symbol.
 func generateMethodStub(sym index.Symbol) string {
-	var returnType, params string
+	return generateMethodStubForOwner(sym, nil, nil)
+}
 
-	if sym.Signature != nil && sym.Signature.Label != "" {
-		label := sym.Signature.Label
-		// Label format: "ReturnType methodName(params)"
-		parenIdx := strings.Index(label, "(")
-		if parenIdx >= 0 {
-			prefix := label[:parenIdx]
-			// prefix is "ReturnType methodName" — extract return type
-			spaceIdx := strings.LastIndex(prefix, " ")
-			if spaceIdx >= 0 {
-				returnType = prefix[:spaceIdx]
-			}
-			closeIdx := strings.LastIndex(label, ")")
-			if closeIdx > parenIdx+1 {
-				params = label[parenIdx+1 : closeIdx]
-			}
-		}
-	}
-
-	if returnType == "" {
-		returnType = "void"
-	}
-
+func generateMethodStubForOwner(sym index.Symbol, ownerType *index.TypeExpr, idx *index.Index) string {
+	returnType := methodStubReturnType(sym, ownerType, idx)
+	params := methodStubParams(sym, ownerType, idx)
 	var sb strings.Builder
 	sb.WriteString("\n    @Override\n")
 	sb.WriteString("    public ")
@@ -173,6 +155,161 @@ func generateMethodStub(sym index.Symbol) string {
 	sb.WriteString("    }\n")
 
 	return sb.String()
+}
+
+func parentTypesForStub(classSym string, idx *index.Index) []*index.TypeExpr {
+	if pts := idx.ParentTypesOf(classSym); len(pts) > 0 {
+		return pts
+	}
+	parentSyms := idx.ParentsOf(classSym)
+	if len(parentSyms) == 0 {
+		return nil
+	}
+	result := make([]*index.TypeExpr, 0, len(parentSyms))
+	for _, sym := range parentSyms {
+		result = append(result, &index.TypeExpr{Sym: sym})
+	}
+	return result
+}
+
+func methodStubReturnType(sym index.Symbol, ownerType *index.TypeExpr, idx *index.Index) string {
+	if idx != nil {
+		if te := idx.DeclTypeOf(sym.Symbol); te != nil {
+			if ownerType != nil {
+				te = substituteTypeParams(te, ownerType, idx)
+				te = substituteNamedTypeParams(te, ownerType, idx)
+			}
+			if rendered := formatMethodStubType(te); rendered != "" {
+				return rendered
+			}
+		}
+	}
+	if sym.Signature != nil && sym.Signature.ReturnTypeSym != "" {
+		return formatMethodStubType(&index.TypeExpr{Sym: sym.Signature.ReturnTypeSym})
+	}
+	if sym.Signature != nil && sym.Signature.Label != "" {
+		label := sym.Signature.Label
+		if parenIdx := strings.Index(label, "("); parenIdx >= 0 {
+			prefix := label[:parenIdx]
+			if spaceIdx := strings.LastIndex(prefix, " "); spaceIdx >= 0 {
+				return prefix[:spaceIdx]
+			}
+		}
+	}
+	return "void"
+}
+
+func methodStubParams(sym index.Symbol, ownerType *index.TypeExpr, idx *index.Index) string {
+	if idx != nil && sym.Signature != nil {
+		if pts := idx.DeclParamTypesOf(sym.Symbol); len(pts) > 0 && len(pts) == len(sym.Signature.Params) {
+			var params []string
+			for i, p := range sym.Signature.Params {
+				te := pts[i]
+				if ownerType != nil {
+					te = substituteTypeParams(te, ownerType, idx)
+					te = substituteNamedTypeParams(te, ownerType, idx)
+				}
+				typeName := formatMethodStubType(te)
+				if typeName == "" {
+					typeName = p.Type
+				}
+				if typeName == "" {
+					typeName = "Object"
+				}
+				name := p.Name
+				if name == "" {
+					name = fmt.Sprintf("arg%d", i)
+				}
+				params = append(params, typeName+" "+name)
+			}
+			return strings.Join(params, ", ")
+		}
+	}
+	if sym.Signature != nil {
+		if len(sym.Signature.Params) > 0 {
+			var params []string
+			for i, p := range sym.Signature.Params {
+				typeName := p.Type
+				if typeName == "" && p.TypeSym != "" {
+					typeName = formatMethodStubType(&index.TypeExpr{Sym: p.TypeSym})
+				}
+				if typeName == "" {
+					typeName = "Object"
+				}
+				name := p.Name
+				if name == "" {
+					name = fmt.Sprintf("arg%d", i)
+				}
+				params = append(params, typeName+" "+name)
+			}
+			return strings.Join(params, ", ")
+		}
+		if sym.Signature.Label != "" {
+			label := sym.Signature.Label
+			if parenIdx := strings.Index(label, "("); parenIdx >= 0 {
+				if closeIdx := strings.LastIndex(label, ")"); closeIdx > parenIdx+1 {
+					return label[parenIdx+1 : closeIdx]
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func formatMethodStubType(te *index.TypeExpr) string {
+	if te == nil {
+		return ""
+	}
+	name := simpleMethodStubTypeName(te.Sym)
+	if len(te.Args) == 0 {
+		return name
+	}
+	var sb strings.Builder
+	sb.WriteString(name)
+	sb.WriteByte('<')
+	for i, arg := range te.Args {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(formatMethodStubType(arg))
+	}
+	sb.WriteByte('>')
+	return sb.String()
+}
+
+func simpleMethodStubTypeName(sym string) string {
+	switch sym {
+	case "scala/Int#", "int":
+		return "int"
+	case "scala/Long#", "long":
+		return "long"
+	case "scala/Short#", "short":
+		return "short"
+	case "scala/Byte#", "byte":
+		return "byte"
+	case "scala/Float#", "float":
+		return "float"
+	case "scala/Double#", "double":
+		return "double"
+	case "scala/Boolean#", "boolean":
+		return "boolean"
+	case "scala/Char#", "char":
+		return "char"
+	case "scala/Unit#", "void":
+		return "void"
+	}
+
+	if start := strings.LastIndexByte(sym, '['); start >= 0 {
+		if end := strings.LastIndexByte(sym, ']'); end > start+1 {
+			return sym[start+1 : end]
+		}
+	}
+	sym = strings.TrimSuffix(sym, "#")
+	sym = strings.TrimSuffix(sym, ".")
+	if idx := strings.LastIndexAny(sym, "/."); idx >= 0 {
+		return sym[idx+1:]
+	}
+	return sym
 }
 
 // findClassInsertionPoint locates the line of the closing brace of the class
@@ -261,11 +398,11 @@ func overrideMethodActions(fileURI string, idx *index.Index, overlay string, cur
 
 	var actions []CodeAction
 	seen := make(map[string]bool)
-	for _, parentSym := range idx.ParentsOf(classSym.Symbol) {
-		if parentSym == "java/lang/Object#" {
+	for _, parentType := range parentTypesForStub(classSym.Symbol, idx) {
+		if parentType.Sym == "java/lang/Object#" {
 			continue
 		}
-		for _, m := range idx.DirectMembersOfType(parentSym) {
+		for _, m := range idx.DirectMembersOfType(parentType.Sym) {
 			if m.Kind == sdb.SymbolInformation_CONSTRUCTOR {
 				continue
 			}
@@ -295,7 +432,7 @@ func overrideMethodActions(fileURI string, idx *index.Index, overlay string, cur
 				Kind:  "source",
 				Edit: &WorkspaceEdit{
 					Changes: map[string][]TextEdit{
-						fileURI: {{Range: editRange, NewText: generateMethodStub(m)}},
+						fileURI: {{Range: editRange, NewText: generateMethodStubForOwner(m, parentType, idx)}},
 					},
 				},
 			})

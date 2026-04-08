@@ -92,7 +92,7 @@ func generateConstructorEdit(fileURI string, idx *index.Index, overlay string, c
 		}
 	}
 
-	newText := formatConstructor(className, fields)
+	newText := formatConstructor(className, fields, idx)
 
 	insertLine := findConstructorInsertPoint(classNode, content)
 	if insertLine < 0 {
@@ -134,7 +134,7 @@ func findConstructorInsertPoint(classNode *slog.Node, content []byte) int {
 }
 
 // formatConstructor generates a Java constructor taking the given fields as parameters.
-func formatConstructor(className string, fields []index.Symbol) string {
+func formatConstructor(className string, fields []index.Symbol, idx *index.Index) string {
 	if len(fields) == 0 {
 		return "\n    public " + className + "() {\n    }\n"
 	}
@@ -143,9 +143,18 @@ func formatConstructor(className string, fields []index.Symbol) string {
 	var assignments []string
 	for _, f := range fields {
 		typeName := "Object"
-		if f.Signature != nil && f.Signature.Label != "" {
-			if idx := strings.Index(f.Signature.Label, ": "); idx >= 0 {
-				typeName = f.Signature.Label[idx+2:]
+		if idx != nil {
+			if te := idx.DeclTypeOf(f.Symbol); te != nil {
+				if rendered := formatMethodStubType(te); rendered != "" {
+					typeName = rendered
+				}
+			} else if typeSym := idx.TypeOfSymbol(f.Symbol); typeSym != "" {
+				typeName = formatMethodStubType(&index.TypeExpr{Sym: typeSym})
+			}
+		}
+		if typeName == "Object" && f.Signature != nil && f.Signature.Label != "" {
+			if labelIdx := strings.Index(f.Signature.Label, ": "); labelIdx >= 0 {
+				typeName = f.Signature.Label[labelIdx+2:]
 			}
 		}
 		params = append(params, typeName+" "+f.Name)

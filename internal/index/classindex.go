@@ -76,8 +76,9 @@ type memberSymbol struct {
 	name       string // e.g. "add"
 	kind       sdb.SymbolInformation_Kind
 	typeSym    string         // return type / field type as SemanticDB symbol
-	declType   *TypeExpr      // declared type preserving generics (from Signature attribute)
-	signature  *SignatureInfo // human-readable signature
+	declType       *TypeExpr      // declared type preserving generics (from Signature attribute)
+	declParamTypes []*TypeExpr   // declared parameter types preserving generics
+	signature      *SignatureInfo // human-readable signature
 	isStatic   bool
 	isAbstract bool
 }
@@ -316,6 +317,9 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 					if minfo.returnType != nil {
 						ms.declType = minfo.returnType
 					}
+					if len(minfo.paramTypes) > 0 {
+						ms.declParamTypes = minfo.paramTypes
+					}
 					if sig != nil && len(minfo.paramTypes) > 0 {
 						for i := range minfo.paramTypes {
 							if i >= len(sig.Params) {
@@ -434,6 +438,9 @@ func (idx *Index) mergeLazyClassData(cs classSymbols) {
 		}
 		if m.declType != nil {
 			idx.symbolDeclType[memberSym] = m.declType
+		}
+		if len(m.declParamTypes) > 0 {
+			idx.symbolDeclParamTypes[memberSym] = m.declParamTypes
 		}
 	}
 	if cs.membersScanned {

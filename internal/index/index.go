@@ -49,6 +49,10 @@ type Index struct {
 	// For fields/params: the declared type. For methods: the return type.
 	symbolDeclType map[string]*TypeExpr
 
+	// symbolDeclParamTypes maps a method symbol to its declared parameter types as TypeExprs.
+	// e.g. "java/util/List#of()." → [{Sym: "java/util/List#[E]"}]
+	symbolDeclParamTypes map[string][]*TypeExpr
+
 	// classTypeParams maps a class symbol to its type parameter symbols (in declaration order).
 	// e.g. "java/util/List#" → ["java/util/List#[E]"]
 	classTypeParams map[string][]string
@@ -119,6 +123,7 @@ func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 		ownerMembers:              make(map[string][]SymbolID),
 		symbolType:                make(map[string]string),
 		symbolDeclType:            make(map[string]*TypeExpr),
+		symbolDeclParamTypes:      make(map[string][]*TypeExpr),
 		classTypeParams:           make(map[string][]string),
 		parentTypes:               make(map[string][]*TypeExpr),
 		internPool:                make(map[string]string),

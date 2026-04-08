@@ -120,6 +120,24 @@ func TestFormatMethodDeclDetail(t *testing.T) {
 	}
 }
 
+func TestReturnTypeFromMethodLabel(t *testing.T) {
+	tests := []struct {
+		label string
+		want  string
+	}{
+		{"String getName()", "String"},
+		{"Map<String, Integer> index()", "Map<String, Integer>"},
+		{"void work(String name)", "void"},
+		{"broken", ""},
+	}
+	for _, tt := range tests {
+		got := returnTypeFromMethodLabel(tt.label)
+		if got != tt.want {
+			t.Errorf("returnTypeFromMethodLabel(%q) = %q, want %q", tt.label, got, tt.want)
+		}
+	}
+}
+
 func TestExtractParamTypeName(t *testing.T) {
 	tests := []struct {
 		input string
@@ -141,63 +159,38 @@ func TestExtractParamTypeName(t *testing.T) {
 	}
 }
 
-func TestReturnTypeFromMethodLabel(t *testing.T) {
+func TestTypeExprMatchesExpected(t *testing.T) {
 	tests := []struct {
-		label string
-		want  string
-	}{
-		{"String getName()", "String"},
-		{"Map<String, Integer> index()", "Map<String, Integer>"},
-		{"void work(String name)", "void"},
-		{"broken", ""},
-	}
-	for _, tt := range tests {
-		got := returnTypeFromMethodLabel(tt.label)
-		if got != tt.want {
-			t.Errorf("returnTypeFromMethodLabel(%q) = %q, want %q", tt.label, got, tt.want)
-		}
-	}
-}
-
-func TestValueTypeFromLabel(t *testing.T) {
-	tests := []struct {
-		label string
-		want  string
-	}{
-		{"name: String", "String"},
-		{"items: List<String>", "List<String>"},
-		{"broken", ""},
-	}
-	for _, tt := range tests {
-		got := valueTypeFromLabel(tt.label)
-		if got != tt.want {
-			t.Errorf("valueTypeFromLabel(%q) = %q, want %q", tt.label, got, tt.want)
-		}
-	}
-}
-
-func TestTypeMatchesExpected(t *testing.T) {
-	tests := []struct {
-		candidate string
-		expected  string
+		name      string
+		candidate *index.TypeExpr
+		expected  *index.TypeExpr
 		want      bool
 	}{
-		{"String", "String", true},
-		{"int", "int", true},
-		{"String", "int", false},
-		{"java/lang/String#", "String", true},
-		{"String", "java/lang/String#", true},
-		{"List<String>", "List", true},
-		{"List<String>", "List<Integer>", true}, // base type match
-		{"", "String", false},
-		{"String", "", false},
+		{"exact match", te("java/lang/String#"), te("java/lang/String#"), true},
+		{"different types", te("java/lang/String#"), te("java/lang/Integer#"), false},
+		{"simple name match", te("java/lang/String#"), te("com/example/String#"), true},
+		{"nil candidate", nil, te("java/lang/String#"), false},
+		{"nil expected", te("java/lang/String#"), nil, false},
+		{"same generic", teArgs("java/util/List#", te("java/lang/String#")), teArgs("java/util/List#", te("java/lang/String#")), true},
+		{"different generic args", teArgs("java/util/List#", te("java/lang/String#")), teArgs("java/util/List#", te("java/lang/Integer#")), true},
+		{"base match no args", te("java/util/List#"), teArgs("java/util/List#", te("java/lang/String#")), true},
 	}
 	for _, tt := range tests {
-		got := typeMatchesExpected(tt.candidate, tt.expected)
-		if got != tt.want {
-			t.Errorf("typeMatchesExpected(%q, %q) = %v, want %v", tt.candidate, tt.expected, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			got := typeExprMatchesExpected(tt.candidate, tt.expected)
+			if got != tt.want {
+				t.Errorf("typeExprMatchesExpected(%v, %v) = %v, want %v", tt.candidate, tt.expected, got, tt.want)
+			}
+		})
 	}
+}
+
+func te(sym string) *index.TypeExpr {
+	return &index.TypeExpr{Sym: sym}
+}
+
+func teArgs(sym string, args ...*index.TypeExpr) *index.TypeExpr {
+	return &index.TypeExpr{Sym: sym, Args: args}
 }
 
 func TestCompleteSnippets(t *testing.T) {
@@ -647,6 +640,9 @@ func TestCompleteDot_ListOfStringLambdaParam(t *testing.T) {
 			Args: []*index.TypeExpr{{Sym: "java/util/List#[E]"}},
 		},
 	})
+	setIndexField(t, idx, "symbolDeclParamTypes", map[string][]*index.TypeExpr{
+		"java/util/List#of().": {{Sym: "java/util/List#[E]"}},
+	})
 	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
 		"string": {{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS}},
 		"list":   {{Name: "List", Symbol: "java/util/List#", Kind: sdb.SymbolInformation_INTERFACE}},
@@ -674,6 +670,143 @@ func TestCompleteDot_ListOfStringLambdaParam(t *testing.T) {
 	}
 	if items[0].Label != "toLowerCase()" {
 		t.Fatalf("expected String lambda completion from List.of inference, got %+v", items[0])
+	}
+}
+
+func TestResolveVarInitializer_UsesOwnerMethodForInference(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"collections": {{Name: "Collections", Symbol: "java/util/Collections#", Kind: sdb.SymbolInformation_CLASS}},
+		"list":        {{Name: "List", Symbol: "java/util/List#", Kind: sdb.SymbolInformation_INTERFACE}},
+		"string":      {{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS}},
+	})
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"java/util/Collections#": {
+			{
+				Name:     "unmodifiableList",
+				Symbol:   "java/util/Collections#unmodifiableList().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+				Signature: &index.SignatureInfo{
+					Label:         "List<T> unmodifiableList(List<? extends T> list)",
+					ReturnTypeSym: "java/util/List#",
+					HasParams:     true,
+				},
+			},
+		},
+	})
+	setIndexField(t, idx, "symbolDeclType", map[string]*index.TypeExpr{
+		"java/util/Collections#unmodifiableList().": {
+			Sym:  "java/util/List#",
+			Args: []*index.TypeExpr{{Sym: "T"}},
+		},
+	})
+	setIndexField(t, idx, "symbolDeclParamTypes", map[string][]*index.TypeExpr{
+		"java/util/Collections#unmodifiableList().": {{
+			Sym:  "java/util/List#",
+			Args: []*index.TypeExpr{{Sym: "T"}},
+		}},
+	})
+
+	resolver := &typeResolver{idx: idx}
+	got := h.resolveVarInitializer(&VarInitializer{
+		Receiver:   "Collections",
+		MethodName: "unmodifiableList",
+		ArgTypes: []*index.TypeExpr{{
+			Sym:  "java/util/List#",
+			Args: []*index.TypeExpr{{Sym: "java/lang/String#"}},
+		}},
+	}, &CompletionCtx{}, resolver)
+
+	if got == nil {
+		t.Fatal("expected inferred type, got nil")
+	}
+	if got.Sym != "java/util/List#" || len(got.Args) != 1 || got.Args[0].Sym != "java/lang/String#" {
+		t.Fatalf("expected List<String>, got %+v", got)
+	}
+}
+
+func TestResolveCurrentArgumentTypeExpr_PrefersMatchingOverload(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"foo":     {{Name: "Foo", Symbol: "com/example/Foo#", Kind: sdb.SymbolInformation_CLASS}},
+		"integer": {{Name: "Integer", Symbol: "java/lang/Integer#", Kind: sdb.SymbolInformation_CLASS}},
+		"string":  {{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS}},
+	})
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"com/example/Foo#": {
+			{
+				Name:   "call",
+				Symbol: "com/example/Foo#call(+1).",
+				Kind:   sdb.SymbolInformation_METHOD,
+				Signature: &index.SignatureInfo{
+					Label:         "void call(Integer value)",
+					HasParams:     true,
+					Params:        []index.ParamInfo{{Name: "value", Type: "Integer", TypeSym: "java/lang/Integer#"}},
+					ReturnTypeSym: "void",
+				},
+			},
+			{
+				Name:   "call",
+				Symbol: "com/example/Foo#call(+2).",
+				Kind:   sdb.SymbolInformation_METHOD,
+				Signature: &index.SignatureInfo{
+					Label:         "void call(String value, int n)",
+					HasParams:     true,
+					Params:        []index.ParamInfo{{Name: "value", Type: "String", TypeSym: "java/lang/String#"}, {Name: "n", Type: "int"}},
+					ReturnTypeSym: "void",
+				},
+			},
+		},
+	})
+
+	resolver := &typeResolver{idx: idx}
+	got := h.resolveCurrentArgumentTypeExpr(&CompletionCtx{
+		Receiver: "foo",
+		Locals:   []ValueDecl{{Name: "foo", Type: &index.TypeExpr{Sym: "com/example/Foo#"}}},
+		Call:     &CallContext{Receiver: "foo", MethodName: "call", ParamIndex: 0},
+	}, resolver)
+
+	if got == nil || got.Sym != "java/lang/Integer#" {
+		t.Fatalf("expected Integer overload to win for single-arg call, got %+v", got)
+	}
+}
+
+func TestResolveCurrentArgumentTypeExpr_FallbackToParsedLabel(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"foo":    {{Name: "Foo", Symbol: "com/example/Foo#", Kind: sdb.SymbolInformation_CLASS}},
+		"string": {{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS}},
+	})
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"com/example/Foo#": {
+			{
+				Name:   "setValue",
+				Symbol: "com/example/Foo#setValue().",
+				Kind:   sdb.SymbolInformation_METHOD,
+				Signature: &index.SignatureInfo{
+					Label:     "void setValue(String value)",
+					HasParams: true,
+				},
+			},
+		},
+	})
+
+	resolver := &typeResolver{idx: idx}
+	got := h.resolveCurrentArgumentTypeExpr(&CompletionCtx{
+		Receiver: "foo",
+		Locals:   []ValueDecl{{Name: "foo", Type: &index.TypeExpr{Sym: "com/example/Foo#"}}},
+		Call:     &CallContext{Receiver: "foo", MethodName: "setValue", ParamIndex: 0},
+	}, resolver)
+
+	if got == nil || got.Sym != "java/lang/String#" {
+		t.Fatalf("expected fallback ParseParams type resolution, got %+v", got)
 	}
 }
 

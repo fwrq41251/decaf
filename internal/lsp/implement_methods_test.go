@@ -246,6 +246,43 @@ func TestGenerateMethodStub_Void(t *testing.T) {
 	}
 }
 
+func TestGenerateMethodStub_GenericOwnerSubstitution(t *testing.T) {
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := index.NewIndex(logger, t.TempDir())
+	defer idx.Close()
+
+	setIndexField(t, idx, "classTypeParams", map[string][]string{
+		"java/util/AbstractList#": {"java/util/AbstractList#[E]"},
+	})
+	setIndexField(t, idx, "symbolDeclType", map[string]*index.TypeExpr{
+		"java/util/AbstractList#get().": {Sym: "java/util/AbstractList#[E]"},
+	})
+	setIndexField(t, idx, "symbolDeclParamTypes", map[string][]*index.TypeExpr{
+		"java/util/AbstractList#get().": {{Sym: "scala/Int#"}},
+	})
+
+	sym := index.Symbol{
+		Name:   "get",
+		Kind:   sdb.SymbolInformation_METHOD,
+		Symbol: "java/util/AbstractList#get().",
+		Signature: &index.SignatureInfo{
+			Label:         "E get(int index)",
+			ReturnTypeSym: "java/util/AbstractList#[E]",
+			HasParams:     true,
+			Params:        []index.ParamInfo{{Name: "index", Type: "int", TypeSym: "scala/Int#"}},
+		},
+	}
+
+	stub := generateMethodStubForOwner(sym, &index.TypeExpr{
+		Sym:  "java/util/AbstractList#",
+		Args: []*index.TypeExpr{{Sym: "java/lang/String#"}},
+	}, idx)
+
+	if !strings.Contains(stub, "public String get(int index)") {
+		t.Fatalf("expected substituted generic return type in stub, got: %s", stub)
+	}
+}
+
 func TestOverrideMethodActions(t *testing.T) {
 	javaSource := `package com.example;
 

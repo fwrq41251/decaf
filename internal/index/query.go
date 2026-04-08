@@ -626,6 +626,13 @@ func (idx *Index) DeclTypeOf(sym string) *TypeExpr {
 	return idx.symbolDeclType[sym]
 }
 
+// DeclParamTypesOf returns the declared parameter types of a method as TypeExprs (preserving generics).
+func (idx *Index) DeclParamTypesOf(sym string) []*TypeExpr {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.symbolDeclParamTypes[sym]
+}
+
 // ClassTypeParams returns the type parameter symbols for a class (in declaration order).
 func (idx *Index) ClassTypeParams(sym string) []string {
 	idx.ensureClassSkeletonIndexed(sym)

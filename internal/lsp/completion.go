@@ -483,23 +483,20 @@ func (h *Handler) resolveCurrentArgumentTypeExpr(cctx *CompletionCtx, resolver *
 	}
 
 	paramIdx := cctx.Call.ParamIndex
-	for _, sym := range syms {
-		if sym.Signature == nil || paramIdx >= len(sym.Signature.Params) {
-			continue
-		}
-		param := sym.Signature.Params[paramIdx]
-		if te := signatureParamTypeExpr(param.Type, resolver); te != nil {
-			if ownerType != nil {
-				te = substituteNamedTypeParams(te, ownerType, h.idx)
-			}
-			return te
-		}
-		if param.TypeSym != "" {
-			return &index.TypeExpr{Sym: param.TypeSym}
-		}
+	best := h.selectBestMethodOverload(syms, paramIdx+1, nil, resolver)
+	if best == nil {
+		return nil
 	}
 
-	return nil
+	te := h.methodParamTypeExpr(*best, paramIdx, resolver)
+	if te == nil {
+		return nil
+	}
+	if ownerType != nil {
+		te = substituteTypeParams(te, ownerType, h.idx)
+		te = substituteNamedTypeParams(te, ownerType, h.idx)
+	}
+	return te
 }
 
 func signatureParamTypeExpr(typeName string, resolver *typeResolver) *index.TypeExpr {
@@ -527,6 +524,14 @@ func signatureParamTypeExpr(typeName string, resolver *typeResolver) *index.Type
 		}
 	}
 	return te
+}
+
+func extractParamTypeName(paramLabel string) string {
+	lastSpace := strings.LastIndex(paramLabel, " ")
+	if lastSpace <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(paramLabel[:lastSpace])
 }
 
 func normalizeTypeArgName(name string) string {
@@ -679,84 +684,149 @@ func samParamTypeFromTargetType(targetType *index.TypeExpr, paramIndex int, idx 
 // Supports static calls (List.of(...)), instance calls (list.get(0)),
 // and chained calls (builder.name("a").build()).
 func (h *Handler) resolveVarInitializer(vi *VarInitializer, cctx *CompletionCtx, resolver *typeResolver) *index.TypeExpr {
-	// Resolve the receiver chain (e.g. "builder.name" or "List").
-	parts := strings.Split(vi.Receiver, ".")
-	if len(parts) == 0 {
-		return nil
-	}
-
-	typeExpr, _ := h.resolveIdentifierTypeExpr(parts[0], cctx, resolver)
-	if typeExpr == nil {
-		return nil
-	}
-
-	for i := 1; i < len(parts); i++ {
-		typeExpr = h.resolveMemberTypeExpr(typeExpr, parts[i])
-		if typeExpr == nil {
-			return nil
-		}
-	}
-
-	result := h.resolveMemberTypeExpr(typeExpr, vi.MethodName)
+	ownerType, result := h.resolveVarInitializerMethodCall(vi, cctx, resolver)
 	if result == nil {
 		return nil
 	}
-	return refineVarInitializerType(result, vi, resolver)
+	return h.refineVarInitializerType(result, ownerType, vi, resolver)
 }
 
-func refineVarInitializerType(te *index.TypeExpr, vi *VarInitializer, resolver *typeResolver) *index.TypeExpr {
+func (h *Handler) resolveVarInitializerMethodCall(vi *VarInitializer, cctx *CompletionCtx, resolver *typeResolver) (*index.TypeExpr, *index.TypeExpr) {
+	if vi == nil {
+		return nil, nil
+	}
+	fakeCctx := &CompletionCtx{
+		Receiver:       vi.Receiver,
+		Locals:         cctx.Locals,
+		LambdaParams:   cctx.LambdaParams,
+		Params:         cctx.Params,
+		ClassFields:    cctx.ClassFields,
+		Imports:        cctx.Imports,
+		Package:        cctx.Package,
+		EnclosingClass: cctx.EnclosingClass,
+	}
+	ownerType, _ := h.resolveReceiverTypeExpr(fakeCctx, resolver)
+	if ownerType == nil {
+		return nil, nil
+	}
+	return ownerType, h.resolveMemberTypeExpr(ownerType, vi.MethodName)
+}
+
+func (h *Handler) refineVarInitializerType(te, ownerType *index.TypeExpr, vi *VarInitializer, resolver *typeResolver) *index.TypeExpr {
 	if te == nil || vi == nil || len(te.Args) == 0 {
 		return te
 	}
 
-	// Heuristic for common static generic factory methods such as
-	// List.of("x"), Set.of("x"), Optional.of("x"), Stream.of("x").
-	if vi.MethodName != "of" {
-		return te
-	}
-	if vi.Receiver != "List" && vi.Receiver != "Set" && vi.Receiver != "Optional" && vi.Receiver != "Stream" {
-		return te
-	}
-
-	argType := commonResolvedArgType(vi.ArgTypes, resolver)
-	if argType == nil {
-		return te
-	}
-
-	result := &index.TypeExpr{Sym: te.Sym, Args: make([]*index.TypeExpr, len(te.Args))}
-	for i, arg := range te.Args {
+	// Check if any type arg is unresolved.
+	hasUnresolved := false
+	for _, arg := range te.Args {
 		if isUnresolvedTypeParam(arg) {
-			result.Args[i] = argType
+			hasUnresolved = true
+			break
+		}
+	}
+	if !hasUnresolved {
+		return te
+	}
+
+	// Try generic inference: match actual arg types to formal param type parameters.
+	if inferred := h.inferTypeParamsFromArgs(te, ownerType, vi, resolver); inferred != nil {
+		return inferred
+	}
+
+	return te
+}
+
+// inferTypeParamsFromArgs infers type parameter bindings by matching actual argument
+// types against formal parameter types, then substitutes them in the return type.
+func (h *Handler) inferTypeParamsFromArgs(te, ownerType *index.TypeExpr, vi *VarInitializer, resolver *typeResolver) *index.TypeExpr {
+	if len(vi.ArgTypes) == 0 {
+		return nil
+	}
+	if ownerType == nil {
+		return nil
+	}
+
+	method := h.selectBestMethodOverload(h.findMembersByName(ownerType.Sym, vi.MethodName), len(vi.ArgTypes), vi.ArgTypes, resolver)
+	if method == nil {
+		return nil
+	}
+	formalParams := h.methodParamTypes(*method, resolver)
+	if len(formalParams) == 0 {
+		return nil
+	}
+
+	// Build type parameter bindings: e.g. "java/util/List#[E]" → String#
+	bindings := make(map[string]*index.TypeExpr)
+	for i, formal := range formalParams {
+		if i >= len(vi.ArgTypes) {
+			break
+		}
+		actual := vi.ArgTypes[i]
+		if actual == nil {
 			continue
 		}
+		resolved := resolver.resolveParameterized(actual)
+		if resolved == nil {
+			resolved = actual
+		}
+		formal = substituteTypeParams(formal, ownerType, h.idx)
+		formal = substituteNamedTypeParams(formal, ownerType, h.idx)
+		collectTypeParamBindings(formal, resolved, bindings)
+	}
+	if len(bindings) == 0 {
+		return nil
+	}
+
+	// Substitute unresolved type args using the inferred bindings.
+	result := &index.TypeExpr{Sym: te.Sym, Args: make([]*index.TypeExpr, len(te.Args))}
+	changed := false
+	for i, arg := range te.Args {
+		if isUnresolvedTypeParam(arg) {
+			if bound, ok := bindings[arg.Sym]; ok {
+				result.Args[i] = bound
+				changed = true
+				continue
+			}
+		}
 		result.Args[i] = arg
+	}
+	if !changed {
+		return nil
 	}
 	return result
 }
 
-func commonResolvedArgType(argTypes []*index.TypeExpr, resolver *typeResolver) *index.TypeExpr {
-	if len(argTypes) == 0 {
-		return nil
+// collectTypeParamBindings recursively matches a formal type against an actual type,
+// collecting type parameter → concrete type mappings.
+// e.g. formal={Sym:"java/util/List#[E]"} actual={Sym:"java/lang/String#"}
+//
+//	→ bindings["java/util/List#[E]"] = {Sym:"java/lang/String#"}
+//
+// e.g. formal={Sym:"java/util/List#", Args:[{Sym:"java/util/List#[K]"}]}
+//
+//	actual={Sym:"java/util/List#", Args:[{Sym:"java/lang/String#"}]}
+//	→ bindings["java/util/List#[K]"] = {Sym:"java/lang/String#"}
+func collectTypeParamBindings(formal, actual *index.TypeExpr, bindings map[string]*index.TypeExpr) {
+	if formal == nil || actual == nil {
+		return
 	}
-
-	var resolved *index.TypeExpr
-	for _, arg := range argTypes {
-		if arg == nil {
-			return nil
+	if isUnresolvedTypeParam(formal) {
+		if existing, ok := bindings[formal.Sym]; ok {
+			// Consistency check: must unify to the same type.
+			if !sameTypeExpr(existing, actual) {
+				return
+			}
 		}
-		current := resolver.resolveParameterized(arg)
-		if current == nil {
-			return nil
-		}
-		if resolved == nil {
-			resolved = current
-			continue
-		}
-		if !sameTypeExpr(resolved, current) {
-			return nil
+		bindings[formal.Sym] = actual
+		return
+	}
+	// Recurse into type arguments if base types match.
+	if formal.Sym == actual.Sym && len(formal.Args) > 0 && len(formal.Args) == len(actual.Args) {
+		for i := range formal.Args {
+			collectTypeParamBindings(formal.Args[i], actual.Args[i], bindings)
 		}
 	}
-	return resolved
 }
 
 func isUnresolvedTypeParam(te *index.TypeExpr) bool {
@@ -782,6 +852,123 @@ func sameTypeExpr(a, b *index.TypeExpr) bool {
 		}
 	}
 	return true
+}
+
+func (h *Handler) selectBestMethodOverload(candidates []index.Symbol, desiredArity int, actualArgTypes []*index.TypeExpr, resolver *typeResolver) *index.Symbol {
+	var best *index.Symbol
+	bestScore := -1 << 30
+
+	for i := range candidates {
+		candidate := candidates[i]
+		score := 0
+
+		paramTypes := h.methodParamTypes(candidate, resolver)
+		paramCount, countKnown := h.methodParamCount(candidate, len(paramTypes))
+		if desiredArity >= 0 && countKnown {
+			if paramCount == desiredArity {
+				score += 1000
+			} else if paramCount < desiredArity {
+				continue
+			} else {
+				score -= (paramCount - desiredArity) * 10
+			}
+		}
+		if len(paramTypes) > 0 {
+			score += 100
+		}
+		if actualArgTypes != nil && len(paramTypes) > 0 {
+			for j := 0; j < len(actualArgTypes) && j < len(paramTypes); j++ {
+				actual := actualArgTypes[j]
+				if actual == nil {
+					continue
+				}
+				resolved := resolver.resolveParameterized(actual)
+				if resolved == nil {
+					resolved = actual
+				}
+				switch {
+				case sameTypeExpr(paramTypes[j], resolved):
+					score += 20
+				case isUnresolvedTypeParam(paramTypes[j]):
+					score += 5
+				case typeExprMatchesExpected(resolved, paramTypes[j]):
+					score += 10
+				}
+			}
+		}
+
+		if best == nil || score > bestScore {
+			best = &candidates[i]
+			bestScore = score
+		}
+	}
+
+	return best
+}
+
+func (h *Handler) methodParamCount(sym index.Symbol, knownTypes int) (int, bool) {
+	if knownTypes > 0 {
+		return knownTypes, true
+	}
+	if sym.Signature == nil {
+		return 0, false
+	}
+	if n := len(sym.Signature.ParseParams()); n > 0 {
+		return n, true
+	}
+	if !sym.Signature.HasParams {
+		return 0, true
+	}
+	return 0, false
+}
+
+func (h *Handler) methodParamTypes(sym index.Symbol, resolver *typeResolver) []*index.TypeExpr {
+	if pts := h.idx.DeclParamTypesOf(sym.Symbol); len(pts) > 0 {
+		return pts
+	}
+	if sym.Signature == nil {
+		return nil
+	}
+
+	var result []*index.TypeExpr
+	for _, param := range sym.Signature.Params {
+		if te := signatureParamTypeExpr(param.Type, resolver); te != nil {
+			result = append(result, te)
+			continue
+		}
+		if param.TypeSym != "" {
+			result = append(result, &index.TypeExpr{Sym: param.TypeSym})
+			continue
+		}
+		return nil
+	}
+	if len(result) > 0 {
+		return result
+	}
+
+	for _, raw := range sym.Signature.ParseParams() {
+		typeName := extractParamTypeName(raw)
+		if typeName == "" {
+			return nil
+		}
+		te := signatureParamTypeExpr(typeName, resolver)
+		if te == nil {
+			return nil
+		}
+		result = append(result, te)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func (h *Handler) methodParamTypeExpr(sym index.Symbol, paramIdx int, resolver *typeResolver) *index.TypeExpr {
+	params := h.methodParamTypes(sym, resolver)
+	if paramIdx < len(params) {
+		return params[paramIdx]
+	}
+	return nil
 }
 
 // resolveMemberTypeExpr resolves the type of a member on a given type,
@@ -900,7 +1087,8 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	}
 
 	// Resolve expected parameter type if cursor is inside a method call.
-	expectedType := h.resolveExpectedType(cctx)
+	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
+	expectedType := h.resolveCurrentArgumentTypeExpr(cctx, resolver)
 
 	seen := make(map[string]struct{})
 	seenTypeSymbols := make(map[string]struct{})
@@ -918,32 +1106,27 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		return "1"
 	}
 
-	addItem := func(name string, kind int, detail string, scopeOrder string) {
+	typeMatchPrefix := func(candidateType *index.TypeExpr) string {
+		if typeExprMatchesExpected(candidateType, expectedType) {
+			return "0"
+		}
+		return "1"
+	}
+
+	addItem := func(name string, kind int, detail string, candidateType *index.TypeExpr, scopeOrder string) {
 		if _, ok := seen[name]; ok {
 			return
 		}
 		seen[name] = struct{}{}
-		// Type-aware boost: prepend "0" for type-matching candidates, "1" otherwise.
-		typePrefix := "1"
-		if expectedType != "" && typeMatchesExpected(detail, expectedType) {
-			typePrefix = "0"
-		}
 		item := CompletionItem{
 			Label:      name,
 			Kind:       kind,
 			InsertText: name,
 			Detail:     detail,
-			SortText:   typePrefix + casePrefix(name) + scopeOrder + name,
+			SortText:   typeMatchPrefix(candidateType) + casePrefix(name) + scopeOrder + name,
 			FilterText: name,
 		}
 		items = append(items, item)
-	}
-
-	methodTypePrefix := func(returnType string) string {
-		if expectedType != "" && typeMatchesExpected(returnType, expectedType) {
-			return "0"
-		}
-		return "1"
 	}
 
 	matchPrefix := func(name string) bool {
@@ -954,7 +1137,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	for i := len(cctx.LambdaParams) - 1; i >= 0; i-- {
 		p := cctx.LambdaParams[i]
 		if matchPrefix(p.Name) {
-			addItem(p.Name, SymbolKindVariable, p.Type.String(), "0")
+			addItem(p.Name, SymbolKindVariable, p.Type.String(), p.Type, "0")
 		}
 	}
 
@@ -962,21 +1145,21 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	for i := len(cctx.Locals) - 1; i >= 0; i-- {
 		l := cctx.Locals[i]
 		if matchPrefix(l.Name) {
-			addItem(l.Name, SymbolKindVariable, l.Type.String(), "1")
+			addItem(l.Name, SymbolKindVariable, l.Type.String(), l.Type, "1")
 		}
 	}
 
 	// 3. Method parameters (scope "2").
 	for _, p := range cctx.Params {
 		if matchPrefix(p.Name) {
-			addItem(p.Name, SymbolKindVariable, p.Type.String(), "2")
+			addItem(p.Name, SymbolKindVariable, p.Type.String(), p.Type, "2")
 		}
 	}
 
 	// 4. Class fields (scope "3").
 	for _, f := range cctx.ClassFields {
 		if matchPrefix(f.Name) {
-			addItem(f.Name, SymbolKindField, f.Type.String(), "3")
+			addItem(f.Name, SymbolKindField, f.Type.String(), f.Type, "3")
 		}
 	}
 
@@ -992,7 +1175,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 				Label:      formatMethodDeclDetail(m),
 				Kind:       SymbolKindMethod,
 				Detail:     formatMethodDeclDetail(m),
-				SortText:   methodTypePrefix(m.ReturnType.String()) + casePrefix(m.Name) + "4" + m.Name + methodDeclSortSuffix(m),
+				SortText:   typeMatchPrefix(m.ReturnType) + casePrefix(m.Name) + "4" + m.Name + methodDeclSortSuffix(m),
 				FilterText: m.Name,
 			}
 			if cctx.ParenFollows {
@@ -1008,7 +1191,6 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	// 5b. Static imports (scope "5").
 	// For "import static org.assertj.core.api.Assertions.assertThat" → offer assertThat().
 	// For "import static org.assertj.core.api.Assertions.*" → offer all static members.
-	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
 	addStaticMembers := func(classSym string, targetName string) {
 		for _, m := range h.idx.MembersOfType(classSym) {
 			if !m.IsStatic || !matchPrefix(m.Name) {
@@ -1023,9 +1205,10 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 				continue
 			}
 			seen[key] = struct{}{}
-			sortText := methodTypePrefix(m.Name) + casePrefix(m.Name) + "5" + m.Name
-			if (kind == CompletionKindMethod || kind == CompletionKindConstructor) && m.Signature != nil {
-				sortText = methodTypePrefix(signatureReturnTypeSimpleName(m.Signature)) + casePrefix(m.Name) + "5" + m.Name + signatureSortSuffix(m.Signature)
+			retType := symbolReturnTypeExpr(m, h.idx)
+			sortText := typeMatchPrefix(retType) + casePrefix(m.Name) + "5" + m.Name
+			if kind == CompletionKindMethod || kind == CompletionKindConstructor {
+				sortText += signatureSortSuffix(m.Signature)
 			}
 			items = append(items, methodCompletionItem(m.Name, kind, m.Signature, sortText, m.Doc, cctx.ParenFollows))
 		}
@@ -1063,12 +1246,12 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	// Only suggest keywords in lexical completion.
 	for _, kw := range javaKeywords {
 		if matchPrefix(kw) {
-			addItem(kw, CompletionKindText, "keyword", "8")
+			addItem(kw, CompletionKindText, "keyword", nil, "8")
 		}
 	}
 	for _, lit := range javaLiterals {
 		if matchPrefix(lit) {
-			addItem(lit, CompletionKindText, "literal", "8")
+			addItem(lit, CompletionKindText, "literal", nil, "8")
 		}
 	}
 
@@ -1108,7 +1291,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			}
 			seen[key] = struct{}{}
 		}
-		sortText := completionTypePrefix(kind, itemTypeDetailForSort(s, kind), expectedType) + casePrefix(s.Name) + scopeOrder
+		sortText := typeMatchPrefix(symbolReturnTypeExpr(s, h.idx)) + casePrefix(s.Name) + scopeOrder
 		if isTypeCompletionKind(kind) {
 			sortText += typeCompletionPriority(cctx, s)
 		}
@@ -1140,111 +1323,27 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	return items
 }
 
-func completionTypePrefix(kind int, candidateType, expectedType string) string {
-	if expectedType != "" && typeMatchesExpected(candidateType, expectedType) {
-		return "0"
+// symbolReturnTypeExpr returns the structured return/field type for a symbol.
+func symbolReturnTypeExpr(sym index.Symbol, idx *index.Index) *index.TypeExpr {
+	if te := idx.DeclTypeOf(sym.Symbol); te != nil {
+		return te
 	}
-	return "1"
+	if sym.Signature != nil && sym.Signature.ReturnTypeSym != "" {
+		return &index.TypeExpr{Sym: sym.Signature.ReturnTypeSym}
+	}
+	return nil
 }
 
-func signatureReturnTypeSimpleName(sig *index.SignatureInfo) string {
-	if sig == nil {
-		return ""
+// typeExprMatchesExpected checks if a candidate TypeExpr matches the expected TypeExpr.
+func typeExprMatchesExpected(candidate, expected *index.TypeExpr) bool {
+	if candidate == nil || expected == nil {
+		return false
 	}
-	if sig.ReturnTypeSym != "" {
-		sym := strings.TrimSuffix(sig.ReturnTypeSym, "#")
-		sym = strings.TrimSuffix(sym, ".")
-		if lastSlash := strings.LastIndexByte(sym, '/'); lastSlash >= 0 {
-			return sym[lastSlash+1:]
-		}
-		return sym
+	if sameTypeExpr(candidate, expected) {
+		return true
 	}
-	return returnTypeFromMethodLabel(sig.Label)
-}
-
-func itemTypeDetailForSort(sym index.Symbol, kind int) string {
-	if kind == CompletionKindMethod || kind == CompletionKindConstructor {
-		return signatureReturnTypeSimpleName(sym.Signature)
-	}
-	if sym.Signature != nil {
-		return valueTypeFromLabel(sym.Signature.Label)
-	}
-	return ""
-}
-
-// resolveExpectedType resolves the expected parameter type at the cursor position.
-// Returns a simple type name (e.g. "String", "int") or "" if unknown.
-func (h *Handler) resolveExpectedType(cctx *CompletionCtx) string {
-	if cctx.Call == nil {
-		return ""
-	}
-
-	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
-
-	var syms []index.Symbol
-	if cctx.Call.IsNewExpr {
-		// new Foo(...) → look up constructors.
-		if sym := resolver.resolve(cctx.Call.Constructor); sym != "" {
-			syms = h.findMembersByName(sym, cctx.Call.Constructor)
-		}
-	} else if cctx.Call.Receiver != "" {
-		// obj.method(...) → resolve receiver type, find method.
-		fakeCctx := &CompletionCtx{
-			Receiver:       cctx.Call.Receiver,
-			Locals:         cctx.Locals,
-			Params:         cctx.Params,
-			ClassFields:    cctx.ClassFields,
-			Imports:        cctx.Imports,
-			Package:        cctx.Package,
-			EnclosingClass: cctx.EnclosingClass,
-		}
-		typeExpr, _ := h.resolveReceiverTypeExpr(fakeCctx, resolver)
-		if typeExpr != nil {
-			syms = h.findMembersByName(typeExpr.Sym, cctx.Call.MethodName)
-		}
-	} else {
-		// Unqualified call: search enclosing class.
-		if cctx.EnclosingClass != "" {
-			classSym := resolver.resolve(cctx.EnclosingClass)
-			if classSym != "" {
-				syms = h.findMembersByName(classSym, cctx.Call.MethodName)
-			}
-		}
-	}
-
-	if len(syms) == 0 {
-		return ""
-	}
-
-	// Find the best matching overload and extract param type at the given index.
-	paramIdx := cctx.Call.ParamIndex
-	for _, sym := range syms {
-		if sym.Signature == nil {
-			continue
-		}
-		if paramIdx < len(sym.Signature.Params) {
-			param := sym.Signature.Params[paramIdx]
-			if param.Type != "" {
-				return param.Type
-			}
-		}
-		params := sym.Signature.ParseParams()
-		if paramIdx < len(params) {
-			return extractParamTypeName(params[paramIdx])
-		}
-	}
-	return ""
-}
-
-// extractParamTypeName extracts the type name from a parameter label like "String arg" or "int x".
-func extractParamTypeName(paramLabel string) string {
-	// Parameter labels are formatted as "Type name", e.g. "String[] args", "int x".
-	// The type is everything before the last space.
-	lastSpace := strings.LastIndex(paramLabel, " ")
-	if lastSpace <= 0 {
-		return ""
-	}
-	return strings.TrimSpace(paramLabel[:lastSpace])
+	// Fall back to base symbol comparison (ignoring generic args).
+	return simplifyTypeName(candidate.Sym) == simplifyTypeName(expected.Sym)
 }
 
 func returnTypeFromMethodLabel(label string) string {
@@ -1258,42 +1357,6 @@ func returnTypeFromMethodLabel(label string) string {
 		return ""
 	}
 	return strings.TrimSpace(prefix[:lastSpace])
-}
-
-func valueTypeFromLabel(label string) string {
-	colon := strings.LastIndex(label, ": ")
-	if colon < 0 {
-		return ""
-	}
-	return strings.TrimSpace(label[colon+2:])
-}
-
-// typeMatchesExpected checks if a candidate's type (detail string) matches the expected type.
-func typeMatchesExpected(candidateType, expectedType string) bool {
-	if candidateType == "" || expectedType == "" {
-		return false
-	}
-	// Strip generic arguments for comparison (e.g. "List<String>" → "List").
-	candidateBase := stripGenerics(candidateType)
-	expectedBase := stripGenerics(expectedType)
-
-	// Exact match.
-	if candidateBase == expectedBase {
-		return true
-	}
-
-	// Match simplified names: "java/lang/String#" matches "String".
-	candidateSimple := simplifyTypeName(candidateBase)
-	expectedSimple := simplifyTypeName(expectedBase)
-	return candidateSimple == expectedSimple
-}
-
-// stripGenerics removes generic type arguments: "List<String>" → "List".
-func stripGenerics(name string) string {
-	if idx := strings.IndexByte(name, '<'); idx >= 0 {
-		return name[:idx]
-	}
-	return name
 }
 
 // simplifyTypeName extracts the simple class name from a potentially qualified name.

@@ -126,14 +126,12 @@ func (idx *Index) findAndExtractFromJar(jarPath, relPath string) string {
 		return ""
 	}
 
-	// 2. Extract the file to cache.
-	home, _ := os.UserHomeDir()
-
-	// Use a hash of the jarPath for a safe, cross-platform, fixed-length directory name.
+	// 2. Extract the file to a writable cache directory.
+	// Using os.TempDir keeps tests and sandboxed runs working even when ~/.cache is not writable.
 	h := sha1.Sum([]byte(jarPath))
 	sanitizedJar := hex.EncodeToString(h[:])
 
-	destDir := filepath.Join(home, ".cache", "decaf", "lib-src", sanitizedJar)
+	destDir := filepath.Join(os.TempDir(), "decaf", "lib-src", sanitizedJar)
 	destPath := filepath.Join(destDir, targetFile.Name)
 
 	if _, err := os.Stat(destPath); err == nil {
