@@ -2,5 +2,6 @@
 decaf
 
 .gemini/
+.qwen/
 .github/
 gha-creds-*.json
