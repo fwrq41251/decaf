@@ -935,7 +935,7 @@ func collectLocalDecls(node *slog.Node, content []byte, ctx *CompletionCtx) {
 		// For "var" declarations, infer type from the initializer expression.
 		var init *VarInitializer
 		if isVar {
-			typeExpr, init = inferTypeFromDeclarator(node, content)
+			typeExpr, init = inferTypeFromDeclarator(node, content, ctx)
 		}
 		names := extractDeclarators(node, content)
 		for _, name := range names {
@@ -947,14 +947,14 @@ func collectLocalDecls(node *slog.Node, content []byte, ctx *CompletionCtx) {
 // inferTypeFromDeclarator infers the type of a "var" declaration from its initializer.
 // Returns a directly-resolved TypeExpr for simple cases (new, cast, literals),
 // or a VarInitializer for method calls that require index-based resolution.
-func inferTypeFromDeclarator(node *slog.Node, content []byte) (*index.TypeExpr, *VarInitializer) {
+func inferTypeFromDeclarator(node *slog.Node, content []byte, ctx *CompletionCtx) (*index.TypeExpr, *VarInitializer) {
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		child := node.NamedChild(i)
 		if child.Type() == "variable_declarator" {
 			// Find the initializer expression (the child after "=").
 			for j := 0; j < int(child.NamedChildCount()); j++ {
 				init := child.NamedChild(j)
-				te, vi := inferTypeFromExpr(init, content)
+				te, vi := inferTypeFromExpr(init, content, ctx)
 				if te != nil || vi != nil {
 					return te, vi
 				}
@@ -965,7 +965,7 @@ func inferTypeFromDeclarator(node *slog.Node, content []byte) (*index.TypeExpr, 
 }
 
 // inferTypeFromExpr infers the type from an expression node.
-func inferTypeFromExpr(node *slog.Node, content []byte) (*index.TypeExpr, *VarInitializer) {
+func inferTypeFromExpr(node *slog.Node, content []byte, ctx *CompletionCtx) (*index.TypeExpr, *VarInitializer) {
 	switch node.Type() {
 	case "object_creation_expression":
 		return extractTypeFromNewExpr(node, content), nil
@@ -994,35 +994,82 @@ func inferTypeFromExpr(node *slog.Node, content []byte) (*index.TypeExpr, *VarIn
 		return nil, nil
 	case "array_creation_expression":
 		return extractTypeFromArrayCreation(node, content), nil
+	case "identifier":
+		if ctx != nil {
+			return lookupVisibleValueType(node.Content(content), ctx), nil
+		}
+	case "field_access":
+		if ctx != nil {
+			if recv := exprToReceiver(node, content); recv != "" {
+				return lookupVisibleReceiverType(recv, ctx), nil
+			}
+		}
 	case "method_invocation":
-		if vi := extractMethodInvocationInfo(node, content); vi != nil {
+		if vi := extractMethodInvocationInfo(node, content, ctx); vi != nil {
 			return nil, vi
 		}
 	}
 	return nil, nil
 }
 
+func lookupVisibleValueType(name string, ctx *CompletionCtx) *index.TypeExpr {
+	for i := len(ctx.LambdaParams) - 1; i >= 0; i-- {
+		if ctx.LambdaParams[i].Name == name && ctx.LambdaParams[i].Type != nil {
+			return ctx.LambdaParams[i].Type
+		}
+	}
+	for i := 0; i < len(ctx.Locals); i++ {
+		if ctx.Locals[i].Name == name && ctx.Locals[i].Type != nil {
+			return ctx.Locals[i].Type
+		}
+	}
+	for _, p := range ctx.Params {
+		if p.Name == name && p.Type != nil {
+			return p.Type
+		}
+	}
+	for _, f := range ctx.ClassFields {
+		if f.Name == name && f.Type != nil {
+			return f.Type
+		}
+	}
+	return nil
+}
+
+func lookupVisibleReceiverType(recv string, ctx *CompletionCtx) *index.TypeExpr {
+	if recv == "" {
+		return nil
+	}
+	if strings.HasPrefix(recv, "this.") {
+		recv = strings.TrimPrefix(recv, "this.")
+	}
+	if !strings.Contains(recv, ".") {
+		return lookupVisibleValueType(recv, ctx)
+	}
+	return nil
+}
+
 // extractMethodInvocationInfo extracts receiver and method name from a method_invocation.
 // Handles both simple patterns (List.of(...)) and chained calls (builder.name("a").build()).
 // Uses exprToReceiver to flatten the receiver expression into a dot-separated string.
-func extractMethodInvocationInfo(node *slog.Node, content []byte) *VarInitializer {
+func extractMethodInvocationInfo(node *slog.Node, content []byte, ctx *CompletionCtx) *VarInitializer {
 	name := node.ChildByFieldName("name")
 	if name == nil {
 		return nil
 	}
 	obj := node.ChildByFieldName("object")
-	if obj == nil {
-		return nil
-	}
-	recv := exprToReceiver(obj, content)
-	if recv == "" {
-		return nil
+	recv := ""
+	if obj != nil {
+		recv = exprToReceiver(obj, content)
+		if recv == "" {
+			return nil
+		}
 	}
 	var argTypes []*index.TypeExpr
 	if argsNode := node.ChildByFieldName("arguments"); argsNode != nil {
 		for i := 0; i < int(argsNode.NamedChildCount()); i++ {
 			arg := argsNode.NamedChild(i)
-			te, _ := inferTypeFromExpr(arg, content)
+			te, _ := inferTypeFromExpr(arg, content, ctx)
 			argTypes = append(argTypes, te)
 		}
 	}

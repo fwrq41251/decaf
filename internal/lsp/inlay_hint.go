@@ -110,7 +110,7 @@ func (h *Handler) collectVarTypeHint(node *slog.Node, content []byte, hints *[]I
 	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
 
 	// Try to infer the type from the initializer.
-	typeExpr, vi := inferTypeFromDeclarator(node, content)
+	typeExpr, vi := inferTypeFromDeclarator(node, content, cctx)
 	if typeExpr == nil && vi != nil {
 		typeExpr = h.resolveVarInitializer(vi, cctx, resolver)
 	}

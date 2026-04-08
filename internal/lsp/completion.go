@@ -695,6 +695,9 @@ func (h *Handler) resolveVarInitializerMethodCall(vi *VarInitializer, cctx *Comp
 	if vi == nil {
 		return nil, nil
 	}
+	if vi.Receiver == "" {
+		return h.resolveUnqualifiedVarInitializerMethodCall(vi, cctx, resolver)
+	}
 	fakeCctx := &CompletionCtx{
 		Receiver:       vi.Receiver,
 		Locals:         cctx.Locals,
@@ -710,6 +713,66 @@ func (h *Handler) resolveVarInitializerMethodCall(vi *VarInitializer, cctx *Comp
 		return nil, nil
 	}
 	return ownerType, h.resolveMemberTypeExpr(ownerType, vi.MethodName)
+}
+
+func (h *Handler) resolveUnqualifiedVarInitializerMethodCall(vi *VarInitializer, cctx *CompletionCtx, resolver *typeResolver) (*index.TypeExpr, *index.TypeExpr) {
+	var ownerType *index.TypeExpr
+	var candidates []index.Symbol
+
+	if cctx.EnclosingClass != "" {
+		if classSym := resolver.resolve(cctx.EnclosingClass); classSym != "" {
+			ownerType = &index.TypeExpr{Sym: classSym}
+			candidates = append(candidates, h.findMembersByName(classSym, vi.MethodName)...)
+		}
+	}
+	for _, imp := range cctx.Imports {
+		if !imp.Static {
+			continue
+		}
+		if imp.Wildcard {
+			classFQN := strings.TrimSuffix(imp.Path, ".*")
+			classSym := resolver.resolve(simpleNameFromFQN(classFQN))
+			if classSym == "" {
+				classSym = fqnToSymbol(classFQN)
+			}
+			candidates = append(candidates, h.findMembersByName(classSym, vi.MethodName)...)
+			continue
+		}
+		lastDot := strings.LastIndex(imp.Path, ".")
+		if lastDot < 0 || imp.Path[lastDot+1:] != vi.MethodName {
+			continue
+		}
+		classFQN := imp.Path[:lastDot]
+		classSym := resolver.resolve(simpleNameFromFQN(classFQN))
+		if classSym == "" {
+			classSym = fqnToSymbol(classFQN)
+		}
+		candidates = append(candidates, h.findMembersByName(classSym, vi.MethodName)...)
+	}
+
+	best := h.selectBestMethodOverload(candidates, len(vi.ArgTypes), vi.ArgTypes, resolver)
+	if best == nil {
+		return ownerType, nil
+	}
+	if te := h.idx.DeclTypeOf(best.Symbol); te != nil {
+		if ownerType != nil {
+			te = substituteTypeParams(te, ownerType, h.idx)
+			te = substituteNamedTypeParams(te, ownerType, h.idx)
+		}
+		return ownerType, te
+	}
+	if sym := h.idx.TypeOfSymbol(best.Symbol); sym != "" {
+		te := &index.TypeExpr{Sym: sym}
+		if ownerType != nil {
+			te = substituteTypeParams(te, ownerType, h.idx)
+			te = substituteNamedTypeParams(te, ownerType, h.idx)
+		}
+		return ownerType, te
+	}
+	if best.Signature != nil && best.Signature.ReturnTypeSym != "" {
+		return ownerType, &index.TypeExpr{Sym: best.Signature.ReturnTypeSym}
+	}
+	return ownerType, nil
 }
 
 func (h *Handler) refineVarInitializerType(te, ownerType *index.TypeExpr, vi *VarInitializer, resolver *typeResolver) *index.TypeExpr {

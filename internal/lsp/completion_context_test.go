@@ -1164,3 +1164,39 @@ public class MyClass {
 		t.Errorf("expected CallContext to be nil, got %+v", ctx.Call)
 	}
 }
+
+func TestParseCompletionCtx_VarInitializer_ArgumentIdentifierType(t *testing.T) {
+	src := []byte(`package com.example;
+
+import java.util.List;
+
+public class MyClass {
+    public void test(String name) {
+        var list = List.of(name);
+        list.size();
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 6, 13)
+	if len(ctx.Locals) == 0 {
+		t.Fatal("expected local variables in completion context")
+	}
+	var listDecl *ValueDecl
+	for i := range ctx.Locals {
+		if ctx.Locals[i].Name == "list" {
+			listDecl = &ctx.Locals[i]
+			break
+		}
+	}
+	if listDecl == nil || listDecl.Initializer == nil {
+		t.Fatalf("expected var initializer for local 'list', got %+v", ctx.Locals)
+	}
+	if listDecl.Initializer.Receiver != "List" || listDecl.Initializer.MethodName != "of" {
+		t.Fatalf("unexpected initializer: %+v", listDecl.Initializer)
+	}
+	if len(listDecl.Initializer.ArgTypes) != 1 || listDecl.Initializer.ArgTypes[0] == nil {
+		t.Fatalf("expected one inferred argument type, got %+v", listDecl.Initializer.ArgTypes)
+	}
+	if got := listDecl.Initializer.ArgTypes[0].String(); got != "String" {
+		t.Fatalf("expected argument type String, got %q", got)
+	}
+}

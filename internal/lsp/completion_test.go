@@ -728,6 +728,58 @@ func TestResolveVarInitializer_UsesOwnerMethodForInference(t *testing.T) {
 	}
 }
 
+func TestResolveIdentifierTypeExpr_UnqualifiedVarInitializerMethod(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"test":   {{Name: "Test", Symbol: "com/example/Test#", Kind: sdb.SymbolInformation_CLASS}},
+		"list":   {{Name: "List", Symbol: "java/util/List#", Kind: sdb.SymbolInformation_INTERFACE}},
+		"string": {{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS}},
+	})
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"com/example/Test#": {
+			{
+				Name:   "createList",
+				Symbol: "com/example/Test#createList().",
+				Kind:   sdb.SymbolInformation_METHOD,
+				Signature: &index.SignatureInfo{
+					Label:         "List<String> createList(String name)",
+					ReturnTypeSym: "java/util/List#",
+					HasParams:     true,
+					Params:        []index.ParamInfo{{Name: "name", Type: "String", TypeSym: "java/lang/String#"}},
+				},
+			},
+		},
+	})
+	setIndexField(t, idx, "symbolDeclType", map[string]*index.TypeExpr{
+		"com/example/Test#createList().": {
+			Sym:  "java/util/List#",
+			Args: []*index.TypeExpr{{Sym: "java/lang/String#"}},
+		},
+	})
+
+	resolver := &typeResolver{idx: idx}
+	typeExpr, staticAccess := h.resolveIdentifierTypeExpr("list", &CompletionCtx{
+		EnclosingClass: "Test",
+		Params:         []ValueDecl{{Name: "name", Type: &index.TypeExpr{Sym: "String"}}},
+		Locals: []ValueDecl{{
+			Name: "list",
+			Initializer: &VarInitializer{
+				MethodName: "createList",
+				ArgTypes:   []*index.TypeExpr{{Sym: "String"}},
+			},
+		}},
+	}, resolver)
+
+	if staticAccess {
+		t.Fatal("expected local var binding, got static access")
+	}
+	if typeExpr == nil || typeExpr.Sym != "java/util/List#" || len(typeExpr.Args) != 1 || typeExpr.Args[0].Sym != "java/lang/String#" {
+		t.Fatalf("expected List<String> from unqualified method var inference, got %+v", typeExpr)
+	}
+}
+
 func TestResolveCurrentArgumentTypeExpr_PrefersMatchingOverload(t *testing.T) {
 	h, idx, _ := newTestHandler(t)
 	defer idx.Close()
