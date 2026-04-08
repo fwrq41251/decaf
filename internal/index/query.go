@@ -235,42 +235,59 @@ func (idx *Index) CompletionSymbols(uri string, query string) []Symbol {
 	// Collect types and non-types separately so we can prioritize type names.
 	var sameFileTypes, sameFileOther []Symbol
 	var otherTypes, otherOther []Symbol
-	for _, defs := range idx.definitions {
-		for _, id := range defs {
+	for name, ids := range idx.typeBySimpleName {
+		if !fuzzyMatchLower(name, query) {
+			continue
+		}
+		for _, id := range ids {
 			d := idx.symbol(id)
-			if !FuzzyMatch(d.Name, query) {
-				continue
-			}
-			isType := isTypeKind(d.Kind)
 			if d.URI == relURI {
 				s := *d
 				s.SameFile = true
-				if isType {
-					sameFileTypes = append(sameFileTypes, s)
-				} else {
-					sameFileOther = append(sameFileOther, s)
-				}
+				sameFileTypes = append(sameFileTypes, s)
 			} else {
-				if isType {
-					otherTypes = append(otherTypes, *d)
-				} else {
-					otherOther = append(otherOther, *d)
-				}
+				otherTypes = append(otherTypes, *d)
 			}
 		}
 	}
-	for sym, info := range idx.externalTypeInfo {
-		if !FuzzyMatch(info.name, query) {
+	for name, ids := range idx.memberBySimpleName {
+		if !fuzzyMatchLower(name, query) {
 			continue
 		}
-		otherTypes = append(otherTypes, Symbol{
-			Name:   info.name,
-			Symbol: sym,
-			Kind:   info.kind,
-		})
+		for _, id := range ids {
+			d := idx.symbol(id)
+			if d.URI == relURI {
+				s := *d
+				s.SameFile = true
+				sameFileOther = append(sameFileOther, s)
+			} else {
+				otherOther = append(otherOther, *d)
+			}
+		}
+	}
+	for name, syms := range idx.externalTypesBySimpleName {
+		if !fuzzyMatchLower(name, query) {
+			continue
+		}
+		for _, sym := range syms {
+			info := idx.externalTypeInfo[sym]
+			otherTypes = append(otherTypes, Symbol{
+				Name:   info.name,
+				Symbol: sym,
+				Kind:   info.kind,
+			})
+		}
 	}
 
 	// Priority: same-file types > other types > same-file members > other members.
+	// Sort each bucket by name for deterministic results before merging.
+	sortByName := func(s []Symbol) {
+		sort.SliceStable(s, func(i, j int) bool { return s[i].Name < s[j].Name })
+	}
+	sortByName(sameFileTypes)
+	sortByName(otherTypes)
+	sortByName(sameFileOther)
+	sortByName(otherOther)
 	result := make([]Symbol, 0, len(sameFileTypes)+len(otherTypes)+len(sameFileOther)+len(otherOther))
 	result = append(result, sameFileTypes...)
 	result = append(result, otherTypes...)
@@ -285,11 +302,14 @@ func (idx *Index) CompletionSymbols(uri string, query string) []Symbol {
 }
 
 func FuzzyMatch(name, query string) bool {
+	return fuzzyMatchLower(strings.ToLower(name), strings.ToLower(query))
+}
+
+// fuzzyMatchLower is like FuzzyMatch but assumes both arguments are already lowercase.
+func fuzzyMatchLower(name, query string) bool {
 	if query == "" {
 		return true
 	}
-	name = strings.ToLower(name)
-	query = strings.ToLower(query)
 	ni, qi := 0, 0
 	for ni < len(name) && qi < len(query) {
 		if name[ni] == query[qi] {

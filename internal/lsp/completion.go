@@ -76,10 +76,15 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 	// Get members of the resolved type.
 	members := h.idx.MembersOfType(typeExpr.Sym)
 	query := cctx.Prefix
+	lowerPrefix := strings.ToLower(cctx.Prefix)
 
 	var items []CompletionItem
 	seen := make(map[string]struct{})
 	for _, m := range members {
+		// Skip constructors: they should only appear after 'new', not in member access.
+		if m.Kind == sdb.SymbolInformation_CONSTRUCTOR {
+			continue
+		}
 		if !index.FuzzyMatch(m.Name, query) {
 			continue
 		}
@@ -90,10 +95,10 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 		if !staticAccess && m.IsStatic {
 			continue
 		}
-		// Build sortText: exact case match first, then fields before methods.
-		sortPrefix := "1" // case-insensitive match
-		if cctx.Prefix != "" && strings.HasPrefix(m.Name, cctx.Prefix) {
-			sortPrefix = "0" // exact case match
+		// Build sortText: case-insensitive prefix match first, then fields before methods.
+		sortPrefix := "1" // fuzzy match (chars not contiguous)
+		if lowerPrefix != "" && strings.HasPrefix(strings.ToLower(m.Name), lowerPrefix) {
+			sortPrefix = "0" // case-insensitive prefix match
 		}
 		kind := sdbKindToCompletionKind(m.Kind)
 		kindOrder := "1" // methods
@@ -121,6 +126,7 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 
 func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 	query := cctx.Prefix
+	lowerPrefix := strings.ToLower(cctx.Prefix)
 	seen := make(map[string]struct{})
 	var items []CompletionItem
 
@@ -134,7 +140,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 		seen["field|"+name] = struct{}{}
 
 		sortPrefix := "1"
-		if cctx.Prefix != "" && strings.HasPrefix(name, cctx.Prefix) {
+		if lowerPrefix != "" && strings.HasPrefix(strings.ToLower(name), lowerPrefix) {
 			sortPrefix = "0"
 		}
 		items = append(items, CompletionItem{
@@ -158,7 +164,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 		seen[key] = struct{}{}
 
 		sortPrefix := "1"
-		if cctx.Prefix != "" && strings.HasPrefix(m.Name, cctx.Prefix) {
+		if lowerPrefix != "" && strings.HasPrefix(strings.ToLower(m.Name), lowerPrefix) {
 			sortPrefix = "0"
 		}
 		item := CompletionItem{
@@ -188,7 +194,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 		seen[key] = struct{}{}
 
 		sortPrefix := "1"
-		if cctx.Prefix != "" && strings.HasPrefix(sym.Name, cctx.Prefix) {
+		if lowerPrefix != "" && strings.HasPrefix(strings.ToLower(sym.Name), lowerPrefix) {
 			sortPrefix = "0"
 		}
 		sortText := sortPrefix + sortBucket + sym.Name
@@ -903,9 +909,10 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	// Add static snippets first.
 	items = append(items, h.completeSnippets(cctx)...)
 
-	// casePrefix returns "0" if name starts with the original-case prefix, "1" otherwise.
+	// casePrefix returns "0" if name starts with the prefix (case-insensitive), "1" otherwise.
+	lowerPrefix := strings.ToLower(cctx.Prefix)
 	casePrefix := func(name string) string {
-		if cctx.Prefix != "" && strings.HasPrefix(name, cctx.Prefix) {
+		if lowerPrefix != "" && strings.HasPrefix(strings.ToLower(name), lowerPrefix) {
 			return "0"
 		}
 		return "1"

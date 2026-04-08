@@ -1,6 +1,10 @@
 package index
 
-import sdb "github.com/fwrq41251/decaf/internal/semanticdb"
+import (
+	"strings"
+
+	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
+)
 
 // SetClassTypeParamsForTest sets classTypeParams for testing. Test-only.
 func (idx *Index) SetClassTypeParamsForTest(sym string, params []string) {
@@ -26,7 +30,21 @@ func (idx *Index) AddDefinitionForTest(sym, name string) {
 		Kind:   sdb.SymbolInformation_CLASS,
 	})
 	idx.definitions[sym] = append(idx.definitions[sym], id)
-	idx.typeBySimpleName[name] = append(idx.typeBySimpleName[name], id)
+	idx.typeBySimpleName[strings.ToLower(name)] = append(idx.typeBySimpleName[strings.ToLower(name)], id)
+}
+
+// AddMemberForTest adds a minimal non-type definition for testing. Test-only.
+func (idx *Index) AddMemberForTest(sym, name, uri string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	id := idx.addSymbol(Symbol{
+		Name:   name,
+		Symbol: sym,
+		Kind:   sdb.SymbolInformation_METHOD,
+		URI:    uri,
+	})
+	idx.definitions[sym] = append(idx.definitions[sym], id)
+	idx.memberBySimpleName[strings.ToLower(name)] = append(idx.memberBySimpleName[strings.ToLower(name)], id)
 }
 
 // AddSymbolForTest appends a symbol to the central symbol store. Test-only.

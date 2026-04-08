@@ -467,11 +467,11 @@ func (idx *Index) removeDocument(uri string) {
 		}
 	}
 
-	// Remove typeBySimpleName entries.
+	// Remove simple-name index entries.
 	for _, id := range idx.fileSymbols[uri] {
 		s := idx.symbol(id)
+		name := strings.ToLower(s.Name)
 		if isTypeKind(s.Kind) {
-			name := strings.ToLower(s.Name)
 			if syms, ok := idx.typeBySimpleName[name]; ok {
 				filtered := syms[:0]
 				for _, sid := range syms {
@@ -483,6 +483,20 @@ func (idx *Index) removeDocument(uri string) {
 					idx.typeBySimpleName[name] = filtered
 				} else {
 					delete(idx.typeBySimpleName, name)
+				}
+			}
+		} else {
+			if syms, ok := idx.memberBySimpleName[name]; ok {
+				filtered := syms[:0]
+				for _, sid := range syms {
+					if idx.symbol(sid).URI != uri {
+						filtered = append(filtered, sid)
+					}
+				}
+				if len(filtered) > 0 {
+					idx.memberBySimpleName[name] = filtered
+				} else {
+					delete(idx.memberBySimpleName, name)
 				}
 			}
 		}
@@ -552,10 +566,12 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 		idx.definitions[symStr] = append(idx.definitions[symStr], sid)
 		idx.fileSymbols[uri] = append(idx.fileSymbols[uri], sid)
 
-		// Build typeBySimpleName index.
-		if isTypeKind(sym.Kind) {
-			name := strings.ToLower(sym.DisplayName)
+		// Build simple-name indexes for completion.
+		name := strings.ToLower(displayName)
+		if isTypeKind(kind) {
 			idx.typeBySimpleName[name] = append(idx.typeBySimpleName[name], sid)
+		} else {
+			idx.memberBySimpleName[name] = append(idx.memberBySimpleName[name], sid)
 		}
 
 		// Build ownerMembers: extract owner type from symbol string.

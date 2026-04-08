@@ -427,6 +427,7 @@ func (idx *Index) mergeLazyClassData(cs classSymbols) {
 		idx.definitions[memberSym] = append(idx.definitions[memberSym], sid)
 		idx.ownerMembers[classSym] = append(idx.ownerMembers[classSym], sid)
 		existingMembers[m.sym] = struct{}{}
+		idx.memberBySimpleName[strings.ToLower(m.name)] = append(idx.memberBySimpleName[strings.ToLower(m.name)], sid)
 
 		if m.typeSym != "" {
 			idx.symbolType[memberSym] = m.typeSym

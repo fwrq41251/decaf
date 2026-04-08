@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -1107,4 +1108,147 @@ func setIndexField(t *testing.T, idx *index.Index, field string, value any) {
 		value = converted
 	}
 	reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem().Set(reflect.ValueOf(value))
+}
+
+func TestCompleteDot_ExcludesConstructors(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "pkg/MyClass#", DisplayName: "MyClass", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "pkg/MyClass#<init>.", DisplayName: "MyClass", Kind: sdb.SymbolInformation_CONSTRUCTOR},
+			},
+		}},
+	})
+
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"myclass": {
+			{Name: "MyClass", Symbol: "pkg/MyClass#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"pkg/MyClass#": {
+			{Name: "MyClass", Symbol: "pkg/MyClass#<init>.", Kind: sdb.SymbolInformation_CONSTRUCTOR, Signature: &index.SignatureInfo{Label: "MyClass()", HasParams: false}},
+			{Name: "doWork", Symbol: "pkg/MyClass#doWork().", Kind: sdb.SymbolInformation_METHOD, Signature: &index.SignatureInfo{Label: "void doWork()", HasParams: false}},
+			{Name: "value", Symbol: "pkg/MyClass#value.", Kind: sdb.SymbolInformation_FIELD},
+		},
+	})
+
+	// Simulate instance access: obj.| where obj is of type MyClass.
+	cctx := &CompletionCtx{
+		Kind:     CompletionDot,
+		Receiver: "obj",
+		Prefix:   "",
+		Package:  "pkg",
+		Locals:   []ValueDecl{{Name: "obj", Type: &index.TypeExpr{Sym: "MyClass"}}},
+	}
+
+	items := h.completeDot(cctx, "file://"+tmpDir+"/src/Test.java")
+
+	// Verify no constructors appear in the results
+	for _, item := range items {
+		if strings.Contains(item.Label, "MyClass(") {
+			t.Fatalf("constructor should not appear in member completion: got %q", item.Label)
+		}
+	}
+
+	// Verify methods and fields still appear
+	var hasMethod, hasField bool
+	for _, item := range items {
+		if item.Label == "doWork()" {
+			hasMethod = true
+		}
+		if item.Label == "value" {
+			hasField = true
+		}
+	}
+	if !hasMethod {
+		t.Error("expected doWork() to appear in completion items")
+	}
+	if !hasField {
+		t.Error("expected value to appear in completion items")
+	}
+}
+
+func TestCompleteDot_CaseInsensitivePrefixRanking(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "pkg/MyClass#", DisplayName: "MyClass", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"myclass": {
+			{Name: "MyClass", Symbol: "pkg/MyClass#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"pkg/MyClass#": {
+			{Name: "getUserName", Symbol: "pkg/MyClass#getUserName().", Kind: sdb.SymbolInformation_METHOD, Signature: &index.SignatureInfo{Label: "String getUserName()", HasParams: false}},
+			{Name: "doClean", Symbol: "pkg/MyClass#doClean().", Kind: sdb.SymbolInformation_METHOD, Signature: &index.SignatureInfo{Label: "void doClean()", HasParams: false}},
+			{Name: "doCreate", Symbol: "pkg/MyClass#doCreate().", Kind: sdb.SymbolInformation_METHOD, Signature: &index.SignatureInfo{Label: "void doCreate()", HasParams: false}},
+			{Name: "buildConfig", Symbol: "pkg/MyClass#buildConfig().", Kind: sdb.SymbolInformation_METHOD, Signature: &index.SignatureInfo{Label: "void buildConfig()", HasParams: false}},
+		},
+	})
+
+	// Type lowercase prefix "dc" should match "doClean" and "doCreate" via case-insensitive prefix,
+	// and "buildConfig" via fuzzy match (d...c in buil**d****c**onfig). Prefix matches should rank higher.
+	cctx := &CompletionCtx{
+		Kind:     CompletionDot,
+		Receiver: "obj",
+		Prefix:   "dc",
+		Package:  "pkg",
+		Locals:   []ValueDecl{{Name: "obj", Type: &index.TypeExpr{Sym: "MyClass"}}},
+	}
+
+	items := h.completeDot(cctx, "file://"+tmpDir+"/src/Test.java")
+
+	if len(items) < 2 {
+		t.Fatalf("expected at least 2 items for prefix 'dc', got %d: %+v", len(items), items)
+	}
+
+	// "doClean"/"doCreate" should rank before "buildConfig" because they match the prefix "dc"
+	// case-insensitively, while "buildConfig" only fuzzy-matches.
+	doCleanIdx := -1
+	doCreateIdx := -1
+	buildConfigIdx := -1
+	for i, item := range items {
+		switch item.FilterText {
+		case "doClean":
+			doCleanIdx = i
+		case "doCreate":
+			doCreateIdx = i
+		case "buildConfig":
+			buildConfigIdx = i
+		}
+	}
+
+	if doCleanIdx == -1 {
+		t.Fatalf("expected doClean() in results: %+v", items)
+	}
+	if doCreateIdx == -1 {
+		t.Fatalf("expected doCreate() in results: %+v", items)
+	}
+	// buildConfig fuzzy-matches "dc" (d...c) but should rank after prefix matches
+	if buildConfigIdx == -1 {
+		t.Fatalf("expected buildConfig() in results (fuzzy match): %+v", items)
+	}
+
+	if buildConfigIdx <= doCleanIdx {
+		t.Errorf("expected buildConfig (fuzzy, idx %d) to rank after doClean (prefix match, idx %d)", buildConfigIdx, doCleanIdx)
+	}
+	if buildConfigIdx <= doCreateIdx {
+		t.Errorf("expected buildConfig (fuzzy, idx %d) to rank after doCreate (prefix match, idx %d)", buildConfigIdx, doCreateIdx)
+	}
 }

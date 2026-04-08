@@ -35,6 +35,8 @@ type Index struct {
 	childToParents map[string][]string
 	// simple name (lowercase) -> list of matching type symbols
 	typeBySimpleName map[string][]SymbolID
+	// simple name (lowercase) -> list of matching non-type symbols
+	memberBySimpleName map[string][]SymbolID
 	// ownerMembers maps a type symbol to its direct member definitions.
 	// e.g. "com/example/Foo#" → [bar, baz, ...]
 	ownerMembers map[string][]SymbolID
@@ -113,6 +115,7 @@ func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 		uriRefSymbols:             make(map[string][]string),
 		childToParents:            make(map[string][]string),
 		typeBySimpleName:          make(map[string][]SymbolID),
+		memberBySimpleName:        make(map[string][]SymbolID),
 		ownerMembers:              make(map[string][]SymbolID),
 		symbolType:                make(map[string]string),
 		symbolDeclType:            make(map[string]*TypeExpr),

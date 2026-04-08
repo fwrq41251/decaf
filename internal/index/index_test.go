@@ -615,3 +615,31 @@ func TestSymbolSignatures_Overloads(t *testing.T) {
 		t.Errorf("expected name 'add', got %q", sig.Name)
 	}
 }
+
+func TestCompletionSymbols_UsesSimpleNameIndexes(t *testing.T) {
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, t.TempDir())
+
+	idx.AddDefinitionForTest("java/util/ArrayList#", "ArrayList")
+	idx.AddDefinitionForTest("java/util/LinkedList#", "LinkedList")
+	idx.AddMemberForTest("com/example/Foo#append().", "append", "src/Foo.java")
+	idx.AddMemberForTest("com/example/Bar#append().", "append", "src/Bar.java")
+
+	got := idx.CompletionSymbols("file://"+filepath.Join(idx.SourceRoot(), "src/Foo.java"), "apd")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 append candidates, got %d: %+v", len(got), got)
+	}
+	if got[0].URI != "src/Foo.java" || !got[0].SameFile {
+		t.Fatalf("expected same-file append first, got %+v", got[0])
+	}
+	for _, s := range got {
+		if s.Name != "append" {
+			t.Fatalf("unexpected candidate %+v", s)
+		}
+	}
+
+	typeGot := idx.CompletionSymbols("", "arl")
+	if len(typeGot) == 0 || typeGot[0].Name != "ArrayList" {
+		t.Fatalf("expected ArrayList to match fuzzy type completion, got %+v", typeGot)
+	}
+}
