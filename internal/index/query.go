@@ -121,43 +121,10 @@ func (idx *Index) FileSymbols(uri string) []Symbol {
 }
 
 // symbolAt returns the SemanticDB symbol string at the given position.
-// Occurrences are sorted by start position, so we use binary search to find
-// the neighborhood and then check containment.
 func (idx *Index) symbolAt(uri string, line, character int) string {
 	uri = filepath.ToSlash(uri)
-	occs, ok := idx.fileOccurrences[uri]
-	if !ok {
-		return ""
-	}
-
-	line32, char32 := int32(line), int32(character)
-
-	// Binary search: find the first occurrence that starts after (line, character).
-	i := sort.Search(len(occs), func(i int) bool {
-		r := occs[i].Range
-		if r.IsEmpty() {
-			return false
-		}
-		if r.StartLine != line32 {
-			return r.StartLine > line32
-		}
-		return r.StartCharacter > char32
-	})
-
-	// Check candidates: the match is at index i-1 or earlier (multi-line spans).
-	// Walk backwards from i to find an occurrence that contains the position.
-	for j := i - 1; j >= 0; j-- {
-		r := occs[j].Range
-		if r.IsEmpty() {
-			continue
-		}
-		// Stop early: if this occurrence ends before our line, no earlier one can contain us.
-		if r.EndLine < line32 {
-			break
-		}
-		if containsPosition(r, line, character) {
-			return occs[j].Symbol
-		}
+	if occ := idx.findOccurrenceAt(uri, line, character); occ != nil {
+		return occ.Symbol
 	}
 	return ""
 }
@@ -394,14 +361,19 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 }
 
 // OccurrenceAt returns the SemanticDB occurrence at the given position.
-// Occurrences are sorted by start position, so we use binary search to find
-// the neighborhood and then check containment.
 func (idx *Index) OccurrenceAt(uri string, line, character int) *Occurrence {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
 	relURI := idx.toRelativeURI(uri)
-	occs, ok := idx.fileOccurrences[relURI]
+	return idx.findOccurrenceAt(relURI, line, character)
+}
+
+// findOccurrenceAt returns the occurrence at the given position, or nil if none.
+// Occurrences are sorted by start position, so we use binary search to find
+// the neighborhood and then check containment.
+func (idx *Index) findOccurrenceAt(uri string, line, character int) *Occurrence {
+	occs, ok := idx.fileOccurrences[uri]
 	if !ok {
 		return nil
 	}
