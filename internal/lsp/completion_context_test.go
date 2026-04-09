@@ -1196,6 +1196,46 @@ public class MyClass {
 	}
 }
 
+func TestParseCompletionCtx_InTypePosition_FieldDeclaration(t *testing.T) {
+	src := []byte(`package com.example;
+
+public class MyClass {
+    private final Str
+}`)
+	ctx := parseCompletionCtx(nil, src, 3, 22)
+	if !ctx.InTypePosition {
+		t.Fatal("expected InTypePosition to be true for field type completion")
+	}
+}
+
+func TestParseCompletionCtx_InTypePosition_LocalDeclaration(t *testing.T) {
+	src := []byte(`package com.example;
+
+public class MyClass {
+    public void test() {
+        final Str
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 4, 18)
+	if !ctx.InTypePosition {
+		t.Fatal("expected InTypePosition to be true for local type completion")
+	}
+}
+
+func TestParseCompletionCtx_InTypePosition_FalseOnVariableName(t *testing.T) {
+	src := []byte(`package com.example;
+
+public class MyClass {
+    public void test() {
+        String na
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 4, 17)
+	if ctx.InTypePosition {
+		t.Fatal("expected InTypePosition to be false while completing variable name")
+	}
+}
+
 func TestParseCompletionCtx_VarInitializer_ArgumentIdentifierType(t *testing.T) {
 	src := []byte(`package com.example;
 

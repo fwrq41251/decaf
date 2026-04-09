@@ -2,6 +2,7 @@ package index
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -704,5 +705,83 @@ func TestCompletionSymbols_UsesSimpleNameIndexes(t *testing.T) {
 	typeGot := idx.CompletionSymbols("", "arl")
 	if len(typeGot) == 0 || typeGot[0].Name != "ArrayList" {
 		t.Fatalf("expected ArrayList to match fuzzy type completion, got %+v", typeGot)
+	}
+}
+
+func TestCompletionSymbols_PrefixMatchesBeatFuzzyMatchesBeforeCap(t *testing.T) {
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, t.TempDir())
+
+	for i := 0; i < 120; i++ {
+		idx.AddDefinitionForTest(
+			fmt.Sprintf("pkg/AStringThing%03d#", i),
+			fmt.Sprintf("AStringThing%03d", i),
+		)
+	}
+	idx.AddDefinitionForTest("java/lang/String#", "String")
+
+	got := idx.CompletionSymbols("", "Str")
+	if len(got) == 0 {
+		t.Fatal("expected completion candidates")
+	}
+	if len(got) != 100 {
+		t.Fatalf("expected capped results of 100, got %d", len(got))
+	}
+	if got[0].Name != "String" {
+		t.Fatalf("expected String to rank ahead of fuzzy-only matches, got %+v", got[0])
+	}
+
+	foundString := false
+	for _, s := range got {
+		if s.Symbol == "java/lang/String#" {
+			foundString = true
+			break
+		}
+	}
+	if !foundString {
+		t.Fatalf("expected String to remain in capped results, got %+v", got[:5])
+	}
+}
+
+func TestCompletionMatchScore_Order(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  int
+	}{
+		{name: "String", query: "string", want: matchExact},
+		{name: "String", query: "str", want: matchPrefix},
+		{name: "StringBuilder", query: "sb", want: matchWordStart},
+		{name: "My_StringBuilder", query: "sb", want: matchWordStart},
+		{name: "AStringThing", query: "string", want: matchSubstring},
+		{name: "AbstractList", query: "srt", want: matchFuzzy},
+		{name: "LocalDate", query: "xyz", want: matchNone},
+	}
+
+	for _, tt := range tests {
+		got := completionMatchScore(tt.name, tt.query)
+		if got != tt.want {
+			t.Fatalf("completionMatchScore(%q, %q) = %d, want %d", tt.name, tt.query, got, tt.want)
+		}
+	}
+}
+
+func TestCompletionSymbols_WordStartMatchesBeatSubstringAndFuzzy(t *testing.T) {
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, t.TempDir())
+
+	idx.AddDefinitionForTest("java/lang/StringBuilder#", "StringBuilder")
+	idx.AddDefinitionForTest("pkg/MyStringBuffer#", "MyStringBuffer")
+	idx.AddDefinitionForTest("pkg/Superb#", "Superb")
+
+	got := idx.CompletionSymbols("", "sb")
+	if len(got) < 2 {
+		t.Fatalf("expected at least 2 completion candidates, got %+v", got)
+	}
+	if got[0].Name != "StringBuilder" {
+		t.Fatalf("expected word-start match StringBuilder first, got %+v", got[0])
+	}
+	if got[1].Name != "MyStringBuffer" {
+		t.Fatalf("expected substring match MyStringBuffer after StringBuilder, got %+v", got[1])
 	}
 }

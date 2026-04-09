@@ -1176,6 +1176,16 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		return "1"
 	}
 
+	contextPrefix := func(kind int) string {
+		if !cctx.InTypePosition {
+			return "1"
+		}
+		if isTypeCompletionKind(kind) {
+			return "0"
+		}
+		return "2"
+	}
+
 	addItem := func(name string, kind int, detail string, candidateType *index.TypeExpr, scopeOrder string) {
 		if _, ok := seen[name]; ok {
 			return
@@ -1186,7 +1196,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			Kind:       kind,
 			InsertText: name,
 			Detail:     detail,
-			SortText:   typeMatchPrefix(candidateType) + casePrefix(name) + scopeOrder + name,
+			SortText:   contextPrefix(kind) + typeMatchPrefix(candidateType) + casePrefix(name) + scopeOrder + name,
 			FilterText: name,
 		}
 		items = append(items, item)
@@ -1200,7 +1210,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	for i := len(cctx.LambdaParams) - 1; i >= 0; i-- {
 		p := cctx.LambdaParams[i]
 		if matchPrefix(p.Name) {
-			addItem(p.Name, SymbolKindVariable, p.Type.String(), p.Type, "0")
+			addItem(p.Name, CompletionKindVariable, p.Type.String(), p.Type, "0")
 		}
 	}
 
@@ -1208,21 +1218,21 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	for i := len(cctx.Locals) - 1; i >= 0; i-- {
 		l := cctx.Locals[i]
 		if matchPrefix(l.Name) {
-			addItem(l.Name, SymbolKindVariable, l.Type.String(), l.Type, "1")
+			addItem(l.Name, CompletionKindVariable, l.Type.String(), l.Type, "1")
 		}
 	}
 
 	// 3. Method parameters (scope "2").
 	for _, p := range cctx.Params {
 		if matchPrefix(p.Name) {
-			addItem(p.Name, SymbolKindVariable, p.Type.String(), p.Type, "2")
+			addItem(p.Name, CompletionKindVariable, p.Type.String(), p.Type, "2")
 		}
 	}
 
 	// 4. Class fields (scope "3").
 	for _, f := range cctx.ClassFields {
 		if matchPrefix(f.Name) {
-			addItem(f.Name, SymbolKindField, f.Type.String(), f.Type, "3")
+			addItem(f.Name, CompletionKindField, f.Type.String(), f.Type, "3")
 		}
 	}
 
@@ -1236,9 +1246,9 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			seen[key] = struct{}{}
 			item := CompletionItem{
 				Label:      formatMethodDeclDetail(m),
-				Kind:       SymbolKindMethod,
+				Kind:       CompletionKindMethod,
 				Detail:     formatMethodDeclDetail(m),
-				SortText:   typeMatchPrefix(m.ReturnType) + casePrefix(m.Name) + "4" + m.Name + methodDeclSortSuffix(m),
+				SortText:   contextPrefix(CompletionKindMethod) + typeMatchPrefix(m.ReturnType) + casePrefix(m.Name) + "4" + m.Name + methodDeclSortSuffix(m),
 				FilterText: m.Name,
 			}
 			if cctx.ParenFollows {
@@ -1269,7 +1279,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			}
 			seen[key] = struct{}{}
 			retType := symbolReturnTypeExpr(m, h.idx)
-			sortText := typeMatchPrefix(retType) + casePrefix(m.Name) + "5" + m.Name
+			sortText := contextPrefix(kind) + typeMatchPrefix(retType) + casePrefix(m.Name) + "5" + m.Name
 			if kind == CompletionKindMethod || kind == CompletionKindConstructor {
 				sortText += signatureSortSuffix(m.Signature)
 			}
@@ -1354,7 +1364,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			}
 			seen[key] = struct{}{}
 		}
-		sortText := typeMatchPrefix(symbolReturnTypeExpr(s, h.idx)) + casePrefix(s.Name) + scopeOrder
+		sortText := contextPrefix(kind) + typeMatchPrefix(symbolReturnTypeExpr(s, h.idx)) + casePrefix(s.Name) + scopeOrder
 		if isTypeCompletionKind(kind) {
 			sortText += typeCompletionPriority(cctx, s)
 		}

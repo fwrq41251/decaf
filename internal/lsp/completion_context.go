@@ -72,6 +72,7 @@ type CompletionCtx struct {
 	Package        string
 	EnclosingClass string       // simple name of the enclosing class
 	AfterNew       bool         // true when cursor is after "new" keyword (e.g. "new Arr|")
+	InTypePosition bool         // true when cursor is lexically completing a declared type name
 	ParenFollows   bool         // true when '(' follows the cursor (after remaining identifier chars)
 	Call           *CallContext // non-nil when cursor is inside method call arguments
 }
@@ -128,6 +129,7 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 	// 2b. Detect if prefix is preceded by "new" keyword.
 	if ctx.Kind == CompletionLexical {
 		ctx.AfterNew = isAfterNewKeyword(parseContent, cursorOffset, ctx.Prefix)
+		ctx.InTypePosition = looksLikeTypePositionText(parseContent, cursorOffset, ctx.Prefix)
 	}
 
 	// 2c. Detect if '(' follows the cursor position.
@@ -140,6 +142,15 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 	// 4. Find enclosing class and method to determine scope.
 	cursorNode := nodeAtPosition(root, line, character)
 	if cursorNode != nil {
+		if !ctx.InTypePosition {
+			ctx.InTypePosition = isTypeCompletionPosition(cursorNode, cursorOffset)
+		}
+		if !ctx.InTypePosition {
+			if prev := nodeAtByteOffset(root, parseContent, previousNonWhitespaceOffset(parseContent, cursorOffset)); prev != nil && prev != cursorNode {
+				ctx.InTypePosition = isTypeCompletionPosition(prev, cursorOffset)
+			}
+		}
+
 		classNode := findAncestor(cursorNode, "class_declaration", "interface_declaration", "enum_declaration")
 		if classNode != nil {
 			ctx.Scope = ScopeClass
@@ -179,6 +190,111 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 	}
 
 	return ctx
+}
+
+func looksLikeTypePositionText(content []byte, cursorOffset int, prefix string) bool {
+	start := cursorOffset - len(prefix)
+	if start < 0 {
+		start = 0
+	}
+	pos := start
+	for pos > 0 && (content[pos-1] == ' ' || content[pos-1] == '\t') {
+		pos--
+	}
+	if pos == 0 {
+		return false
+	}
+	switch content[pos-1] {
+	case '<', '(', ',', '&':
+		return true
+	}
+
+	tokenEnd := pos
+	tokenStart := tokenEnd
+	for tokenStart > 0 && isIdentChar(content[tokenStart-1]) {
+		tokenStart--
+	}
+	if tokenStart == tokenEnd {
+		return false
+	}
+	prev := string(content[tokenStart:tokenEnd])
+	switch prev {
+	case "public", "protected", "private", "static", "final", "abstract", "volatile",
+		"transient", "synchronized", "native", "strictfp", "sealed", "non", "default":
+		return true
+	}
+	return false
+}
+
+func isTypeCompletionPosition(cursorNode *slog.Node, cursorOffset int) bool {
+	decl := findAncestor(cursorNode,
+		"field_declaration",
+		"local_variable_declaration",
+		"formal_parameter",
+		"spread_parameter",
+		"catch_formal_parameter",
+	)
+	if decl == nil {
+		return false
+	}
+
+	switch decl.Type() {
+	case "field_declaration", "local_variable_declaration":
+		if vd := firstDescendantOfType(decl, "variable_declarator"); vd != nil {
+			return cursorOffset <= int(vd.StartByte())
+		}
+		return isWithinTypeSubtree(cursorNode, decl)
+	case "formal_parameter", "spread_parameter", "catch_formal_parameter":
+		if name := declarationNameNode(decl); name != nil {
+			return cursorOffset <= int(name.StartByte())
+		}
+		return isWithinTypeSubtree(cursorNode, decl)
+	default:
+		return false
+	}
+}
+
+func isWithinTypeSubtree(node, boundary *slog.Node) bool {
+	for n := node; n != nil && n != boundary.Parent(); n = n.Parent() {
+		switch n.Type() {
+		case "type_identifier", "generic_type", "array_type", "scoped_type_identifier",
+			"primitive_type", "boolean_type", "void_type", "integral_type", "floating_point_type":
+			return true
+		}
+		if n == boundary {
+			break
+		}
+	}
+	return false
+}
+
+func firstDescendantOfType(node *slog.Node, want string) *slog.Node {
+	if node == nil {
+		return nil
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if child.Type() == want {
+			return child
+		}
+		if found := firstDescendantOfType(child, want); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func declarationNameNode(node *slog.Node) *slog.Node {
+	if node == nil {
+		return nil
+	}
+	for i := int(node.NamedChildCount()) - 1; i >= 0; i-- {
+		child := node.NamedChild(i)
+		if child.Type() == "identifier" {
+			return child
+		}
+	}
+	return nil
 }
 
 // needsPlaceholder returns true when inserting a placeholder identifier at the

@@ -256,14 +256,28 @@ func (idx *Index) CompletionSymbols(uri string, query string) []Symbol {
 	}
 
 	// Priority: same-file types > other types > same-file members > other members.
-	// Sort each bucket by name for deterministic results before merging.
-	sortByName := func(s []Symbol) {
-		sort.SliceStable(s, func(i, j int) bool { return s[i].Name < s[j].Name })
+	// Within each bucket, sort by an explicit match score:
+	// exact > prefix > camel/word-start > substring > fuzzy subsequence.
+	sortByQueryPriority := func(s []Symbol) {
+		sort.SliceStable(s, func(i, j int) bool {
+			iScore := completionMatchScore(s[i].Name, query)
+			jScore := completionMatchScore(s[j].Name, query)
+			if iScore != jScore {
+				return iScore < jScore
+			}
+			if len(s[i].Name) != len(s[j].Name) {
+				return len(s[i].Name) < len(s[j].Name)
+			}
+			if s[i].Name != s[j].Name {
+				return s[i].Name < s[j].Name
+			}
+			return s[i].Symbol < s[j].Symbol
+		})
 	}
-	sortByName(sameFileTypes)
-	sortByName(otherTypes)
-	sortByName(sameFileOther)
-	sortByName(otherOther)
+	sortByQueryPriority(sameFileTypes)
+	sortByQueryPriority(otherTypes)
+	sortByQueryPriority(sameFileOther)
+	sortByQueryPriority(otherOther)
 	result := make([]Symbol, 0, len(sameFileTypes)+len(otherTypes)+len(sameFileOther)+len(otherOther))
 	result = append(result, sameFileTypes...)
 	result = append(result, otherTypes...)
@@ -281,6 +295,40 @@ func FuzzyMatch(name, query string) bool {
 	return fuzzyMatchLower(strings.ToLower(name), strings.ToLower(query))
 }
 
+const (
+	matchExact = iota
+	matchPrefix
+	matchWordStart
+	matchSubstring
+	matchFuzzy
+	matchNone
+)
+
+// completionMatchScore ranks how well name matches query.
+// Lower is better.
+func completionMatchScore(name, query string) int {
+	if query == "" {
+		return matchExact
+	}
+	lowerName := strings.ToLower(name)
+	if lowerName == query {
+		return matchExact
+	}
+	if strings.HasPrefix(lowerName, query) {
+		return matchPrefix
+	}
+	if camelOrWordStartMatch(name, query) {
+		return matchWordStart
+	}
+	if strings.Contains(lowerName, query) {
+		return matchSubstring
+	}
+	if fuzzyMatchLower(lowerName, query) {
+		return matchFuzzy
+	}
+	return matchNone
+}
+
 // fuzzyMatchLower is like FuzzyMatch but assumes both arguments are already lowercase.
 func fuzzyMatchLower(name, query string) bool {
 	if query == "" {
@@ -294,6 +342,38 @@ func fuzzyMatchLower(name, query string) bool {
 		ni++
 	}
 	return qi == len(query)
+}
+
+func camelOrWordStartMatch(name, query string) bool {
+	if query == "" {
+		return true
+	}
+	initials := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		if isWordStart(name, i) {
+			c := name[i]
+			if 'A' <= c && c <= 'Z' {
+				c = c - 'A' + 'a'
+			}
+			initials = append(initials, c)
+		}
+	}
+	return fuzzyMatchLower(string(initials), query)
+}
+
+func isWordStart(name string, i int) bool {
+	if i < 0 || i >= len(name) {
+		return false
+	}
+	if i == 0 {
+		return true
+	}
+	prev := name[i-1]
+	curr := name[i]
+	if prev == '_' || prev == '$' || prev == '.' || prev == '/' {
+		return true
+	}
+	return ('a' <= prev && prev <= 'z') && ('A' <= curr && curr <= 'Z')
 }
 
 // SymbolSignature returns the method signature for the symbol at the given position.

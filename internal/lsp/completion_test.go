@@ -452,6 +452,33 @@ func TestCompleteLexical_ExpectedTypeBoostsClassMethods(t *testing.T) {
 	}
 }
 
+func TestCompleteLexical_TypePositionPrefersTypes(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"string": {
+			{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+
+	items := h.completeLexical(&CompletionCtx{
+		Prefix:         "Str",
+		InTypePosition: true,
+		Locals:         []ValueDecl{{Name: "stream", Type: &index.TypeExpr{Sym: "Stream"}}},
+		ClassFields:    []ValueDecl{{Name: "stringValue", Type: &index.TypeExpr{Sym: "String"}}},
+		ClassMethods:   []MethodDecl{{Name: "strip", Params: nil, ReturnType: &index.TypeExpr{Sym: "String"}}},
+	}, "", nil)
+	sortCompletionItems(items)
+
+	if len(items) < 4 {
+		t.Fatalf("expected mixed completion candidates, got %d: %+v", len(items), items)
+	}
+	if items[0].Label != "String" {
+		t.Fatalf("expected type completion to rank first in type position, got first=%+v all=%+v", items[0], items)
+	}
+}
+
 func TestCompleteDot_FallbackUsesClassContextAndObjectMethods(t *testing.T) {
 	h, idx, _ := newTestHandler(t)
 	defer idx.Close()
