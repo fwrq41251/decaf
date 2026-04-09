@@ -117,7 +117,7 @@ func (h *Handler) handleHover(ctx context.Context, params json.RawMessage) (any,
 		return nil, nil
 	}
 
-	content := formatHover(sym)
+	content := formatHover(sym, h.idx)
 	result := HoverResult{
 		Contents: MarkupContent{
 			Kind:  "markdown",

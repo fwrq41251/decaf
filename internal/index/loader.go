@@ -552,8 +552,12 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			URI:        uri,
 			Signature:  buildSignatureInfo(displayName, sym.Signature, symbolLookup),
 			Doc:        docStr,
+			Visibility: visibilityFromSemanticDBAccess(sym.Access),
 			IsStatic:   sym.Properties&int32(sdb.SymbolInformation_STATIC) != 0,
 			IsAbstract: sym.Properties&int32(sdb.SymbolInformation_ABSTRACT) != 0,
+			IsFinal:    sym.Properties&int32(sdb.SymbolInformation_FINAL) != 0,
+			IsSealed:   sym.Properties&int32(sdb.SymbolInformation_SEALED) != 0,
+			IsOverride: sym.Properties&int32(sdb.SymbolInformation_OVERRIDE) != 0,
 		})
 		s := idx.symbol(sid)
 
@@ -679,6 +683,22 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 		}
 		return ri.StartCharacter < rj.StartCharacter
 	})
+}
+
+func visibilityFromSemanticDBAccess(access *sdb.Access) Visibility {
+	if access == nil {
+		return VisibilityPackagePrivate
+	}
+	switch access.GetSealedValue().(type) {
+	case *sdb.Access_PublicAccess:
+		return VisibilityPublic
+	case *sdb.Access_ProtectedAccess, *sdb.Access_ProtectedThisAccess, *sdb.Access_ProtectedWithinAccess:
+		return VisibilityProtected
+	case *sdb.Access_PrivateAccess, *sdb.Access_PrivateThisAccess, *sdb.Access_PrivateWithinAccess:
+		return VisibilityPrivate
+	default:
+		return VisibilityPackagePrivate
+	}
 }
 
 // extractOwner returns the owner type symbol for a member symbol.

@@ -645,7 +645,7 @@ func TestIndexClasspathJARs_StaticFlag(t *testing.T) {
 		accPublic,
 		nil,
 		[]classMember{
-			{accPublic | accStatic, "CONSTANT", "I", ""},
+			{accPublic | accStatic | accFinal, "CONSTANT", "I", ""},
 			{accPublic, "value", "I", ""},
 		},
 		[]classMember{
@@ -673,9 +673,13 @@ func TestIndexClasspathJARs_StaticFlag(t *testing.T) {
 
 	members := idx.ownerMembers["com/example/Foo#"]
 	staticMap := make(map[string]bool)
+	visibilityMap := make(map[string]Visibility)
+	finalMap := make(map[string]bool)
 	for _, id := range members {
 		m := idx.symbol(id)
 		staticMap[m.Name] = m.IsStatic
+		visibilityMap[m.Name] = m.Visibility
+		finalMap[m.Name] = m.IsFinal
 	}
 
 	if !staticMap["CONSTANT"] {
@@ -689,6 +693,15 @@ func TestIndexClasspathJARs_StaticFlag(t *testing.T) {
 	}
 	if staticMap["getValue"] {
 		t.Error("getValue should not be static")
+	}
+	if visibilityMap["CONSTANT"] != VisibilityPublic {
+		t.Errorf("CONSTANT visibility = %v, want public", visibilityMap["CONSTANT"])
+	}
+	if visibilityMap["create"] != VisibilityPublic {
+		t.Errorf("create visibility = %v, want public", visibilityMap["create"])
+	}
+	if !finalMap["CONSTANT"] {
+		t.Error("CONSTANT should be final")
 	}
 }
 

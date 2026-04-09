@@ -167,6 +167,69 @@ func TestMembersOfType(t *testing.T) {
 	}
 }
 
+func TestLoad_PopulatesVisibilityFromSemanticDBAccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Foo.java",
+			Symbols: []*sdb.SymbolInformation{
+				{
+					Symbol:      "com/example/Foo#",
+					DisplayName: "Foo",
+					Kind:        sdb.SymbolInformation_CLASS,
+					Properties:  int32(sdb.SymbolInformation_FINAL) | int32(sdb.SymbolInformation_SEALED),
+					Access:      &sdb.Access{SealedValue: &sdb.Access_PublicAccess{PublicAccess: &sdb.PublicAccess{}}},
+				},
+				{
+					Symbol:      "com/example/Foo#secret().",
+					DisplayName: "secret",
+					Kind:        sdb.SymbolInformation_METHOD,
+					Properties:  int32(sdb.SymbolInformation_OVERRIDE),
+					Access:      &sdb.Access{SealedValue: &sdb.Access_PrivateAccess{PrivateAccess: &sdb.PrivateAccess{}}},
+				},
+				{
+					Symbol:      "com/example/Foo#value.",
+					DisplayName: "value",
+					Kind:        sdb.SymbolInformation_FIELD,
+				},
+			},
+		}},
+	}
+	writeSDB(t, filepath.Join(sdbDir, "Foo.java.semanticdb"), docs)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	if err := idx.Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	members := idx.MembersOfType("com/example/Foo#")
+	got := map[string]Visibility{}
+	for _, m := range members {
+		got[m.Name] = m.Visibility
+	}
+	if got["secret"] != VisibilityPrivate {
+		t.Fatalf("secret visibility = %v, want private", got["secret"])
+	}
+	if got["value"] != VisibilityPackagePrivate {
+		t.Fatalf("value visibility = %v, want package-private", got["value"])
+	}
+
+	classDef := idx.SymbolDefinition("com/example/Foo#")
+	if classDef == nil || classDef.Visibility != VisibilityPublic {
+		t.Fatalf("class visibility = %+v, want public", classDef)
+	}
+	if classDef == nil || !classDef.IsFinal || !classDef.IsSealed {
+		t.Fatalf("class modifiers = %+v, want final+sealed", classDef)
+	}
+	for _, m := range members {
+		if m.Name == "secret" && !m.IsOverride {
+			t.Fatalf("secret modifiers = %+v, want override", m)
+		}
+	}
+}
+
 func TestMembersOfType_Inherited(t *testing.T) {
 	tmpDir := t.TempDir()
 	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")

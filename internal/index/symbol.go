@@ -22,6 +22,31 @@ type SignatureInfo struct {
 	Params        []ParamInfo
 }
 
+type Visibility uint8
+
+const (
+	VisibilityUnknown Visibility = iota
+	VisibilityPublic
+	VisibilityProtected
+	VisibilityPrivate
+	VisibilityPackagePrivate
+)
+
+func (v Visibility) String() string {
+	switch v {
+	case VisibilityPublic:
+		return "public"
+	case VisibilityProtected:
+		return "protected"
+	case VisibilityPrivate:
+		return "private"
+	case VisibilityPackagePrivate:
+		return "package-private"
+	default:
+		return ""
+	}
+}
+
 func (p ParamInfo) Label() string {
 	typeName := strings.TrimSpace(p.Type)
 	if p.Varargs {
@@ -138,8 +163,12 @@ type Symbol struct {
 	Range      Range  // compact range (was *sdb.Range)
 	Signature  *SignatureInfo
 	Doc        string // Javadoc/Scaladoc documentation text
+	Visibility Visibility
 	IsStatic   bool
 	IsAbstract bool
+	IsFinal    bool
+	IsSealed   bool
+	IsOverride bool
 	SameFile   bool
 }
 

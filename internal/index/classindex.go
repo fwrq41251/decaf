@@ -51,9 +51,10 @@ func (idx *Index) IndexClasspathJARs(jars []string) {
 // ready to be merged into the Index.
 type classSymbols struct {
 	// Class-level info.
-	classSym  string // e.g. "java/util/ArrayList#"
-	className string // e.g. "ArrayList"
-	classKind sdb.SymbolInformation_Kind
+	classSym   string // e.g. "java/util/ArrayList#"
+	className  string // e.g. "ArrayList"
+	classKind  sdb.SymbolInformation_Kind
+	visibility Visibility
 
 	// Parent types (super class + interfaces).
 	parents []string // SemanticDB symbols
@@ -72,15 +73,17 @@ type classSymbols struct {
 }
 
 type memberSymbol struct {
-	sym        string // e.g. "java/util/ArrayList#add(+1)."
-	name       string // e.g. "add"
-	kind       sdb.SymbolInformation_Kind
-	typeSym    string         // return type / field type as SemanticDB symbol
+	sym            string // e.g. "java/util/ArrayList#add(+1)."
+	name           string // e.g. "add"
+	kind           sdb.SymbolInformation_Kind
+	typeSym        string         // return type / field type as SemanticDB symbol
 	declType       *TypeExpr      // declared type preserving generics (from Signature attribute)
-	declParamTypes []*TypeExpr   // declared parameter types preserving generics
+	declParamTypes []*TypeExpr    // declared parameter types preserving generics
 	signature      *SignatureInfo // human-readable signature
-	isStatic   bool
-	isAbstract bool
+	visibility     Visibility
+	isStatic       bool
+	isAbstract     bool
+	isFinal        bool
 }
 
 // streamJARsIntoIndex reads classpath JARs concurrently and incrementally
@@ -249,11 +252,13 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 			typeSym := descriptorToSymbol(f.Descriptor)
 
 			ms := memberSymbol{
-				sym:      fieldSym,
-				name:     f.Name,
-				kind:     sdb.SymbolInformation_FIELD,
-				typeSym:  typeSym,
-				isStatic: f.AccessFlags&accStatic != 0,
+				sym:        fieldSym,
+				name:       f.Name,
+				kind:       sdb.SymbolInformation_FIELD,
+				typeSym:    typeSym,
+				visibility: visibilityFromClassAccessFlags(f.AccessFlags),
+				isStatic:   f.AccessFlags&accStatic != 0,
+				isFinal:    f.AccessFlags&accFinal != 0,
 				signature: &SignatureInfo{
 					Label: fmt.Sprintf("%s: %s", f.Name, descriptorToSimpleName(f.Descriptor)),
 				},
@@ -306,8 +311,10 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 				name:       methodName,
 				kind:       methodKind,
 				typeSym:    retSym,
+				visibility: visibilityFromClassAccessFlags(m.AccessFlags),
 				isStatic:   m.AccessFlags&accStatic != 0,
 				isAbstract: m.AccessFlags&accAbstract != 0,
+				isFinal:    m.AccessFlags&accFinal != 0,
 				signature:  sig,
 			}
 
@@ -340,6 +347,7 @@ func convertClassFile(cf *classFile, includeMembers bool) *classSymbols {
 		classSym:       classSym,
 		className:      className,
 		classKind:      kind,
+		visibility:     visibilityFromClassAccessFlags(cf.AccessFlags),
 		parents:        parents,
 		typeParams:     typeParamSyms,
 		parentTypesGen: parentTypesGen,
@@ -425,8 +433,10 @@ func (idx *Index) mergeLazyClassData(cs classSymbols) {
 			Symbol:     memberSym,
 			Kind:       m.kind,
 			Signature:  m.signature,
+			Visibility: m.visibility,
 			IsStatic:   m.isStatic,
 			IsAbstract: m.isAbstract,
+			IsFinal:    m.isFinal,
 		})
 		idx.definitions[memberSym] = append(idx.definitions[memberSym], sid)
 		idx.ownerMembers[classSym] = append(idx.ownerMembers[classSym], sid)
@@ -445,6 +455,19 @@ func (idx *Index) mergeLazyClassData(cs classSymbols) {
 	}
 	if cs.membersScanned {
 		idx.fullyIndexedClasses[classSym] = struct{}{}
+	}
+}
+
+func visibilityFromClassAccessFlags(flags uint16) Visibility {
+	switch {
+	case flags&accPublic != 0:
+		return VisibilityPublic
+	case flags&accProtected != 0:
+		return VisibilityProtected
+	case flags&accPrivate != 0:
+		return VisibilityPrivate
+	default:
+		return VisibilityPackagePrivate
 	}
 }
 
