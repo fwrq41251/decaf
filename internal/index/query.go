@@ -14,18 +14,40 @@ import (
 func (idx *Index) Definition(uri string, line, character int) []Symbol {
 	relURI := idx.toRelativeURI(uri)
 
-	idx.mu.RLock()
-	sym := idx.symbolAt(relURI, line, character)
-	idx.mu.RUnlock()
-
+	sym := idx.lockedSymbolAt(relURI, line, character)
 	idx.ensureMembersOf(sym)
 
+	result, jdkRoot, depSources := idx.lockedDefinitionLookup(uri, relURI, sym)
+	if result != nil {
+		return result
+	}
+
+	if jdkRoot != "" || len(depSources) > 0 {
+		if ext := idx.resolveExternalSymbol(sym); ext != nil {
+			return []Symbol{*ext}
+		}
+	}
+	return nil
+}
+
+// lockedSymbolAt returns the symbol string at the given position under RLock.
+func (idx *Index) lockedSymbolAt(relURI string, line, character int) string {
 	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.symbolAt(relURI, line, character)
+}
+
+// lockedDefinitionLookup performs the definition lookup under RLock.
+// Returns (result, jdkRoot, depSources). If result is non-nil, the caller should return it directly.
+// Otherwise jdkRoot/depSources are provided for external resolution outside the lock.
+func (idx *Index) lockedDefinitionLookup(uri, relURI, sym string) ([]Symbol, string, []string) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
 	idx.logger.Printf("Definition request: uri=%s, relURI=%s, symbolAt=%s", uri, relURI, sym)
 
 	if sym == "" {
-		idx.mu.RUnlock()
-		return nil
+		return nil, "", nil
 	}
 
 	defs := idx.definitions[sym]
@@ -36,32 +58,16 @@ func (idx *Index) Definition(uri string, line, character int) []Symbol {
 		// Only return results if at least one symbol has a valid range.
 		// ClassIndexer may have added symbols to definitions without ranges
 		// for completion/hover support; these should not block external resolution.
-		hasRange := false
 		for _, s := range result {
 			if !s.Range.IsEmpty() {
-				hasRange = true
-				break
+				return result, "", nil
 			}
 		}
-		if hasRange {
-			idx.mu.RUnlock()
-			return result
-		}
 	}
 
-	// No definitions with source locations — try external symbol resolution
-	// (JDK source, dependency source JARs).
-	jdkRoot := idx.jdkSourceRoot
-	depSources := idx.dependencySources
-	idx.logger.Printf("No local definitions for %s. Probing external: jdkRoot=%s, depSources=%d", sym, jdkRoot, len(depSources))
-	idx.mu.RUnlock()
-
-	if jdkRoot != "" || len(depSources) > 0 {
-		if ext := idx.resolveExternalSymbol(sym); ext != nil {
-			return []Symbol{*ext}
-		}
-	}
-	return nil
+	// No definitions with source locations — caller will try external resolution.
+	idx.logger.Printf("No local definitions for %s. Probing external: jdkRoot=%s, depSources=%d", sym, idx.jdkSourceRoot, len(idx.dependencySources))
+	return nil, idx.jdkSourceRoot, idx.dependencySources
 }
 
 // References returns all reference locations for a symbol at the given position.
@@ -83,30 +89,33 @@ func (idx *Index) References(uri string, line, character int) []Occurrence {
 func (idx *Index) Hover(uri string, line, character int) *Symbol {
 	relURI := idx.toRelativeURI(uri)
 
-	idx.mu.RLock()
-	sym := idx.symbolAt(relURI, line, character)
-	idx.mu.RUnlock()
-
+	sym := idx.lockedSymbolAt(relURI, line, character)
 	idx.ensureMembersOf(sym)
 
+	if result := idx.lockedHoverLookup(sym); result != nil {
+		return result
+	}
+
+	// Fallback for external symbols (JDK/Dependencies).
+	if ext := idx.resolveExternalSymbol(sym); ext != nil {
+		return ext
+	}
+	return nil
+}
+
+// lockedHoverLookup performs the hover definition lookup under RLock.
+func (idx *Index) lockedHoverLookup(sym string) *Symbol {
 	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
 	if sym == "" {
-		idx.mu.RUnlock()
 		return nil
 	}
 
 	defs := idx.definitions[sym]
 	if len(defs) > 0 {
 		result := *idx.symbol(defs[0])
-		idx.mu.RUnlock()
 		return &result
-	}
-
-	idx.mu.RUnlock()
-
-	// Fallback for external symbols (JDK/Dependencies).
-	if ext := idx.resolveExternalSymbol(sym); ext != nil {
-		return ext
 	}
 	return nil
 }
@@ -298,12 +307,28 @@ func (idx *Index) SymbolSignature(uri string, line, character int) *Symbol {
 
 // SymbolSignatures returns all overloaded method signatures for the symbol at the given position.
 func (idx *Index) SymbolSignatures(uri string, line, character int) []Symbol {
-	idx.mu.RLock()
-
 	relURI := idx.toRelativeURI(uri)
-	sym := idx.symbolAt(relURI, line, character)
+
+	sym := idx.lockedSymbolAt(relURI, line, character)
+	idx.ensureMembersOf(sym)
+
+	if result := idx.lockedSignaturesLookup(sym); result != nil {
+		return result
+	}
+
+	// Fallback for external symbols (JDK/Dependencies).
+	if ext := idx.resolveExternalSymbol(sym); ext != nil {
+		return []Symbol{*ext}
+	}
+	return nil
+}
+
+// lockedSignaturesLookup performs the signatures lookup under RLock.
+func (idx *Index) lockedSignaturesLookup(sym string) []Symbol {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
 	if sym == "" {
-		idx.mu.RUnlock()
 		return nil
 	}
 
@@ -313,15 +338,7 @@ func (idx *Index) SymbolSignatures(uri string, line, character int) []Symbol {
 		for i, id := range defs {
 			result[i] = *idx.symbol(id)
 		}
-		idx.mu.RUnlock()
 		return result
-	}
-
-	idx.mu.RUnlock()
-
-	// Fallback for external symbols (JDK/Dependencies).
-	if ext := idx.resolveExternalSymbol(sym); ext != nil {
-		return []Symbol{*ext}
 	}
 	return nil
 }
