@@ -91,10 +91,28 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 		}
 	}()
 
+	// 1. Determine cursor byte offset.
+	cursorOffset := PositionToByteOffset(content, line, character)
+
+	// Insert a placeholder identifier at the cursor position when it follows a
+	// dot so that Tree-sitter can produce a valid AST for incomplete code. For
+	// example, "s->s." becomes "s->s.__" which parses as a proper field_access
+	// inside a lambda_expression, rather than collapsing into an ERROR node.
+	// This is a standard technique used by mature LSP implementations (Eclipse
+	// JDT, rust-analyzer, etc.).
+	parseContent := content
+	if needsPlaceholder(content, cursorOffset) {
+		const placeholder = "__"
+		parseContent = make([]byte, len(content)+len(placeholder))
+		copy(parseContent, content[:cursorOffset])
+		copy(parseContent[cursorOffset:], []byte(placeholder))
+		copy(parseContent[cursorOffset+len(placeholder):], content[cursorOffset:])
+	}
+
 	parser := javaParserPool.Get().(*slog.Parser)
 	defer javaParserPool.Put(parser)
 
-	tree, err := parser.ParseCtx(context.Background(), nil, content)
+	tree, err := parser.ParseCtx(context.Background(), nil, parseContent)
 	if err != nil {
 		return &CompletionCtx{}
 	}
@@ -102,22 +120,22 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 
 	ctx = &CompletionCtx{}
 
-	// 1. Determine cursor byte offset.
-	cursorOffset := PositionToByteOffset(content, line, character)
-
 	// 2. Determine completion kind and extract receiver/prefix.
-	ctx.Kind, ctx.Receiver, ctx.Prefix = determineCompletionKind(content, cursorOffset, root)
+	// parseContent is identical to content before cursorOffset, so prefix
+	// extraction (which walks backwards) produces the same result.
+	ctx.Kind, ctx.Receiver, ctx.Prefix = determineCompletionKind(parseContent, cursorOffset, root)
 
 	// 2b. Detect if prefix is preceded by "new" keyword.
 	if ctx.Kind == CompletionLexical {
-		ctx.AfterNew = isAfterNewKeyword(content, cursorOffset, ctx.Prefix)
+		ctx.AfterNew = isAfterNewKeyword(parseContent, cursorOffset, ctx.Prefix)
 	}
 
 	// 2c. Detect if '(' follows the cursor position.
+	// Use original content to check the real document, not the placeholder.
 	ctx.ParenFollows = hasParenAfterCursor(content, cursorOffset)
 
 	// 3. Extract imports and package from root.
-	extractImportsAndPackage(root, content, ctx)
+	extractImportsAndPackage(root, parseContent, ctx)
 
 	// 4. Find enclosing class and method to determine scope.
 	cursorNode := nodeAtPosition(root, line, character)
@@ -128,13 +146,13 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 			for i := 0; i < int(classNode.NamedChildCount()); i++ {
 				child := classNode.NamedChild(i)
 				if child.Type() == "identifier" {
-					ctx.EnclosingClass = child.Content(content)
+					ctx.EnclosingClass = child.Content(parseContent)
 					break
 				}
 			}
 
 			// 5. Extract class fields and methods.
-			extractClassMembers(classNode, content, ctx)
+			extractClassMembers(classNode, parseContent, ctx)
 		}
 
 		// Find enclosing method or block for scope.
@@ -147,20 +165,41 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 		methodNode := findAncestor(cursorNode, "method_declaration", "constructor_declaration")
 		if methodNode != nil {
 			// 7. Extract method parameters.
-			extractMethodParams(methodNode, content, ctx)
+			extractMethodParams(methodNode, parseContent, ctx)
 		}
 
 		// 8. Extract local variables from current scope.
-		extractLocals(cursorNode, content, cursorOffset, ctx)
+		extractLocals(cursorNode, parseContent, cursorOffset, ctx)
 
 		// 9. Detect if cursor is inside a method call's argument list.
-		ctx.Call = extractCallContext(cursorNode, content, cursorOffset)
+		ctx.Call = extractCallContext(cursorNode, parseContent, cursorOffset)
 
 		// 10. Extract parameters from the nearest enclosing lambda body.
-		extractLambdaParams(root, cursorNode, content, cursorOffset, ctx)
+		extractLambdaParams(root, cursorNode, parseContent, cursorOffset, ctx)
 	}
 
 	return ctx
+}
+
+// needsPlaceholder returns true when inserting a placeholder identifier at the
+// cursor position would help Tree-sitter produce a valid AST. This is the case
+// when the cursor immediately follows a dot (e.g. "s." or "s.  ") without any
+// identifier character after it — meaning the user just typed a dot for member
+// completion and Tree-sitter would otherwise create an ERROR node.
+func needsPlaceholder(content []byte, cursorOffset int) bool {
+	if cursorOffset <= 0 {
+		return false
+	}
+	// Walk backwards from cursor, skipping any identifier prefix already typed.
+	pos := cursorOffset
+	for pos > 0 && isIdentChar(content[pos-1]) {
+		pos--
+	}
+	// Skip whitespace between dot and prefix.
+	for pos > 0 && (content[pos-1] == ' ' || content[pos-1] == '\t' || content[pos-1] == '\n' || content[pos-1] == '\r') {
+		pos--
+	}
+	return pos > 0 && content[pos-1] == '.'
 }
 
 // hasParenAfterCursor checks if a '(' follows the cursor position,
@@ -234,10 +273,35 @@ func extractReceiverFromAST(root *slog.Node, content []byte, dotBytePos int) str
 	}
 
 	// Find the AST node at the last non-whitespace byte before the dot.
-	line, col := byteOffsetToPosition(content, beforeDot)
-	node := nodeAtPosition(root, line, col)
+	node := findReceiverNode(root, content, beforeDot, dotBytePos)
 	if node == nil {
 		return ""
+	}
+
+	// For debugging, we can't easily log here without h.logger.
+	// We'll trust the caller (handleCompletion) to log the resulting receiver string.
+	return exprToReceiver(node, content)
+}
+
+// findReceiverNode finds the best AST node for receiver extraction at beforeDot.
+// It tries the exact position first, then falls back to beforeDot+1 if the
+// initial node is not a useful receiver (e.g., when `->` and `s` share a
+// boundary and nodeAtPosition picks `->` instead of `s`).
+func findReceiverNode(root *slog.Node, content []byte, beforeDot, dotBytePos int) *slog.Node {
+	line, col := byteOffsetToPosition(content, beforeDot)
+	node := nodeAtPosition(root, line, col)
+
+	if node != nil && exprToReceiver(node, content) == "" && beforeDot+1 <= dotBytePos {
+		// The node at beforeDot is not a valid receiver (e.g., `->` token).
+		// Try the next byte position which may be the actual identifier.
+		line2, col2 := byteOffsetToPosition(content, beforeDot+1)
+		if alt := nodeAtPosition(root, line2, col2); alt != nil {
+			node = alt
+		}
+	}
+
+	if node == nil {
+		return nil
 	}
 
 	// Walk up to the highest expression node that ends at or before the dot.
@@ -249,10 +313,7 @@ func extractReceiverFromAST(root *slog.Node, content []byte, dotBytePos int) str
 			break
 		}
 	}
-
-	// For debugging, we can't easily log here without h.logger.
-	// We'll trust the caller (handleCompletion) to log the resulting receiver string.
-	return exprToReceiver(node, content)
+	return node
 }
 
 // exprToReceiver converts a Tree-sitter expression node to a dot-separated

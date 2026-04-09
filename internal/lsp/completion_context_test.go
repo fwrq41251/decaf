@@ -127,6 +127,37 @@ public class MyClass {
 	}
 }
 
+func TestParseCompletionCtx_LambdaDotNoSpaceAroundArrow(t *testing.T) {
+	// Regression: "s->s." (no spaces around ->) must detect dot completion.
+	src := []byte(`package com.example;
+import java.util.List;
+public class MyClass {
+    public void doSomething(List<String> items) {
+        items.stream().map(s->s.)
+    }
+}`)
+	// cursor after "s." at line 4, char 32
+	ctx := parseCompletionCtx(nil, src, 4, 32)
+	if ctx.Kind != CompletionDot {
+		t.Fatalf("expected CompletionDot, got %d", ctx.Kind)
+	}
+	if ctx.Receiver != "s" {
+		t.Fatalf("expected receiver 's', got %q", ctx.Receiver)
+	}
+	if len(ctx.LambdaParams) != 1 || ctx.LambdaParams[0].Name != "s" {
+		t.Fatalf("expected lambda param 's', got %+v", ctx.LambdaParams)
+	}
+	if ctx.Call == nil {
+		t.Fatal("expected CallContext to be non-nil")
+	}
+	if ctx.Call.Receiver != "items.stream" {
+		t.Fatalf("expected call receiver 'items.stream', got %q", ctx.Call.Receiver)
+	}
+	if ctx.Call.MethodName != "map" {
+		t.Fatalf("expected call method 'map', got %q", ctx.Call.MethodName)
+	}
+}
+
 func TestParseCompletionCtx_LambdaTypedParam(t *testing.T) {
 	src := []byte(`package com.example;
 
