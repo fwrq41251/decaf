@@ -96,66 +96,69 @@ func (h *Handler) scheduleCompile(uris ...string) {
 		h.debounceTimer.Stop()
 	}
 
-	h.debounceTimer = time.AfterFunc(500*time.Millisecond, func() {
-		totalStart := time.Now()
+	h.debounceTimer = time.AfterFunc(500*time.Millisecond, h.runCompileCycle)
+}
 
-		h.compileMu.Lock()
-		defer h.compileMu.Unlock()
-		h.logger.Printf("[timing] acquired compileMu after %v", time.Since(totalStart))
+// runCompileCycle is the debounced callback that compiles changed files and reindexes.
+func (h *Handler) runCompileCycle() {
+	totalStart := time.Now()
 
-		h.bgMu.Lock()
-		ctx := h.backgroundCtx
-		h.bgMu.Unlock()
-		if ctx == nil {
-			return
-		}
+	h.compileMu.Lock()
+	defer h.compileMu.Unlock()
+	h.logger.Printf("[timing] acquired compileMu after %v", time.Since(totalStart))
 
-		// Collect and clear pending URIs.
-		h.debounceMu.Lock()
-		changedURIs := h.pendingURIs
-		h.pendingURIs = nil
-		h.debounceMu.Unlock()
+	h.bgMu.Lock()
+	ctx := h.backgroundCtx
+	h.bgMu.Unlock()
+	if ctx == nil {
+		return
+	}
 
-		if len(changedURIs) == 0 {
-			return
-		}
+	// Collect and clear pending URIs.
+	h.debounceMu.Lock()
+	changedURIs := h.pendingURIs
+	h.pendingURIs = nil
+	h.debounceMu.Unlock()
 
-		prog := h.beginProgress(ctx, "decaf", "compiling…")
+	if len(changedURIs) == 0 {
+		return
+	}
 
-		compiled := false
-		if len(changedURIs) > 0 {
-			t0 := time.Now()
-			targets := h.resolveTargets(ctx, changedURIs)
-			h.logger.Printf("[timing] resolveTargets (%d URIs -> %d targets) took %v", len(changedURIs), len(targets), time.Since(t0))
-			if len(targets) > 0 {
-				t1 := time.Now()
-				err := h.bspClient.CompileTargets(ctx, targets)
-				h.logger.Printf("[timing] CompileTargets took %v", time.Since(t1))
-				if err != nil {
-					h.logCompileError("compile on file change", err)
-				}
-				compiled = true
-			}
-		}
+	prog := h.beginProgress(ctx, "decaf", "compiling…")
 
-		// Fall back to full compile if we couldn't resolve targets.
-		if !compiled {
+	compiled := false
+	if len(changedURIs) > 0 {
+		t0 := time.Now()
+		targets := h.resolveTargets(ctx, changedURIs)
+		h.logger.Printf("[timing] resolveTargets (%d URIs -> %d targets) took %v", len(changedURIs), len(targets), time.Since(t0))
+		if len(targets) > 0 {
 			t1 := time.Now()
-			if err := h.bspClient.Compile(ctx); err != nil {
-				h.logCompileError("full compile on file change", err)
+			err := h.bspClient.CompileTargets(ctx, targets)
+			h.logger.Printf("[timing] CompileTargets took %v", time.Since(t1))
+			if err != nil {
+				h.logCompileError("compile on file change", err)
 			}
-			h.logger.Printf("[timing] full Compile took %v", time.Since(t1))
+			compiled = true
 		}
+	}
 
-		// Always reindex — even partial compilation produces updated semanticdb.
-		prog.report("indexing…", nil)
-		t2 := time.Now()
-		h.reindex()
-		h.logger.Printf("[timing] reindex took %v", time.Since(t2))
+	// Fall back to full compile if we couldn't resolve targets.
+	if !compiled {
+		t1 := time.Now()
+		if err := h.bspClient.Compile(ctx); err != nil {
+			h.logCompileError("full compile on file change", err)
+		}
+		h.logger.Printf("[timing] full Compile took %v", time.Since(t1))
+	}
 
-		prog.end("done")
-		h.logger.Printf("[timing] total compile+reindex cycle took %v", time.Since(totalStart))
-	})
+	// Always reindex — even partial compilation produces updated semanticdb.
+	prog.report("indexing…", nil)
+	t2 := time.Now()
+	h.reindex()
+	h.logger.Printf("[timing] reindex took %v", time.Since(t2))
+
+	prog.end("done")
+	h.logger.Printf("[timing] total compile+reindex cycle took %v", time.Since(totalStart))
 }
 
 // resolveTargets uses inverseSources to find build targets for the given file URIs,

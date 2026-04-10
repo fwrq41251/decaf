@@ -14,15 +14,8 @@ func (h *Handler) handleDefinition(ctx context.Context, params json.RawMessage) 
 		return nil, err
 	}
 
-	select {
-	case <-h.indexReady:
-		// Index is ready.
-	default:
-		h.logger.Printf("Definition request: waiting for initial index load...")
-		if !h.waitIndexReady(ctx) {
-			h.logger.Printf("Definition request: index not ready, cancelled.")
-			return []LSPLocation{}, nil
-		}
+	if !h.waitIndexReady(ctx) {
+		return []LSPLocation{}, nil
 	}
 
 	defs := h.idx.Definition(p.TextDocument.URI, p.Position.Line, p.Position.Character)

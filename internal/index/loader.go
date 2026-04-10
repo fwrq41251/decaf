@@ -84,6 +84,7 @@ func (idx *Index) loadFull() error {
 
 	// Phase 4: Acquire write lock for serial index mutation.
 	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	if len(toIndex) == 0 && len(deleted) == 0 {
 		idx.logger.Printf("index up-to-date (%d files, no changes)", len(current))
 	} else {
@@ -130,8 +131,6 @@ func (idx *Index) loadFull() error {
 		idx.watcher = w
 		idx.logger.Printf("file watcher started for %s", idx.sourceRoot)
 	}
-	idx.mu.Unlock()
-
 	return nil
 }
 

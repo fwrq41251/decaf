@@ -74,8 +74,7 @@ func NewHandler(logger *log.Logger, transport *jsonrpc.Transport) *Handler {
 		if !h.shutdown.Load() {
 			h.showMessage(MessageTypeError, "decaf: Bloop build server disconnected. Please restart your editor.")
 		}
-	})
-	h.bspClient.SetHandlers(h.handleBSPLogMessage, h.handleBSPTaskStart, h.handleBSPTaskProgress, h.handleBSPTaskFinish)
+	}, h.handleBSPLogMessage, h.handleBSPTaskStart, h.handleBSPTaskProgress, h.handleBSPTaskFinish)
 	return h
 }
 

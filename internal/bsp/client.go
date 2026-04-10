@@ -54,12 +54,16 @@ type Client struct {
 
 
 // NewClient creates a new BSP client.
-func NewClient(logger *log.Logger, onDiagnostics DiagnosticsHandler, onDisconnect func()) *Client {
+func NewClient(logger *log.Logger, onDiagnostics DiagnosticsHandler, onDisconnect func(), onLog LogMessageHandler, onStart TaskStartHandler, onProgress TaskProgressHandler, onFinish TaskFinishHandler) *Client {
 	return &Client{
-		logger:        logger,
-		pending:       make(map[int64]chan *jsonrpc.Response),
-		onDiagnostics: onDiagnostics,
-		onDisconnect:  onDisconnect,
+		logger:         logger,
+		pending:        make(map[int64]chan *jsonrpc.Response),
+		onDiagnostics:  onDiagnostics,
+		onDisconnect:   onDisconnect,
+		onLogMessage:   onLog,
+		onTaskStart:    onStart,
+		onTaskProgress: onProgress,
+		onTaskFinish:   onFinish,
 	}
 }
 
@@ -402,12 +406,7 @@ func (c *Client) readLoop() {
 	}
 }
 
-func (c *Client) SetHandlers(onLog LogMessageHandler, onStart TaskStartHandler, onProgress TaskProgressHandler, onFinish TaskFinishHandler) {
-	c.onLogMessage = onLog
-	c.onTaskStart = onStart
-	c.onTaskProgress = onProgress
-	c.onTaskFinish = onFinish
-}
+
 
 func (c *Client) handleNotification(method string, body []byte) {
 	switch method {
