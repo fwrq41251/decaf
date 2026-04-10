@@ -1386,6 +1386,98 @@ func TestCompleteDot_ExcludesConstructors(t *testing.T) {
 	}
 }
 
+func TestCompleteLexical_KeywordRanksBeforeGlobalTypes(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	// Set up global types that start with "Th" (e.g. Thread, Throwable).
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "java/lang/Thread#", DisplayName: "Thread", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "java/lang/Throwable#", DisplayName: "Throwable", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:   CompletionLexical,
+		Scope:  ScopeBlock,
+		Prefix: "th",
+	}
+
+	items := h.completeLexical(cctx, "file://"+tmpDir+"/src/Test.java", []byte("class Test { void m() { th }}"))
+	sortCompletionItems(items)
+
+	// Find positions of "this", "throw", "throws", "Thread", "Throwable".
+	thisIdx := -1
+	threadIdx := -1
+	for i, item := range items {
+		switch item.Label {
+		case "this":
+			thisIdx = i
+		case "Thread":
+			threadIdx = i
+		}
+	}
+
+	if thisIdx == -1 {
+		t.Fatal("expected 'this' keyword in completion items")
+	}
+	if threadIdx == -1 {
+		t.Fatal("expected 'Thread' type in completion items")
+	}
+	if thisIdx > threadIdx {
+		t.Errorf("keyword 'this' (idx %d) should rank before global type 'Thread' (idx %d)", thisIdx, threadIdx)
+	}
+}
+
+func TestCompleteLexical_PrivateKeywordRanksBeforeGlobalTypes(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "com/example/Priority#", DisplayName: "Priority", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "com/example/PrintStream#", DisplayName: "PrintStream", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:   CompletionLexical,
+		Scope:  ScopeClass,
+		Prefix: "pr",
+	}
+
+	items := h.completeLexical(cctx, "file://"+tmpDir+"/src/Test.java", []byte("class Test { pr }"))
+	sortCompletionItems(items)
+
+	privateIdx := -1
+	priorityIdx := -1
+	for i, item := range items {
+		switch item.Label {
+		case "private":
+			privateIdx = i
+		case "Priority":
+			priorityIdx = i
+		}
+	}
+
+	if privateIdx == -1 {
+		t.Fatal("expected 'private' keyword in completion items")
+	}
+	if priorityIdx == -1 {
+		t.Fatal("expected 'Priority' type in completion items")
+	}
+	if privateIdx > priorityIdx {
+		t.Errorf("keyword 'private' (idx %d) should rank before global type 'Priority' (idx %d)", privateIdx, priorityIdx)
+	}
+}
+
 func TestCompleteDot_CaseInsensitivePrefixRanking(t *testing.T) {
 	h, idx, tmpDir := newTestHandler(t)
 	defer idx.Close()
@@ -1462,5 +1554,596 @@ func TestCompleteDot_CaseInsensitivePrefixRanking(t *testing.T) {
 	}
 	if buildConfigIdx <= doCreateIdx {
 		t.Errorf("expected buildConfig (fuzzy, idx %d) to rank after doCreate (prefix match, idx %d)", buildConfigIdx, doCreateIdx)
+	}
+}
+
+func TestCompleteLexical_ScopeRankingOrder(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "com/example/Component#", DisplayName: "Component", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:         CompletionLexical,
+		Scope:        ScopeBlock,
+		Prefix:       "co",
+		LambdaParams: []ValueDecl{{Name: "counter", Type: &index.TypeExpr{Sym: "String"}}},
+		Locals:       []ValueDecl{{Name: "config", Type: &index.TypeExpr{Sym: "String"}}},
+		Params:       []ValueDecl{{Name: "connection", Type: &index.TypeExpr{Sym: "String"}}},
+		ClassFields:  []ValueDecl{{Name: "context", Type: &index.TypeExpr{Sym: "String"}}},
+		ClassMethods: []MethodDecl{{Name: "compute", Params: nil}},
+	}
+
+	items := h.completeLexical(cctx, "file://"+tmpDir+"/src/Test.java", []byte("class Test { void m() { co }}"))
+	sortCompletionItems(items)
+
+	indexOf := func(labelOrFilter string) int {
+		for i, item := range items {
+			if item.Label == labelOrFilter || item.FilterText == labelOrFilter {
+				return i
+			}
+		}
+		return -1
+	}
+
+	counterIdx := indexOf("counter")
+	configIdx := indexOf("config")
+	connectionIdx := indexOf("connection")
+	contextIdx := indexOf("context")
+	computeIdx := indexOf("compute")
+	continueIdx := indexOf("continue")
+	componentIdx := indexOf("Component")
+
+	if counterIdx == -1 {
+		t.Fatal("expected 'counter' in completion items")
+	}
+	if configIdx == -1 {
+		t.Fatal("expected 'config' in completion items")
+	}
+	if connectionIdx == -1 {
+		t.Fatal("expected 'connection' in completion items")
+	}
+	if contextIdx == -1 {
+		t.Fatal("expected 'context' in completion items")
+	}
+	if computeIdx == -1 {
+		t.Fatal("expected 'compute' in completion items")
+	}
+	if continueIdx == -1 {
+		t.Fatal("expected 'continue' keyword in completion items")
+	}
+	if componentIdx == -1 {
+		t.Fatal("expected 'Component' type in completion items")
+	}
+
+	if counterIdx > configIdx {
+		t.Errorf("lambda param 'counter' (idx %d) should rank before local 'config' (idx %d)", counterIdx, configIdx)
+	}
+	if configIdx > connectionIdx {
+		t.Errorf("local 'config' (idx %d) should rank before param 'connection' (idx %d)", configIdx, connectionIdx)
+	}
+	if connectionIdx > contextIdx {
+		t.Errorf("param 'connection' (idx %d) should rank before field 'context' (idx %d)", connectionIdx, contextIdx)
+	}
+	if contextIdx > computeIdx {
+		t.Errorf("field 'context' (idx %d) should rank before method 'compute' (idx %d)", contextIdx, computeIdx)
+	}
+	if continueIdx > componentIdx {
+		t.Errorf("keyword 'continue' (idx %d) should rank before global type 'Component' (idx %d)", continueIdx, componentIdx)
+	}
+}
+
+func TestCompleteLexical_CaseOnlyNameDifferencesHaveDeterministicSortText(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "pkg/MyClass#", DisplayName: "MyClass", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "pkg/myClass#", DisplayName: "myClass", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	items := h.completeLexical(&CompletionCtx{
+		Kind:   CompletionLexical,
+		Scope:  ScopeBlock,
+		Prefix: "my",
+	}, "file://"+tmpDir+"/src/Test.java", []byte("class Test { void m() { my }}"))
+	sortCompletionItems(items)
+
+	myClassIdx := -1
+	MyClassIdx := -1
+	var myClassSortText, MyClassSortText string
+	for i, item := range items {
+		switch item.Label {
+		case "myClass":
+			myClassIdx = i
+			myClassSortText = item.SortText
+		case "MyClass":
+			MyClassIdx = i
+			MyClassSortText = item.SortText
+		}
+	}
+
+	if myClassIdx == -1 || MyClassIdx == -1 {
+		t.Fatalf("expected both MyClass and myClass in completion items: %+v", items)
+	}
+	if myClassSortText == MyClassSortText {
+		t.Fatalf("expected distinct SortText values for case-only name differences, both were %q", myClassSortText)
+	}
+	if myClassIdx == MyClassIdx {
+		t.Fatalf("expected MyClass and myClass to appear as distinct completion items: %+v", items)
+	}
+}
+
+func TestCompleteLexical_EmptyPrefixReturnsNil(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	items := h.completeLexical(&CompletionCtx{
+		Prefix: "",
+	}, "", nil)
+
+	if items != nil {
+		t.Fatalf("expected nil for empty prefix, got %+v", items)
+	}
+}
+
+func TestCompleteLexical_AfterNewAddsParens(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "java/util/ArrayList#", DisplayName: "ArrayList", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:     CompletionLexical,
+		Prefix:   "Arr",
+		AfterNew: true,
+	}
+
+	items := h.completeLexical(cctx, "file://"+tmpDir+"/src/Test.java", []byte("class Test { void m() { new Arr }}"))
+
+	var found *CompletionItem
+	for i, item := range items {
+		if item.Label == "ArrayList" {
+			found = &items[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected ArrayList in completion items, got %+v", items)
+	}
+	if found.InsertText != "ArrayList($0)" {
+		t.Errorf("InsertText = %q, want %q", found.InsertText, "ArrayList($0)")
+	}
+	if found.InsertTextFormat != InsertTextFormatSnippet {
+		t.Errorf("InsertTextFormat = %d, want %d", found.InsertTextFormat, InsertTextFormatSnippet)
+	}
+}
+
+func TestCompleteLexical_AfterNewWithParenFollows(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "java/util/ArrayList#", DisplayName: "ArrayList", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:         CompletionLexical,
+		Prefix:       "Arr",
+		AfterNew:     true,
+		ParenFollows: true,
+	}
+
+	items := h.completeLexical(cctx, "file://"+tmpDir+"/src/Test.java", []byte("class Test { void m() { new Arr() }}"))
+
+	var found *CompletionItem
+	for i, item := range items {
+		if item.Label == "ArrayList" {
+			found = &items[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected ArrayList in completion items, got %+v", items)
+	}
+	if found.InsertText != "ArrayList" {
+		t.Errorf("InsertText = %q, want %q (parens already follow)", found.InsertText, "ArrayList")
+	}
+	if found.InsertTextFormat != 0 {
+		t.Errorf("InsertTextFormat = %d, want 0 (parens already follow)", found.InsertTextFormat)
+	}
+}
+
+func TestCompleteLexical_AutoImportTextEdit(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "com/example/util/StringHelper#", DisplayName: "StringHelper", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	content := []byte("package com.example.app;\n\nclass Test { void m() { String }}")
+	cctx := &CompletionCtx{
+		Kind:    CompletionLexical,
+		Prefix:  "String",
+		Package: "com.example.app",
+	}
+
+	items := h.completeLexical(cctx, "file://"+tmpDir+"/src/Test.java", content)
+
+	var found *CompletionItem
+	for i, item := range items {
+		if item.Label == "StringHelper" {
+			found = &items[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected StringHelper in completion items, got %+v", items)
+	}
+	if len(found.AdditionalTextEdits) != 1 {
+		t.Errorf("expected 1 additional text edit, got %d", len(found.AdditionalTextEdits))
+	}
+	if found.Detail != "com.example.util.StringHelper" {
+		t.Errorf("Detail = %q, want %q", found.Detail, "com.example.util.StringHelper")
+	}
+}
+
+func TestCompleteDot_StaticAccessOnlyShowsStaticMembers(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "pkg/Utils#", DisplayName: "Utils", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"utils": {
+			{Name: "Utils", Symbol: "pkg/Utils#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"pkg/Utils#": {
+			{Name: "format", Symbol: "pkg/Utils#format().", Kind: sdb.SymbolInformation_METHOD, IsStatic: true},
+			{Name: "parse", Symbol: "pkg/Utils#parse().", Kind: sdb.SymbolInformation_METHOD, IsStatic: true},
+			{Name: "count", Symbol: "pkg/Utils#count.", Kind: sdb.SymbolInformation_FIELD, IsStatic: false},
+			{Name: "getValue", Symbol: "pkg/Utils#getValue().", Kind: sdb.SymbolInformation_METHOD, IsStatic: false},
+		},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:     CompletionDot,
+		Receiver: "Utils",
+		Prefix:   "",
+		Package:  "pkg",
+	}
+
+	items := h.completeDot(cctx, "file://"+tmpDir+"/src/Test.java")
+
+	found := make(map[string]bool)
+	for _, item := range items {
+		found[item.FilterText] = true
+	}
+	if !found["format"] {
+		t.Error("expected static method 'format' in results")
+	}
+	if !found["parse"] {
+		t.Error("expected static method 'parse' in results")
+	}
+	if found["count"] {
+		t.Error("instance field 'count' should NOT appear in static access")
+	}
+	if found["getValue"] {
+		t.Error("instance method 'getValue' should NOT appear in static access")
+	}
+}
+
+func TestCompleteDot_InstanceAccessOnlyShowsInstanceMembers(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "pkg/Utils#", DisplayName: "Utils", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"utils": {
+			{Name: "Utils", Symbol: "pkg/Utils#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"pkg/Utils#": {
+			{Name: "format", Symbol: "pkg/Utils#format().", Kind: sdb.SymbolInformation_METHOD, IsStatic: true},
+			{Name: "parse", Symbol: "pkg/Utils#parse().", Kind: sdb.SymbolInformation_METHOD, IsStatic: true},
+			{Name: "count", Symbol: "pkg/Utils#count.", Kind: sdb.SymbolInformation_FIELD, IsStatic: false},
+			{Name: "getValue", Symbol: "pkg/Utils#getValue().", Kind: sdb.SymbolInformation_METHOD, IsStatic: false},
+		},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:     CompletionDot,
+		Receiver: "utils",
+		Prefix:   "",
+		Package:  "pkg",
+		Locals:   []ValueDecl{{Name: "utils", Type: &index.TypeExpr{Sym: "Utils"}}},
+	}
+
+	items := h.completeDot(cctx, "file://"+tmpDir+"/src/Test.java")
+
+	found := make(map[string]bool)
+	for _, item := range items {
+		found[item.FilterText] = true
+	}
+	if !found["count"] {
+		t.Error("expected instance field 'count' in results")
+	}
+	if !found["getValue"] {
+		t.Error("expected instance method 'getValue' in results")
+	}
+	if found["format"] {
+		t.Error("static method 'format' should NOT appear in instance access")
+	}
+	if found["parse"] {
+		t.Error("static method 'parse' should NOT appear in instance access")
+	}
+}
+
+func TestCompleteDot_ThisReceiverResolvesEnclosingClass(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "pkg/MyService#", DisplayName: "MyService", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"myservice": {
+			{Name: "MyService", Symbol: "pkg/MyService#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"pkg/MyService#": {
+			{Name: "processItem", Symbol: "pkg/MyService#processItem().", Kind: sdb.SymbolInformation_METHOD},
+		},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:           CompletionDot,
+		Receiver:       "this",
+		Prefix:         "proc",
+		Package:        "pkg",
+		EnclosingClass: "MyService",
+	}
+
+	items := h.completeDot(cctx, "file://"+tmpDir+"/src/Test.java")
+
+	found := false
+	for _, item := range items {
+		if item.FilterText == "processItem" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'processItem' in results when receiver is 'this', got %+v", items)
+	}
+}
+
+func TestCompleteLexical_ItemKindsAreCorrect(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	items := h.completeLexical(&CompletionCtx{
+		Prefix:       "te",
+		Scope:        ScopeBlock,
+		Locals:       []ValueDecl{{Name: "tempVar", Type: &index.TypeExpr{Sym: "String"}}},
+		ClassFields:  []ValueDecl{{Name: "template", Type: &index.TypeExpr{Sym: "String"}}},
+		ClassMethods: []MethodDecl{{Name: "test", Params: nil}},
+	}, "", nil)
+
+	kindOf := func(labelOrFilter string) int {
+		for _, item := range items {
+			if item.Label == labelOrFilter || item.FilterText == labelOrFilter {
+				return item.Kind
+			}
+		}
+		return -1
+	}
+
+	if k := kindOf("tempVar"); k != CompletionKindVariable {
+		t.Errorf("tempVar kind = %d, want %d (Variable)", k, CompletionKindVariable)
+	}
+	if k := kindOf("template"); k != CompletionKindField {
+		t.Errorf("template kind = %d, want %d (Field)", k, CompletionKindField)
+	}
+	if k := kindOf("test"); k != CompletionKindMethod {
+		t.Errorf("test kind = %d, want %d (Method)", k, CompletionKindMethod)
+	}
+
+	// Verify keyword kind.
+	kwItems := h.completeLexical(&CompletionCtx{
+		Prefix: "th",
+		Scope:  ScopeBlock,
+	}, "", nil)
+
+	for _, item := range kwItems {
+		if item.Label == "this" {
+			if item.Kind != CompletionKindKeyword {
+				t.Errorf("'this' kind = %d, want %d (Keyword)", item.Kind, CompletionKindKeyword)
+			}
+			return
+		}
+	}
+	t.Error("expected 'this' keyword in completion items")
+}
+
+func TestCompleteDot_FieldRanksBeforeMethod(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "pkg/Data#", DisplayName: "Data", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"data": {
+			{Name: "Data", Symbol: "pkg/Data#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"pkg/Data#": {
+			{Name: "name", Symbol: "pkg/Data#name.", Kind: sdb.SymbolInformation_FIELD},
+			{Name: "navigate", Symbol: "pkg/Data#navigate().", Kind: sdb.SymbolInformation_METHOD},
+		},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:     CompletionDot,
+		Receiver: "data",
+		Prefix:   "na",
+		Package:  "pkg",
+		Locals:   []ValueDecl{{Name: "data", Type: &index.TypeExpr{Sym: "Data"}}},
+	}
+
+	items := h.completeDot(cctx, "file://"+tmpDir+"/src/Test.java")
+	sortCompletionItems(items)
+
+	nameIdx := -1
+	navigateIdx := -1
+	for i, item := range items {
+		switch item.FilterText {
+		case "name":
+			nameIdx = i
+		case "navigate":
+			navigateIdx = i
+		}
+	}
+
+	if nameIdx == -1 {
+		t.Fatal("expected 'name' field in results")
+	}
+	if navigateIdx == -1 {
+		t.Fatal("expected 'navigate' method in results")
+	}
+	if nameIdx > navigateIdx {
+		t.Errorf("field 'name' (idx %d) should rank before method 'navigate' (idx %d)", nameIdx, navigateIdx)
+	}
+}
+
+func TestCompleteLexical_LiteralsAppearAsKeywordKind(t *testing.T) {
+	h, idx, _ := newTestHandler(t)
+	defer idx.Close()
+
+	items := h.completeLexical(&CompletionCtx{
+		Prefix: "tr",
+		Scope:  ScopeBlock,
+	}, "", nil)
+
+	for _, item := range items {
+		if item.Label == "true" {
+			if item.Kind != CompletionKindKeyword {
+				t.Errorf("'true' kind = %d, want %d (Keyword)", item.Kind, CompletionKindKeyword)
+			}
+			return
+		}
+	}
+	t.Error("expected 'true' literal in completion items")
+}
+
+func TestCompleteLexical_SamePackageTypeRanksBeforeExternalType(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "com/example/app/Config#", DisplayName: "Config", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "org/external/ConfigManager#", DisplayName: "ConfigManager", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:    CompletionLexical,
+		Prefix:  "Con",
+		Package: "com.example.app",
+	}
+
+	items := h.completeLexical(cctx, "file://"+tmpDir+"/src/Test.java", []byte("package com.example.app;\n\nclass Test { void m() { Con }}"))
+	sortCompletionItems(items)
+
+	configIdx := -1
+	configManagerIdx := -1
+	for i, item := range items {
+		switch item.Label {
+		case "Config":
+			configIdx = i
+		case "ConfigManager":
+			configManagerIdx = i
+		}
+	}
+
+	if configIdx == -1 {
+		t.Fatal("expected 'Config' (same package) in completion items")
+	}
+	if configManagerIdx == -1 {
+		t.Fatal("expected 'ConfigManager' (external) in completion items")
+	}
+	if configIdx > configManagerIdx {
+		t.Errorf("same-package 'Config' (idx %d) should rank before external 'ConfigManager' (idx %d)", configIdx, configManagerIdx)
 	}
 }

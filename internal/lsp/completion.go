@@ -110,7 +110,7 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 			continue
 		}
 		seen[key] = struct{}{}
-		sortText := sortPrefix + kindOrder + m.Name
+		sortText := sortPrefix + kindOrder + completionNameSortKey(m.Name)
 		if kind == CompletionKindMethod || kind == CompletionKindConstructor {
 			sortText += signatureSortSuffix(m.Signature)
 		}
@@ -148,7 +148,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 			Kind:       CompletionKindField,
 			InsertText: name,
 			Detail:     detail,
-			SortText:   sortPrefix + sortBucket + name,
+			SortText:   sortPrefix + sortBucket + completionNameSortKey(name),
 			FilterText: name,
 		})
 	}
@@ -171,7 +171,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 			Label:      formatMethodDeclDetail(m),
 			Kind:       CompletionKindMethod,
 			Detail:     formatMethodDeclDetail(m),
-			SortText:   sortPrefix + sortBucket + m.Name + methodDeclSortSuffix(m),
+			SortText:   sortPrefix + sortBucket + completionNameSortKey(m.Name) + methodDeclSortSuffix(m),
 			FilterText: m.Name,
 		}
 		if cctx.ParenFollows {
@@ -197,7 +197,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 		if lowerPrefix != "" && strings.HasPrefix(strings.ToLower(sym.Name), lowerPrefix) {
 			sortPrefix = "0"
 		}
-		sortText := sortPrefix + sortBucket + sym.Name
+		sortText := sortPrefix + sortBucket + completionNameSortKey(sym.Name)
 		if sym.Signature != nil {
 			sortText += signatureSortSuffix(sym.Signature)
 		}
@@ -1196,7 +1196,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			Kind:       kind,
 			InsertText: name,
 			Detail:     detail,
-			SortText:   contextPrefix(kind) + typeMatchPrefix(candidateType) + casePrefix(name) + scopeOrder + name,
+			SortText:   contextPrefix(kind) + typeMatchPrefix(candidateType) + casePrefix(name) + scopeOrder + completionNameSortKey(name),
 			FilterText: name,
 		}
 		items = append(items, item)
@@ -1248,7 +1248,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 				Label:      formatMethodDeclDetail(m),
 				Kind:       CompletionKindMethod,
 				Detail:     formatMethodDeclDetail(m),
-				SortText:   contextPrefix(CompletionKindMethod) + typeMatchPrefix(m.ReturnType) + casePrefix(m.Name) + "4" + m.Name + methodDeclSortSuffix(m),
+					SortText:   contextPrefix(CompletionKindMethod) + typeMatchPrefix(m.ReturnType) + casePrefix(m.Name) + "4" + completionNameSortKey(m.Name) + methodDeclSortSuffix(m),
 				FilterText: m.Name,
 			}
 			if cctx.ParenFollows {
@@ -1279,7 +1279,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			}
 			seen[key] = struct{}{}
 			retType := symbolReturnTypeExpr(m, h.idx)
-			sortText := contextPrefix(kind) + typeMatchPrefix(retType) + casePrefix(m.Name) + "5" + m.Name
+			sortText := contextPrefix(kind) + typeMatchPrefix(retType) + casePrefix(m.Name) + "5" + completionNameSortKey(m.Name)
 			if kind == CompletionKindMethod || kind == CompletionKindConstructor {
 				sortText += signatureSortSuffix(m.Signature)
 			}
@@ -1315,16 +1315,18 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		}
 	}
 
-	// 6. Keywords and Literals (scope "8").
-	// Only suggest keywords in lexical completion.
+	// 6. Keywords and Literals (scope "52").
+	// Use two-character scope to align with type completion priorities
+	// (types use scope "5" + typeCompletionPriority "0"-"4"), placing
+	// keywords at the same level as java.lang types.
 	for _, kw := range javaKeywords {
 		if matchPrefix(kw) {
-			addItem(kw, CompletionKindText, "keyword", nil, "8")
+			addItem(kw, CompletionKindKeyword, "keyword", nil, "52")
 		}
 	}
 	for _, lit := range javaLiterals {
 		if matchPrefix(lit) {
-			addItem(lit, CompletionKindText, "literal", nil, "8")
+			addItem(lit, CompletionKindKeyword, "literal", nil, "52")
 		}
 	}
 
@@ -1368,7 +1370,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		if isTypeCompletionKind(kind) {
 			sortText += typeCompletionPriority(cctx, s)
 		}
-		sortText += s.Name
+		sortText += completionNameSortKey(s.Name)
 		if kind == CompletionKindMethod || kind == CompletionKindConstructor {
 			sortText += signatureSortSuffix(s.Signature)
 		}
@@ -1641,6 +1643,10 @@ func methodDeclSortSuffix(m MethodDecl) string {
 		return "|()"
 	}
 	return "|(" + strings.Join(m.Params, ",") + ")"
+}
+
+func completionNameSortKey(name string) string {
+	return strings.ToLower(name) + "|" + name
 }
 
 func formatMethodDeclDetail(m MethodDecl) string {
