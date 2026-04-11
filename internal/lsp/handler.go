@@ -49,7 +49,8 @@ type Handler struct {
 	diagnostics map[string]map[string][]Diagnostic
 
 	// indexReady is closed once the initial index load (and full build if needed) completes.
-	indexReady chan struct{}
+	indexReady     chan struct{}
+	indexReadyOnce sync.Once
 
 	// tasksMu protects activeTasks map.
 	tasksMu     sync.Mutex
@@ -135,6 +136,9 @@ func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
 	// Code actions — concurrent (read-only analysis).
 	d.RegisterConcurrent("textDocument/codeAction", h.handleCodeAction)
 
+	// Execute command — sequential (may apply edits).
+	d.Register("workspace/executeCommand", h.handleExecuteCommand)
+
 	// Rename mutates state — sequential.
 	d.Register("textDocument/rename", h.handleRename)
 }
@@ -152,6 +156,11 @@ func (h *Handler) showMessage(msgType int, message string) {
 	if err := h.transport.WriteRequest(notification); err != nil {
 		h.logger.Printf("failed to send showMessage: %v", err)
 	}
+}
+
+// closeIndexReady signals that the index is ready. Safe to call multiple times.
+func (h *Handler) closeIndexReady() {
+	h.indexReadyOnce.Do(func() { close(h.indexReady) })
 }
 
 func intPtr(n int) *int { return &n }
@@ -202,6 +211,7 @@ func (h *Handler) handleBSPDiagnostics(bspDiag bsp.PublishDiagnosticsParams) {
 	docURI := h.toFileURI(bspDiag.TextDocument.URI)
 	targetURI := bspDiag.BuildTarget.URI
 
+	// Update stored diagnostics under the lock.
 	h.diagnosticsMu.Lock()
 	if h.diagnostics[docURI] == nil {
 		h.diagnostics[docURI] = make(map[string][]Diagnostic)
@@ -223,12 +233,20 @@ func (h *Handler) handleBSPDiagnostics(bspDiag bsp.PublishDiagnosticsParams) {
 		})
 	}
 
-	// Merge all targets for this document to send a complete view to the editor.
+	// Snapshot all target diagnostics for this document, then release the lock.
+	var allTargetDiags [][]Diagnostic
+	for _, targetDiags := range h.diagnostics[docURI] {
+		snapshot := make([]Diagnostic, len(targetDiags))
+		copy(snapshot, targetDiags)
+		allTargetDiags = append(allTargetDiags, snapshot)
+	}
+	h.diagnosticsMu.Unlock()
+
+	// Merge and deduplicate outside the lock.
 	merged := []Diagnostic{}
 	seen := make(map[string]bool)
-	for _, targetDiags := range h.diagnostics[docURI] {
+	for _, targetDiags := range allTargetDiags {
 		for _, d := range targetDiags {
-			// Basic deduplication.
 			key := fmt.Sprintf("%d:%d-%d:%d:%d:%s",
 				d.Range.Start.Line, d.Range.Start.Character,
 				d.Range.End.Line, d.Range.End.Character,
@@ -239,7 +257,6 @@ func (h *Handler) handleBSPDiagnostics(bspDiag bsp.PublishDiagnosticsParams) {
 			}
 		}
 	}
-	h.diagnosticsMu.Unlock()
 
 	params := PublishDiagnosticsParams{
 		URI:         docURI,

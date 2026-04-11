@@ -171,7 +171,10 @@ func (idx *Index) AddDependencySource(path string) {
 }
 
 func (idx *Index) clearExternalCache() {
-	idx.externalCache = sync.Map{}
+	idx.externalCache.Range(func(key, _ any) bool {
+		idx.externalCache.Delete(key)
+		return true
+	})
 }
 
 // SetJdkSourceRoot sets the path to the JDK source files.

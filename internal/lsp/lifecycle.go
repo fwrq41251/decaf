@@ -49,6 +49,7 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 		ImplementationProvider:    true,
 		WorkspaceSymbolProvider:   true,
 		CodeActionProvider:        &CodeActionOptions{CodeActionKinds: []string{CodeActionSourceOrganizeImports, CodeActionQuickFix, "source"}},
+		ExecuteCommandProvider:    &ExecuteCommandOptions{Commands: []string{"decaf.overrideMethod"}},
 		InlayHintProvider:         true,
 	}
 
@@ -93,20 +94,13 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 
 	if !needsFullBuild {
 		// Index already has data from existing .semanticdb files; signal ready immediately.
-		close(h.indexReady)
+		h.closeIndexReady()
 	}
 
 	// Full setup + compile in background if needed.
 	go func() {
 		if needsFullBuild {
-			defer func() {
-				select {
-				case <-h.indexReady:
-					// already closed
-				default:
-					close(h.indexReady)
-				}
-			}()
+			defer h.closeIndexReady()
 		}
 		prog := h.beginProgress(ctx, "decaf", "initializing…")
 
