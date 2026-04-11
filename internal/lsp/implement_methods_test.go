@@ -405,19 +405,23 @@ public class MyList extends AbstractList {
 	idx.Load()
 	fileURI := uri.FromPath(javaPath)
 
-	actions := overrideMethodActions(fileURI, idx, javaSource, 2)
+	methods, insertLine := collectOverridableMethods(fileURI, idx, javaSource, 2)
 
-	// Should have "Override 'add'" but NOT "Override 'size'" (abstract is handled by implement)
+	if insertLine < 0 {
+		t.Fatal("expected valid insert line")
+	}
+
+	// Should have "add" but NOT "size" (abstract is handled by implement)
 	foundAdd := false
-	for _, a := range actions {
-		if strings.Contains(a.Title, "add") {
+	for _, m := range methods {
+		if m.method.Name == "add" {
 			foundAdd = true
 		}
-		if strings.Contains(a.Title, "size") {
+		if m.method.Name == "size" {
 			t.Error("should not offer override for abstract method 'size'")
 		}
 	}
 	if !foundAdd {
-		t.Errorf("expected Override 'add' action, got %d actions: %v", len(actions), actions)
+		t.Errorf("expected overridable method 'add', got %d methods: %v", len(methods), methods)
 	}
 }

@@ -65,6 +65,7 @@ type ServerCapabilities struct {
 	ImplementationProvider    bool                     `json:"implementationProvider,omitempty"`
 	WorkspaceSymbolProvider   bool                     `json:"workspaceSymbolProvider,omitempty"`
 	CodeActionProvider        *CodeActionOptions       `json:"codeActionProvider,omitempty"`
+	ExecuteCommandProvider    *ExecuteCommandOptions   `json:"executeCommandProvider,omitempty"`
 	InlayHintProvider         bool                     `json:"inlayHintProvider,omitempty"`
 	Workspace                 *ServerWorkspaceCapabilities `json:"workspace,omitempty"`
 }
@@ -480,6 +481,43 @@ type CodeAction struct {
 	Kind        string         `json:"kind"`
 	Diagnostics []Diagnostic   `json:"diagnostics,omitempty"`
 	Edit        *WorkspaceEdit `json:"edit,omitempty"`
+	Command     *Command       `json:"command,omitempty"`
+}
+
+// Command represents a reference to a command.
+type Command struct {
+	Title     string `json:"title"`
+	Command   string `json:"command"`
+	Arguments []any  `json:"arguments,omitempty"`
+}
+
+// ExecuteCommandParams is sent for workspace/executeCommand.
+type ExecuteCommandParams struct {
+	Command   string            `json:"command"`
+	Arguments []json.RawMessage `json:"arguments,omitempty"`
+}
+
+// ExecuteCommandOptions declares which commands the server supports.
+type ExecuteCommandOptions struct {
+	Commands []string `json:"commands"`
+}
+
+// ShowMessageRequestParams is sent from server to client to show a message with actions.
+type ShowMessageRequestParams struct {
+	Type    int                 `json:"type"`
+	Message string              `json:"message"`
+	Actions []MessageActionItem `json:"actions,omitempty"`
+}
+
+// MessageActionItem represents an action button in a showMessageRequest.
+type MessageActionItem struct {
+	Title string `json:"title"`
+}
+
+// ApplyWorkspaceEditParams is sent from server to client to apply an edit.
+type ApplyWorkspaceEditParams struct {
+	Label string         `json:"label,omitempty"`
+	Edit  *WorkspaceEdit `json:"edit"`
 }
 
 // CodeActionKind constants.

@@ -105,7 +105,9 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 			})
 		}
 
-		actions = append(actions, overrideMethodActions(p.TextDocument.URI, h.idx, overlay, cursorLine)...)
+		if action := overrideMethodAction(p.TextDocument.URI, h.idx, overlay, cursorLine); action != nil {
+			actions = append(actions, *action)
+		}
 	}
 
 	if len(actions) == 0 {

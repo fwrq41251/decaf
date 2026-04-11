@@ -346,29 +346,45 @@ func findClassInsertionPoint(root *slog.Node, content []byte, diagLine int) int 
 	return int(body.EndPoint().Row)
 }
 
-// overrideMethodActions generates one CodeAction per overridable parent method
-// for the class at the given cursor line.
-func overrideMethodActions(fileURI string, idx *index.Index, overlay string, cursorLine int) []CodeAction {
-	var content []byte
-	if overlay != "" {
-		content = []byte(overlay)
-	} else {
-		var err error
-		content, err = os.ReadFile(uri.ToPath(fileURI))
-		if err != nil {
-			return nil
-		}
+// overrideMethodAction returns a single "Override method..." CodeAction with a command
+// if there are overridable methods in the parent classes. The command triggers a
+// window/showMessageRequest to let the user pick which method to override.
+func overrideMethodAction(fileURI string, idx *index.Index, overlay string, cursorLine int) *CodeAction {
+	if !hasOverridableMethods(fileURI, idx, overlay, cursorLine) {
+		return nil
+	}
+
+	return &CodeAction{
+		Title: "Override method...",
+		Kind:  "source",
+		Command: &Command{
+			Title:   "Override method...",
+			Command: "decaf.overrideMethod",
+			Arguments: []any{
+				fileURI,
+				cursorLine,
+			},
+		},
+	}
+}
+
+// hasOverridableMethods checks whether there are any overridable methods for the
+// class at the given cursor line.
+func hasOverridableMethods(fileURI string, idx *index.Index, overlay string, cursorLine int) bool {
+	content := readContent(fileURI, overlay)
+	if content == nil {
+		return false
 	}
 
 	tree, err := getTree(content)
 	if err != nil {
-		return nil
+		return false
 	}
 	root := tree.RootNode()
 
 	className, classNode := findClassContext(root, content, cursorLine)
 	if className == "" || classNode == nil {
-		return nil
+		return false
 	}
 
 	var classSym index.Symbol
@@ -381,7 +397,7 @@ func overrideMethodActions(fileURI string, idx *index.Index, overlay string, cur
 		}
 	}
 	if !found {
-		return nil
+		return false
 	}
 
 	ownMethods := make(map[string]bool)
@@ -391,12 +407,74 @@ func overrideMethodActions(fileURI string, idx *index.Index, overlay string, cur
 		}
 	}
 
-	insertLine := findClassInsertionPoint(root, content, cursorLine)
-	if insertLine < 0 {
-		return nil
+	for _, parentType := range parentTypesForStub(classSym.Symbol, idx) {
+		if parentType.Sym == "java/lang/Object#" {
+			continue
+		}
+		for _, m := range idx.DirectMembersOfType(parentType.Sym) {
+			if m.Kind != sdb.SymbolInformation_METHOD || m.Kind == sdb.SymbolInformation_CONSTRUCTOR {
+				continue
+			}
+			if m.IsAbstract || m.IsStatic {
+				continue
+			}
+			if !ownMethods[m.Name] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// collectOverridableMethods returns the list of overridable methods and the
+// insertion line for the class at the given cursor line.
+type overridableMethod struct {
+	method     index.Symbol
+	parentType *index.TypeExpr
+}
+
+func collectOverridableMethods(fileURI string, idx *index.Index, overlay string, cursorLine int) (methods []overridableMethod, insertLine int) {
+	content := readContent(fileURI, overlay)
+	if content == nil {
+		return nil, -1
 	}
 
-	var actions []CodeAction
+	tree, err := getTree(content)
+	if err != nil {
+		return nil, -1
+	}
+	root := tree.RootNode()
+
+	className, classNode := findClassContext(root, content, cursorLine)
+	if className == "" || classNode == nil {
+		return nil, -1
+	}
+
+	var classSym index.Symbol
+	found := false
+	for _, sym := range idx.FileSymbols(fileURI) {
+		if sym.Name == className && sym.Kind == sdb.SymbolInformation_CLASS {
+			classSym = sym
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, -1
+	}
+
+	ownMethods := make(map[string]bool)
+	for _, m := range idx.DirectMembersOfType(classSym.Symbol) {
+		if m.Kind == sdb.SymbolInformation_METHOD {
+			ownMethods[m.Name] = true
+		}
+	}
+
+	insertLine = findClassInsertionPoint(root, content, cursorLine)
+	if insertLine < 0 {
+		return nil, -1
+	}
+
 	seen := make(map[string]bool)
 	for _, parentType := range parentTypesForStub(classSym.Symbol, idx) {
 		if parentType.Sym == "java/lang/Object#" {
@@ -409,10 +487,7 @@ func overrideMethodActions(fileURI string, idx *index.Index, overlay string, cur
 			if m.Kind != sdb.SymbolInformation_METHOD {
 				continue
 			}
-			if m.IsAbstract {
-				continue
-			}
-			if m.IsStatic {
+			if m.IsAbstract || m.IsStatic {
 				continue
 			}
 			if ownMethods[m.Name] {
@@ -422,22 +497,20 @@ func overrideMethodActions(fileURI string, idx *index.Index, overlay string, cur
 				continue
 			}
 			seen[m.Name] = true
-
-			editRange := Range{
-				Start: Position{Line: insertLine, Character: 0},
-				End:   Position{Line: insertLine, Character: 0},
-			}
-			actions = append(actions, CodeAction{
-				Title: fmt.Sprintf("Override '%s'", m.Name),
-				Kind:  "source",
-				Edit: &WorkspaceEdit{
-					Changes: map[string][]TextEdit{
-						fileURI: {{Range: editRange, NewText: generateMethodStubForOwner(m, parentType, idx)}},
-					},
-				},
-			})
+			methods = append(methods, overridableMethod{method: m, parentType: parentType})
 		}
 	}
+	return methods, insertLine
+}
 
-	return actions
+// readContent returns file content from overlay or disk.
+func readContent(fileURI string, overlay string) []byte {
+	if overlay != "" {
+		return []byte(overlay)
+	}
+	content, err := os.ReadFile(uri.ToPath(fileURI))
+	if err != nil {
+		return nil
+	}
+	return content
 }
