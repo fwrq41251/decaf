@@ -168,7 +168,7 @@ func TestTypeExprMatchesExpected(t *testing.T) {
 	}{
 		{"exact match", te("java/lang/String#"), te("java/lang/String#"), true},
 		{"different types", te("java/lang/String#"), te("java/lang/Integer#"), false},
-		{"simple name match", te("java/lang/String#"), te("com/example/String#"), true},
+		{"different packages same name", te("java/lang/String#"), te("com/example/String#"), false},
 		{"nil candidate", nil, te("java/lang/String#"), false},
 		{"nil expected", te("java/lang/String#"), nil, false},
 		{"same generic", teArgs("java/util/List#", te("java/lang/String#")), teArgs("java/util/List#", te("java/lang/String#")), true},

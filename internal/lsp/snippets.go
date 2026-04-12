@@ -90,7 +90,9 @@ func (h *Handler) completeSnippets(cctx *CompletionCtx) []CompletionItem {
 					InsertTextFormat: InsertTextFormatSnippet,
 					// Keep snippets available, but rank them below semantic matches
 					// so they don't displace locals/fields/methods.
-					SortText: "18_" + s.label,
+					// Uses the same sortText schema: context "1" (non-type) + typeFit "3" (snippet, always last)
+					// + matchQuality "0" (exact prefix) + scope "11" (after all semantic items).
+						SortText: "1" + "3" + "0" + "11" + completionNameSortKey(s.label),
 				})
 			}
 		}

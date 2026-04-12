@@ -1160,20 +1160,25 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	// Add static snippets first.
 	items = append(items, h.completeSnippets(cctx)...)
 
-	// casePrefix returns "0" if name starts with the prefix (case-insensitive), "1" otherwise.
-	lowerPrefix := strings.ToLower(cctx.Prefix)
-	casePrefix := func(name string) string {
-		if lowerPrefix != "" && strings.HasPrefix(strings.ToLower(name), lowerPrefix) {
-			return "0"
-		}
-		return "1"
+	// matchQuality returns a single-char score for how well name matches the query.
+	// "0" = exact, "1" = prefix, "2" = word-start/camelCase, "3" = substring, "4" = fuzzy.
+	matchQuality := func(name string) string {
+		score := index.CompletionMatchScore(name, cctx.Prefix)
+		return fmt.Sprintf("%d", score)
 	}
 
+	// typeMatchPrefix returns "0" for exact type match, "1" for assignable subtype, "2" for no match.
 	typeMatchPrefix := func(candidateType *index.TypeExpr) string {
-		if typeExprMatchesExpected(candidateType, expectedType) {
+		if candidateType == nil || expectedType == nil {
+			return "2"
+		}
+		if sameTypeExpr(candidateType, expectedType) {
 			return "0"
 		}
-		return "1"
+		if h.idx.IsAssignableTo(candidateType.Sym, expectedType.Sym) {
+			return "1"
+		}
+		return "2"
 	}
 
 	contextPrefix := func(kind int) string {
@@ -1196,49 +1201,49 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			Kind:       kind,
 			InsertText: name,
 			Detail:     detail,
-			SortText:   contextPrefix(kind) + typeMatchPrefix(candidateType) + casePrefix(name) + scopeOrder + completionNameSortKey(name),
+			SortText:   contextPrefix(kind) + typeMatchPrefix(candidateType) + matchQuality(name) + scopeOrder + completionNameSortKey(name),
 			FilterText: name,
 		}
 		items = append(items, item)
 	}
 
-	matchPrefix := func(name string) bool {
-		return strings.HasPrefix(strings.ToLower(name), prefix)
+	matchName := func(name string) bool {
+		return index.FuzzyMatch(name, cctx.Prefix)
 	}
 
-	// 1. Lambda parameters (scope "0").
+	// 1. Lambda parameters (scope "00").
 	for i := len(cctx.LambdaParams) - 1; i >= 0; i-- {
 		p := cctx.LambdaParams[i]
-		if matchPrefix(p.Name) {
-			addItem(p.Name, CompletionKindVariable, p.Type.String(), p.Type, "0")
+		if matchName(p.Name) {
+			addItem(p.Name, CompletionKindVariable, p.Type.String(), p.Type, "00")
 		}
 	}
 
-	// 2. Local variables (scope "1").
+	// 2. Local variables (scope "01").
 	for i := len(cctx.Locals) - 1; i >= 0; i-- {
 		l := cctx.Locals[i]
-		if matchPrefix(l.Name) {
-			addItem(l.Name, CompletionKindVariable, l.Type.String(), l.Type, "1")
+		if matchName(l.Name) {
+			addItem(l.Name, CompletionKindVariable, l.Type.String(), l.Type, "01")
 		}
 	}
 
-	// 3. Method parameters (scope "2").
+	// 3. Method parameters (scope "02").
 	for _, p := range cctx.Params {
-		if matchPrefix(p.Name) {
-			addItem(p.Name, CompletionKindVariable, p.Type.String(), p.Type, "2")
+		if matchName(p.Name) {
+			addItem(p.Name, CompletionKindVariable, p.Type.String(), p.Type, "02")
 		}
 	}
 
-	// 4. Class fields (scope "3").
+	// 4. Class fields (scope "03").
 	for _, f := range cctx.ClassFields {
-		if matchPrefix(f.Name) {
-			addItem(f.Name, CompletionKindField, f.Type.String(), f.Type, "3")
+		if matchName(f.Name) {
+			addItem(f.Name, CompletionKindField, f.Type.String(), f.Type, "03")
 		}
 	}
 
-	// 5. Class methods (scope "4").
+	// 5. Class methods (scope "04").
 	for _, m := range cctx.ClassMethods {
-		if matchPrefix(m.Name) {
+		if matchName(m.Name) {
 			key := completionItemKeyForMethodDecl(m)
 			if _, ok := seen[key]; ok {
 				continue
@@ -1248,7 +1253,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 				Label:      formatMethodDeclDetail(m),
 				Kind:       CompletionKindMethod,
 				Detail:     formatMethodDeclDetail(m),
-					SortText:   contextPrefix(CompletionKindMethod) + typeMatchPrefix(m.ReturnType) + casePrefix(m.Name) + "4" + completionNameSortKey(m.Name) + methodDeclSortSuffix(m),
+					SortText:   contextPrefix(CompletionKindMethod) + typeMatchPrefix(m.ReturnType) + matchQuality(m.Name) + "04" + completionNameSortKey(m.Name) + methodDeclSortSuffix(m),
 				FilterText: m.Name,
 			}
 			if cctx.ParenFollows {
@@ -1266,7 +1271,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	// For "import static org.assertj.core.api.Assertions.*" → offer all static members.
 	addStaticMembers := func(classSym string, targetName string) {
 		for _, m := range h.idx.MembersOfType(classSym) {
-			if !m.IsStatic || !matchPrefix(m.Name) {
+			if !m.IsStatic || !matchName(m.Name) {
 				continue
 			}
 			if targetName != "" && m.Name != targetName {
@@ -1279,7 +1284,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			}
 			seen[key] = struct{}{}
 			retType := symbolReturnTypeExpr(m, h.idx)
-			sortText := contextPrefix(kind) + typeMatchPrefix(retType) + casePrefix(m.Name) + "5" + completionNameSortKey(m.Name)
+			sortText := contextPrefix(kind) + typeMatchPrefix(retType) + matchQuality(m.Name) + "05" + completionNameSortKey(m.Name)
 			if kind == CompletionKindMethod || kind == CompletionKindConstructor {
 				sortText += signatureSortSuffix(m.Signature)
 			}
@@ -1315,18 +1320,16 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		}
 	}
 
-	// 6. Keywords and Literals (scope "52").
-	// Use two-character scope to align with type completion priorities
-	// (types use scope "5" + typeCompletionPriority "0"-"4"), placing
-	// keywords at the same level as java.lang types.
+	// 6. Keywords and Literals (scope "07").
+	// Keywords use prefix-only matching to avoid noise from fuzzy matches.
 	for _, kw := range javaKeywords {
-		if matchPrefix(kw) {
-			addItem(kw, CompletionKindKeyword, "keyword", nil, "52")
+		if strings.HasPrefix(kw, prefix) {
+			addItem(kw, CompletionKindKeyword, "keyword", nil, "07")
 		}
 	}
 	for _, lit := range javaLiterals {
-		if matchPrefix(lit) {
-			addItem(lit, CompletionKindKeyword, "literal", nil, "52")
+		if strings.HasPrefix(lit, prefix) {
+			addItem(lit, CompletionKindKeyword, "literal", nil, "07")
 		}
 	}
 
@@ -1340,16 +1343,16 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		if len(items) >= 100 {
 			break
 		}
-		scopeOrder := "7" // default: other symbol
+		scopeOrder := "10" // default: other symbol
 		if s.SameFile {
 			if isTypeCompletionKind(sdbKindToCompletionKind(s.Kind)) {
-				scopeOrder = "4" // same-file type
+				scopeOrder = "06" // same-file type
 			} else {
-				scopeOrder = "6" // same-file other
+				scopeOrder = "09" // same-file other
 			}
 		} else {
 			if isTypeCompletionKind(sdbKindToCompletionKind(s.Kind)) {
-				scopeOrder = "5" // other type
+				scopeOrder = "08" // other type
 			}
 		}
 
@@ -1366,7 +1369,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			}
 			seen[key] = struct{}{}
 		}
-		sortText := contextPrefix(kind) + typeMatchPrefix(symbolReturnTypeExpr(s, h.idx)) + casePrefix(s.Name) + scopeOrder
+		sortText := contextPrefix(kind) + typeMatchPrefix(symbolReturnTypeExpr(s, h.idx)) + matchQuality(s.Name) + scopeOrder
 		if isTypeCompletionKind(kind) {
 			sortText += typeCompletionPriority(cctx, s)
 		}
@@ -1409,7 +1412,8 @@ func symbolReturnTypeExpr(sym index.Symbol, idx *index.Index) *index.TypeExpr {
 	return nil
 }
 
-// typeExprMatchesExpected checks if a candidate TypeExpr matches the expected TypeExpr.
+// typeExprMatchesExpected checks if a candidate TypeExpr matches the expected TypeExpr
+// using exact match or base symbol comparison.
 func typeExprMatchesExpected(candidate, expected *index.TypeExpr) bool {
 	if candidate == nil || expected == nil {
 		return false
@@ -1417,8 +1421,8 @@ func typeExprMatchesExpected(candidate, expected *index.TypeExpr) bool {
 	if sameTypeExpr(candidate, expected) {
 		return true
 	}
-	// Fall back to base symbol comparison (ignoring generic args).
-	return simplifyTypeName(candidate.Sym) == simplifyTypeName(expected.Sym)
+	// Compare base symbol only (ignoring generic args) as a weak match.
+	return candidate.Sym == expected.Sym
 }
 
 func returnTypeFromMethodLabel(label string) string {

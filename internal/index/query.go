@@ -260,8 +260,8 @@ func (idx *Index) CompletionSymbols(uri string, query string) []Symbol {
 	// exact > prefix > camel/word-start > substring > fuzzy subsequence.
 	sortByQueryPriority := func(s []Symbol) {
 		sort.SliceStable(s, func(i, j int) bool {
-			iScore := completionMatchScore(s[i].Name, query)
-			jScore := completionMatchScore(s[j].Name, query)
+			iScore := CompletionMatchScore(s[i].Name, query)
+			jScore := CompletionMatchScore(s[j].Name, query)
 			if iScore != jScore {
 				return iScore < jScore
 			}
@@ -296,37 +296,37 @@ func FuzzyMatch(name, query string) bool {
 }
 
 const (
-	matchExact = iota
-	matchPrefix
-	matchWordStart
-	matchSubstring
-	matchFuzzy
-	matchNone
+	MatchExact = iota
+	MatchPrefix
+	MatchWordStart
+	MatchSubstring
+	MatchFuzzy
+	MatchNone
 )
 
-// completionMatchScore ranks how well name matches query.
-// Lower is better.
-func completionMatchScore(name, query string) int {
+// CompletionMatchScore ranks how well name matches query (case-insensitive).
+// Lower is better: MatchExact < MatchPrefix < MatchWordStart < MatchSubstring < MatchFuzzy < MatchNone.
+func CompletionMatchScore(name, query string) int {
 	if query == "" {
-		return matchExact
+		return MatchExact
 	}
 	lowerName := strings.ToLower(name)
 	if lowerName == query {
-		return matchExact
+		return MatchExact
 	}
 	if strings.HasPrefix(lowerName, query) {
-		return matchPrefix
+		return MatchPrefix
 	}
 	if camelOrWordStartMatch(name, query) {
-		return matchWordStart
+		return MatchWordStart
 	}
 	if strings.Contains(lowerName, query) {
-		return matchSubstring
+		return MatchSubstring
 	}
 	if fuzzyMatchLower(lowerName, query) {
-		return matchFuzzy
+		return MatchFuzzy
 	}
-	return matchNone
+	return MatchNone
 }
 
 // fuzzyMatchLower is like FuzzyMatch but assumes both arguments are already lowercase.
@@ -724,6 +724,37 @@ func (idx *Index) ParentsOf(typeSym string) []string {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return idx.childToParents[typeSym]
+}
+
+// IsAssignableTo returns true if candidateSym is the same type as or a subtype
+// of targetSym. It walks the type hierarchy (parents/interfaces) up to a
+// bounded depth to avoid runaway traversal.
+func (idx *Index) IsAssignableTo(candidateSym, targetSym string) bool {
+	if candidateSym == "" || targetSym == "" {
+		return false
+	}
+	if candidateSym == targetSym {
+		return true
+	}
+	visited := make(map[string]bool)
+	queue := []string{candidateSym}
+	for len(queue) > 0 && len(visited) < 50 {
+		cur := queue[0]
+		queue = queue[1:]
+		if visited[cur] {
+			continue
+		}
+		visited[cur] = true
+		for _, parent := range idx.ParentsOf(cur) {
+			if parent == targetSym {
+				return true
+			}
+			if !visited[parent] {
+				queue = append(queue, parent)
+			}
+		}
+	}
+	return false
 }
 
 func isTypeKind(kind sdb.SymbolInformation_Kind) bool {

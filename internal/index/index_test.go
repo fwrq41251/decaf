@@ -749,17 +749,17 @@ func TestCompletionMatchScore_Order(t *testing.T) {
 		query string
 		want  int
 	}{
-		{name: "String", query: "string", want: matchExact},
-		{name: "String", query: "str", want: matchPrefix},
-		{name: "StringBuilder", query: "sb", want: matchWordStart},
-		{name: "My_StringBuilder", query: "sb", want: matchWordStart},
-		{name: "AStringThing", query: "string", want: matchSubstring},
-		{name: "AbstractList", query: "srt", want: matchFuzzy},
-		{name: "LocalDate", query: "xyz", want: matchNone},
+		{name: "String", query: "string", want: MatchExact},
+		{name: "String", query: "str", want: MatchPrefix},
+		{name: "StringBuilder", query: "sb", want: MatchWordStart},
+		{name: "My_StringBuilder", query: "sb", want: MatchWordStart},
+		{name: "AStringThing", query: "string", want: MatchSubstring},
+		{name: "AbstractList", query: "srt", want: MatchFuzzy},
+		{name: "LocalDate", query: "xyz", want: MatchNone},
 	}
 
 	for _, tt := range tests {
-		got := completionMatchScore(tt.name, tt.query)
+		got := CompletionMatchScore(tt.name, tt.query)
 		if got != tt.want {
 			t.Fatalf("completionMatchScore(%q, %q) = %d, want %d", tt.name, tt.query, got, tt.want)
 		}
