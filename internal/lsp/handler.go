@@ -136,8 +136,9 @@ func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
 	// Code actions — concurrent (read-only analysis).
 	d.RegisterConcurrent("textDocument/codeAction", h.handleCodeAction)
 
-	// Execute command — sequential (may apply edits).
-	d.Register("workspace/executeCommand", h.handleExecuteCommand)
+	// Execute command — concurrent (may send requests back to the client, e.g.
+	// window/showMessageRequest, which requires the main loop to keep reading).
+	d.RegisterConcurrent("workspace/executeCommand", h.handleExecuteCommand)
 
 	// Rename mutates state — sequential.
 	d.Register("textDocument/rename", h.handleRename)
