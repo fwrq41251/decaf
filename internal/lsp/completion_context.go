@@ -129,7 +129,6 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 	// 2b. Detect if prefix is preceded by "new" keyword.
 	if ctx.Kind == CompletionLexical {
 		ctx.AfterNew = isAfterNewKeyword(parseContent, cursorOffset, ctx.Prefix)
-		ctx.InTypePosition = looksLikeTypePositionText(parseContent, cursorOffset, ctx.Prefix)
 	}
 
 	// 2c. Detect if '(' follows the cursor position.
@@ -149,6 +148,9 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 			if prev := nodeAtByteOffset(root, parseContent, previousNonWhitespaceOffset(parseContent, cursorOffset)); prev != nil && prev != cursorNode {
 				ctx.InTypePosition = isTypeCompletionPosition(prev, cursorOffset)
 			}
+		}
+		if !ctx.InTypePosition && ctx.Kind == CompletionLexical {
+			ctx.InTypePosition = looksLikeTypePositionText(parseContent, cursorOffset, ctx.Prefix)
 		}
 
 		classNode := findAncestor(cursorNode, "class_declaration", "interface_declaration", "enum_declaration")
@@ -204,8 +206,11 @@ func looksLikeTypePositionText(content []byte, cursorOffset int, prefix string) 
 	if pos == 0 {
 		return false
 	}
+	// Keep this fallback intentionally conservative. '(' and ',' appear in many
+	// expression contexts (if conditions, method arguments), so treating them as
+	// type positions causes local variables to lose to global type candidates.
 	switch content[pos-1] {
-	case '<', '(', ',', '&':
+	case '<', '&':
 		return true
 	}
 

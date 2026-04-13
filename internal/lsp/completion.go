@@ -1253,7 +1253,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 				Label:      formatMethodDeclDetail(m),
 				Kind:       CompletionKindMethod,
 				Detail:     formatMethodDeclDetail(m),
-					SortText:   contextPrefix(CompletionKindMethod) + typeMatchPrefix(m.ReturnType) + matchQuality(m.Name) + "04" + completionNameSortKey(m.Name) + methodDeclSortSuffix(m),
+				SortText:   contextPrefix(CompletionKindMethod) + typeMatchPrefix(m.ReturnType) + matchQuality(m.Name) + "04" + completionNameSortKey(m.Name) + methodDeclSortSuffix(m),
 				FilterText: m.Name,
 			}
 			if cctx.ParenFollows {

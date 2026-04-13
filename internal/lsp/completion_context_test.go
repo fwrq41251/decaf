@@ -1236,6 +1236,20 @@ public class MyClass {
 	}
 }
 
+func TestParseCompletionCtx_InTypePosition_FalseInIfCondition(t *testing.T) {
+	src := []byte(`package com.example;
+
+public class MyClass {
+    public void test() {
+        if (val)
+    }
+}`)
+	ctx := parseCompletionCtx(nil, src, 4, 15)
+	if ctx.InTypePosition {
+		t.Fatal("expected InTypePosition to be false while completing an if condition")
+	}
+}
+
 func TestParseCompletionCtx_VarInitializer_ArgumentIdentifierType(t *testing.T) {
 	src := []byte(`package com.example;
 
