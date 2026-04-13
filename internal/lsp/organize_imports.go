@@ -249,38 +249,56 @@ func simpleNameFromImport(imp string) string {
 }
 
 // simpleNameFromSymbol extracts a simple class/interface name from a SemanticDB symbol.
-// e.g. "java/util/List#" -> "List", "com/example/Foo#bar()." -> "Foo"
+// e.g. "java/util/List#" -> "List", "com/example/Foo#bar()." -> "Foo",
+// "com/example/Outer#Inner#" -> "Inner"
 func simpleNameFromSymbol(sym string) string {
-	// Strip method/field suffix (anything after #, including the # for owner types).
-	hashIdx := strings.Index(sym, "#")
-	if hashIdx < 0 {
+	if !strings.HasSuffix(sym, "#") {
+		// It's a member or something else. Strip everything after the last #.
+		hashIdx := strings.LastIndex(sym, "#")
+		if hashIdx < 0 {
+			return ""
+		}
+		sym = sym[:hashIdx+1]
+	}
+
+	parts := strings.Split(strings.TrimSuffix(sym, "#"), "#")
+	if len(parts) == 0 {
 		return ""
 	}
-	// Get the class portion: "java/util/List"
-	classPart := sym[:hashIdx]
-	if slashIdx := strings.LastIndex(classPart, "/"); slashIdx >= 0 {
-		return classPart[slashIdx+1:]
+	last := parts[len(parts)-1]
+	if slashIdx := strings.LastIndex(last, "/"); slashIdx >= 0 {
+		return last[slashIdx+1:]
 	}
-	return classPart
+	return last
 }
 
 // fqnFromSymbol converts a SemanticDB symbol to a Java fully-qualified name.
 // e.g. "java/util/List#" -> "java.util.List"
-// Only handles top-level type symbols (ending with "#").
+// Also handles nested type symbols like "com/example/Outer#Inner#".
 func fqnFromSymbol(sym string) string {
 	if !strings.HasSuffix(sym, "#") {
-		// Only type symbols, not methods/fields.
-		// Check for inner symbol like "com/example/Outer#Inner#"
-		parts := strings.Split(sym, "#")
-		if len(parts) != 2 || parts[1] != "" {
-			return ""
-		}
+		return ""
 	}
-	classPart := strings.TrimSuffix(sym, "#")
+	parts := strings.Split(sym, "#")
+	if len(parts) < 2 || parts[len(parts)-1] != "" {
+		return ""
+	}
+
+	classPart := parts[0]
 	if classPart == "" || !strings.Contains(classPart, "/") {
 		return ""
 	}
-	return strings.ReplaceAll(classPart, "/", ".")
+
+	var b strings.Builder
+	b.WriteString(strings.ReplaceAll(classPart, "/", "."))
+	for _, nested := range parts[1 : len(parts)-1] {
+		if nested == "" {
+			return ""
+		}
+		b.WriteByte('.')
+		b.WriteString(nested)
+	}
+	return b.String()
 }
 
 // packageFromFQN returns the package from a fully-qualified name.
@@ -329,6 +347,11 @@ func addImportEdit(fileURI string, overlay string, fqn string) *WorkspaceEdit {
 		return nil
 	}
 	root := tree.RootNode()
+	pkg := detectPackage(root, content)
+	importPkg := packageFromFQN(fqn)
+	if importPkg == "" || importPkg == "java.lang" || importPkg == pkg {
+		return nil
+	}
 
 	block := parseImportBlock(root, content)
 

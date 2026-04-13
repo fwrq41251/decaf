@@ -438,6 +438,8 @@ func TestFqnFromSymbol(t *testing.T) {
 		want string
 	}{
 		{"java/util/List#", "java.util.List"},
+		{"com/example/Outer#Inner#", "com.example.Outer.Inner"},
+		{"com/example/Outer#Middle#Inner#", "com.example.Outer.Middle.Inner"},
 		{"com/example/Foo#bar().", ""},
 		{"com/example/Foo#", "com.example.Foo"},
 		{"int#", ""},
@@ -458,6 +460,8 @@ func TestSimpleNameFromSymbol(t *testing.T) {
 	}{
 		{"java/util/List#", "List"},
 		{"com/example/Foo#bar().", "Foo"},
+		{"com/example/Outer#Inner#", "Inner"},
+		{"com/example/Outer#Inner#member.", "Inner"},
 		{"String#", "String"},
 		{"", ""},
 	}
