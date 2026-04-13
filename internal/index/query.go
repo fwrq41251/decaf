@@ -82,7 +82,7 @@ func (idx *Index) References(uri string, line, character int) []Occurrence {
 	}
 
 	refs := idx.references[sym]
-	return deduplicateOccurrences(copyOccurrences(refs))
+	return deduplicateOccurrences(idx.copyOccurrences(refs))
 }
 
 // Hover returns the symbol information at the given position (for hover).
@@ -450,8 +450,8 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 	}
 
 	// Collect reference occurrences.
-	for _, occ := range idx.references[sym] {
-		result = append(result, occ)
+	for _, occID := range idx.references[sym] {
+		result = append(result, idx.occurrenceByID(occID))
 	}
 
 	return sym, result
@@ -479,7 +479,7 @@ func (idx *Index) findOccurrenceAt(uri string, line, character int) *Occurrence 
 
 	// Binary search: find the first occurrence that starts after (line, character).
 	i := sort.Search(len(occs), func(i int) bool {
-		r := occs[i].Range
+		r := idx.occurrence(occs[i]).Range
 		if r.IsEmpty() {
 			return false
 		}
@@ -491,7 +491,7 @@ func (idx *Index) findOccurrenceAt(uri string, line, character int) *Occurrence 
 
 	// Walk backwards from i to find an occurrence that contains the position.
 	for j := i - 1; j >= 0; j-- {
-		r := occs[j].Range
+		r := idx.occurrence(occs[j]).Range
 		if r.IsEmpty() {
 			continue
 		}
@@ -499,7 +499,7 @@ func (idx *Index) findOccurrenceAt(uri string, line, character int) *Occurrence 
 			break
 		}
 		if containsPosition(r, line, character) {
-			occ := occs[j]
+			occ := idx.occurrenceByID(occs[j])
 			return &occ
 		}
 	}
@@ -512,7 +512,7 @@ func (idx *Index) AllFileOccurrences(uri string) []Occurrence {
 	defer idx.mu.RUnlock()
 
 	relURI := idx.toRelativeURI(uri)
-	return copyOccurrences(idx.fileOccurrences[relURI])
+	return idx.copyOccurrences(idx.fileOccurrences[relURI])
 }
 
 // SymbolDefinition returns the definition for a SemanticDB symbol string.
@@ -548,9 +548,10 @@ func (idx *Index) FileOccurrencesOf(uri string, line, character int) []Occurrenc
 	}
 
 	var result []Occurrence
-	for _, occ := range idx.fileOccurrences[relURI] {
-		if occ.Symbol == sym {
-			result = append(result, occ)
+	for _, occID := range idx.fileOccurrences[relURI] {
+		occ := idx.occurrence(occID)
+		if idx.stringByID(occ.SymbolID) == sym {
+			result = append(result, idx.occurrenceFromStored(occ))
 		}
 	}
 	return result
@@ -761,7 +762,7 @@ func (idx *Index) IsAssignableTo(candidateSym, targetSym string) bool {
 func (idx *Index) SymbolReferences(sym string) []Occurrence {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	return deduplicateOccurrences(copyOccurrences(idx.references[sym]))
+	return deduplicateOccurrences(idx.copyOccurrences(idx.references[sym]))
 }
 
 // Implementors returns the direct child type symbols that extend/implement the given type.
@@ -820,13 +821,40 @@ func copySymbols(idx *Index, ids []SymbolID) []Symbol {
 	return out
 }
 
-func copyOccurrences(occs []Occurrence) []Occurrence {
-	if len(occs) == 0 {
+func (idx *Index) copyOccurrences(occIDs []OccurrenceID) []Occurrence {
+	if len(occIDs) == 0 {
 		return nil
 	}
-	out := make([]Occurrence, len(occs))
-	copy(out, occs)
+	out := make([]Occurrence, len(occIDs))
+	for i, occID := range occIDs {
+		out[i] = idx.occurrenceByID(occID)
+	}
 	return out
+}
+
+func (idx *Index) occurrenceFromStored(occ storedOccurrence) Occurrence {
+	return Occurrence{
+		Symbol: idx.stringByID(occ.SymbolID),
+		Role:   occ.Role,
+		URI:    idx.stringByID(occ.URIID),
+		Range:  occ.Range,
+	}
+}
+
+func (idx *Index) addOccurrence(occ storedOccurrence) OccurrenceID {
+	idx.occurrences = append(idx.occurrences, occ)
+	return OccurrenceID(len(idx.occurrences))
+}
+
+func (idx *Index) occurrence(id OccurrenceID) storedOccurrence {
+	if id == 0 || int(id) > len(idx.occurrences) {
+		return storedOccurrence{}
+	}
+	return idx.occurrences[int(id)-1]
+}
+
+func (idx *Index) occurrenceByID(id OccurrenceID) Occurrence {
+	return idx.occurrenceFromStored(idx.occurrence(id))
 }
 
 func deduplicateSymbols(symbols []Symbol) []Symbol {

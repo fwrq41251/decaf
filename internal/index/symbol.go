@@ -181,3 +181,15 @@ type Occurrence struct {
 	URI    string
 	Range  Range // compact range (was *sdb.Range)
 }
+
+// storedOccurrence is the compact in-memory form used by the index.
+// Symbol/URI are stored as interned string IDs to avoid duplicating string
+// headers across millions of occurrences.
+type storedOccurrence struct {
+	SymbolID StringID
+	Role     sdb.SymbolOccurrence_Role
+	URIID    StringID
+	Range    Range
+}
+
+type OccurrenceID uint32

@@ -20,11 +20,13 @@ type Index struct {
 	// symbol string -> list of definition locations
 	definitions map[string][]SymbolID
 	// symbol string -> list of reference occurrences
-	references map[string][]Occurrence
+	references map[string][]OccurrenceID
 	// uri -> all occurrences in that file (for position-based lookups)
-	fileOccurrences map[string][]Occurrence
+	fileOccurrences map[string][]OccurrenceID
 	// uri -> all symbol infos in that file
 	fileSymbols map[string][]SymbolID
+	// shared occurrence arena referenced by both symbol and file indexes
+	occurrences []storedOccurrence
 	// parent symbol -> list of child symbols that extend/implement it
 	implementors map[string][]string
 
@@ -63,6 +65,9 @@ type Index struct {
 
 	// string intern pool to deduplicate URI and symbol strings
 	internPool map[string]string
+	// compact string table used by occurrence storage
+	stringIDs map[string]StringID
+	strings   []string
 
 	// Incremental indexing state.
 	// .semanticdb file path -> last indexed modification time
@@ -106,14 +111,16 @@ type classLocation struct {
 	entryName string
 }
 
+type StringID uint32
+
 // NewIndex creates a new empty index.
 func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 	return &Index{
 		logger:                    logger,
 		sourceRoot:                sourceRoot,
 		definitions:               make(map[string][]SymbolID),
-		references:                make(map[string][]Occurrence),
-		fileOccurrences:           make(map[string][]Occurrence),
+		references:                make(map[string][]OccurrenceID),
+		fileOccurrences:           make(map[string][]OccurrenceID),
 		fileSymbols:               make(map[string][]SymbolID),
 		implementors:              make(map[string][]string),
 		uriRefSymbols:             make(map[string][]string),
@@ -127,6 +134,7 @@ func NewIndex(logger *log.Logger, sourceRoot string) *Index {
 		classTypeParams:           make(map[string][]string),
 		parentTypes:               make(map[string][]*TypeExpr),
 		internPool:                make(map[string]string),
+		stringIDs:                 make(map[string]StringID),
 		modTimes:                  make(map[string]time.Time),
 		sdbToURIs:                 make(map[string][]string),
 		dependencySources:         []string{},
@@ -196,4 +204,27 @@ func (idx *Index) intern(s string) string {
 	}
 	idx.internPool[s] = s
 	return s
+}
+
+func (idx *Index) stringID(s string) StringID {
+	s = idx.intern(s)
+	if id, ok := idx.stringIDs[s]; ok {
+		return id
+	}
+	idx.strings = append(idx.strings, s)
+	id := StringID(len(idx.strings))
+	idx.stringIDs[s] = id
+	return id
+}
+
+func (idx *Index) lookupStringID(s string) (StringID, bool) {
+	id, ok := idx.stringIDs[s]
+	return id, ok
+}
+
+func (idx *Index) stringByID(id StringID) string {
+	if id == 0 || int(id) > len(idx.strings) {
+		return ""
+	}
+	return idx.strings[int(id)-1]
 }

@@ -399,13 +399,14 @@ func (idx *Index) removeDocument(uri string) {
 	}
 
 	// Remove references belonging to this URI using reverse index.
+	uriID, hasURIID := idx.lookupStringID(uri)
 	if refSyms, ok := idx.uriRefSymbols[uri]; ok {
 		for _, sym := range refSyms {
 			if refs, ok := idx.references[sym]; ok {
 				filtered := refs[:0]
-				for _, r := range refs {
-					if r.URI != uri {
-						filtered = append(filtered, r)
+				for _, occID := range refs {
+					if !hasURIID || idx.occurrence(occID).URIID != uriID {
+						filtered = append(filtered, occID)
 					}
 				}
 				if len(filtered) > 0 {
@@ -633,14 +634,16 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 	}
 
 	// Index occurrences (both definitions and references with ranges).
+	uriID := idx.stringID(uri)
 	for _, occ := range doc.Occurrences {
 		occSym := idx.intern(occ.Symbol)
-		o := Occurrence{
-			Symbol: occSym,
-			Role:   occ.Role,
-			URI:    uri,
-			Range:  FromSDB(occ.Range),
+		o := storedOccurrence{
+			SymbolID: idx.stringID(occSym),
+			Role:     occ.Role,
+			URIID:    uriID,
+			Range:    FromSDB(occ.Range),
 		}
+		occID := idx.addOccurrence(o)
 
 		if occ.Role == sdb.SymbolOccurrence_DEFINITION {
 			// Update the definition's range if we have it from occurrences.
@@ -653,7 +656,7 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 				}
 			}
 		} else {
-			idx.references[occSym] = append(idx.references[occSym], o)
+			idx.references[occSym] = append(idx.references[occSym], occID)
 			refSyms := idx.uriRefSymbols[uri]
 			seen := false
 			for _, sym := range refSyms {
@@ -667,13 +670,13 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			}
 		}
 
-		idx.fileOccurrences[uri] = append(idx.fileOccurrences[uri], o)
+		idx.fileOccurrences[uri] = append(idx.fileOccurrences[uri], occID)
 	}
 
 	// Sort occurrences by start position for binary search in symbolAt.
 	occs := idx.fileOccurrences[uri]
 	sort.Slice(occs, func(i, j int) bool {
-		ri, rj := occs[i].Range, occs[j].Range
+		ri, rj := idx.occurrence(occs[i]).Range, idx.occurrence(occs[j]).Range
 		if ri.IsEmpty() || rj.IsEmpty() {
 			return !ri.IsEmpty()
 		}
