@@ -97,6 +97,10 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 		overlay, _ := h.docs.Get(p.TextDocument.URI)
 		cursorLine := p.Range.Start.Line
 
+		if action := initializeJavaTypeAction(p.TextDocument.URI, overlay); action != nil {
+			actions = append(actions, *action)
+		}
+
 		if edit := generateConstructorEdit(p.TextDocument.URI, h.idx, overlay, cursorLine); edit != nil {
 			actions = append(actions, CodeAction{
 				Title: "Generate constructor",

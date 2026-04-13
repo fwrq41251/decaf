@@ -49,7 +49,7 @@ func (h *Handler) handleInitialize(_ context.Context, params json.RawMessage) (a
 		ImplementationProvider:    true,
 		WorkspaceSymbolProvider:   true,
 		CodeActionProvider:        &CodeActionOptions{CodeActionKinds: []string{CodeActionSourceOrganizeImports, CodeActionQuickFix, "source"}},
-		ExecuteCommandProvider:    &ExecuteCommandOptions{Commands: []string{"decaf.overrideMethod", "decaf.generateGetter", "decaf.generateSetter"}},
+		ExecuteCommandProvider:    &ExecuteCommandOptions{Commands: []string{"decaf.overrideMethod", "decaf.generateGetter", "decaf.generateSetter", "decaf.initializeJavaType"}},
 		InlayHintProvider:         true,
 		CallHierarchyProvider:     true,
 		TypeHierarchyProvider:     true,

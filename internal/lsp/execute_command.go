@@ -19,6 +19,8 @@ func (h *Handler) handleExecuteCommand(ctx context.Context, params json.RawMessa
 		return h.executeGenerateAccessor(ctx, p.Arguments, "getter", generateGetter)
 	case "decaf.generateSetter":
 		return h.executeGenerateAccessor(ctx, p.Arguments, "setter", generateSetter)
+	case "decaf.initializeJavaType":
+		return h.executeInitializeJavaType(ctx, p.Arguments)
 	default:
 		return nil, fmt.Errorf("unknown command: %s", p.Command)
 	}
@@ -183,4 +185,50 @@ func (h *Handler) executeOverrideMethod(ctx context.Context, args []json.RawMess
 	}
 
 	return nil, nil
+}
+
+func (h *Handler) executeInitializeJavaType(ctx context.Context, args []json.RawMessage) (any, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("initializeJavaType requires 1 argument (fileURI)")
+	}
+
+	var fileURI string
+	if err := json.Unmarshal(args[0], &fileURI); err != nil {
+		return nil, fmt.Errorf("invalid fileURI argument: %w", err)
+	}
+
+	overlay, _ := h.docs.Get(fileURI)
+	if !canInitializeJavaType(fileURI, overlay) {
+		return nil, nil
+	}
+
+	actions := []MessageActionItem{
+		{Title: "class"},
+		{Title: "interface"},
+		{Title: "enum"},
+		{Title: "record"},
+	}
+
+	var selected *MessageActionItem
+	err := h.dispatcher.Call(ctx, "window/showMessageRequest", ShowMessageRequestParams{
+		Type:    MessageTypeInfo,
+		Message: "Select a Java type to initialize:",
+		Actions: actions,
+	}, &selected)
+	if err != nil {
+		return nil, fmt.Errorf("showMessageRequest failed: %w", err)
+	}
+	if selected == nil {
+		return nil, nil
+	}
+
+	edit := initializeJavaTypeEdit(h.rootURI, fileURI, selected.Title)
+	if edit == nil {
+		return nil, nil
+	}
+
+	return nil, h.dispatcher.Call(ctx, "workspace/applyEdit", ApplyWorkspaceEditParams{
+		Label: fmt.Sprintf("Initialize Java %s", selected.Title),
+		Edit:  edit,
+	}, nil)
 }
