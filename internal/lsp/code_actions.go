@@ -101,6 +101,14 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 			actions = append(actions, *action)
 		}
 
+		if edit := implementMethodsSourceEdit(p.TextDocument.URI, h.idx, overlay, cursorLine); edit != nil {
+			actions = append(actions, CodeAction{
+				Title: "Implement abstract methods",
+				Kind:  "source",
+				Edit:  edit,
+			})
+		}
+
 		if edit := generateConstructorEdit(p.TextDocument.URI, h.idx, overlay, cursorLine); edit != nil {
 			actions = append(actions, CodeAction{
 				Title: "Generate constructor",

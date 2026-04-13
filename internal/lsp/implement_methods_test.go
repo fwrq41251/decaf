@@ -2,6 +2,8 @@ package lsp
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/fwrq41251/decaf/internal/index"
+	"github.com/fwrq41251/decaf/internal/jsonrpc"
 	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
 	"github.com/fwrq41251/decaf/internal/uri"
 	"google.golang.org/protobuf/proto"
@@ -202,6 +205,122 @@ public class MyService implements Handler {
 	}
 	if !strings.Contains(newText, "UnsupportedOperationException") {
 		t.Errorf("expected UnsupportedOperationException in stub, got: %s", newText)
+	}
+}
+
+func TestImplementMethodsSourceEdit(t *testing.T) {
+	javaSource := `package com.example;
+
+public class MyService implements Handler {
+}
+`
+
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src", "main", "java", "com", "example")
+	os.MkdirAll(srcDir, 0755)
+
+	javaPath := filepath.Join(srcDir, "MyService.java")
+	os.WriteFile(javaPath, []byte(javaSource), 0644)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := index.NewIndex(logger, tmpDir)
+
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{
+			{
+				Uri: "src/main/java/com/example/MyService.java",
+				Symbols: []*sdb.SymbolInformation{
+					{
+						Symbol:      "com/example/MyService#",
+						DisplayName: "MyService",
+						Kind:        sdb.SymbolInformation_CLASS,
+						Signature: &sdb.Signature{
+							SealedValue: &sdb.Signature_ClassSignature{
+								ClassSignature: &sdb.ClassSignature{
+									Parents: []*sdb.Type{
+										{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "java/lang/Object#"}}},
+										{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "com/example/Handler#"}}},
+									},
+								},
+							},
+						},
+					},
+				},
+				Occurrences: []*sdb.SymbolOccurrence{
+					{
+						Symbol: "com/example/MyService#",
+						Range:  &sdb.Range{StartLine: 2, StartCharacter: 13, EndLine: 2, EndCharacter: 22},
+						Role:   sdb.SymbolOccurrence_DEFINITION,
+					},
+				},
+			},
+			{
+				Uri: "src/main/java/com/example/Handler.java",
+				Symbols: []*sdb.SymbolInformation{
+					{
+						Symbol:      "com/example/Handler#",
+						DisplayName: "Handler",
+						Kind:        sdb.SymbolInformation_INTERFACE,
+					},
+					{
+						Symbol:      "com/example/Handler#handle().",
+						DisplayName: "handle",
+						Kind:        sdb.SymbolInformation_METHOD,
+						Properties:  int32(sdb.SymbolInformation_ABSTRACT),
+						Signature: &sdb.Signature{
+							SealedValue: &sdb.Signature_MethodSignature{
+								MethodSignature: &sdb.MethodSignature{
+									ReturnType: nil,
+									ParameterLists: []*sdb.Scope{
+										{
+											Hardlinks: []*sdb.SymbolInformation{
+												{
+													Symbol:      "com/example/Handler#handle().(request)",
+													DisplayName: "request",
+													Kind:        sdb.SymbolInformation_PARAMETER,
+													Signature: &sdb.Signature{
+														SealedValue: &sdb.Signature_ValueSignature{
+															ValueSignature: &sdb.ValueSignature{
+																Tpe: &sdb.Type{
+																	SealedValue: &sdb.Type_TypeRef{
+																		TypeRef: &sdb.TypeRef{Symbol: "java/lang/String#"},
+																	},
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "MyService.java.semanticdb"), data, 0644)
+
+	idx.Load()
+	fileURI := uri.FromPath(javaPath)
+
+	edit := implementMethodsSourceEdit(fileURI, idx, javaSource, 2)
+	if edit == nil {
+		t.Fatal("implementMethodsSourceEdit returned nil")
+	}
+
+	edits := edit.Changes[fileURI]
+	if len(edits) != 1 {
+		t.Fatalf("expected 1 edit, got %d", len(edits))
+	}
+	if !strings.Contains(edits[0].NewText, "public void handle(String request)") {
+		t.Fatalf("expected handle stub, got: %s", edits[0].NewText)
 	}
 }
 
@@ -423,5 +542,227 @@ public class MyList extends AbstractList {
 	}
 	if !foundAdd {
 		t.Errorf("expected overridable method 'add', got %d methods: %v", len(methods), methods)
+	}
+}
+
+func TestCodeAction_SourceIncludesImplementAbstractMethods(t *testing.T) {
+	javaSource := `package com.example;
+
+public class MyService implements Handler {
+}
+`
+
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src", "main", "java", "com", "example")
+	os.MkdirAll(srcDir, 0755)
+
+	javaPath := filepath.Join(srcDir, "MyService.java")
+	os.WriteFile(javaPath, []byte(javaSource), 0644)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	close(h.indexReady)
+	h.idx = idx
+	h.rootURI = "file://" + tmpDir
+
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{
+			{
+				Uri: "src/main/java/com/example/MyService.java",
+				Symbols: []*sdb.SymbolInformation{
+					{
+						Symbol:      "com/example/MyService#",
+						DisplayName: "MyService",
+						Kind:        sdb.SymbolInformation_CLASS,
+						Signature: &sdb.Signature{
+							SealedValue: &sdb.Signature_ClassSignature{
+								ClassSignature: &sdb.ClassSignature{
+									Parents: []*sdb.Type{
+										{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "java/lang/Object#"}}},
+										{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "com/example/Handler#"}}},
+									},
+								},
+							},
+						},
+					},
+				},
+				Occurrences: []*sdb.SymbolOccurrence{
+					{
+						Symbol: "com/example/MyService#",
+						Range:  &sdb.Range{StartLine: 2, StartCharacter: 13, EndLine: 2, EndCharacter: 22},
+						Role:   sdb.SymbolOccurrence_DEFINITION,
+					},
+				},
+			},
+			{
+				Uri: "src/main/java/com/example/Handler.java",
+				Symbols: []*sdb.SymbolInformation{
+					{
+						Symbol:      "com/example/Handler#",
+						DisplayName: "Handler",
+						Kind:        sdb.SymbolInformation_INTERFACE,
+					},
+					{
+						Symbol:      "com/example/Handler#handle().",
+						DisplayName: "handle",
+						Kind:        sdb.SymbolInformation_METHOD,
+						Properties:  int32(sdb.SymbolInformation_ABSTRACT),
+						Signature: &sdb.Signature{
+							SealedValue: &sdb.Signature_MethodSignature{
+								MethodSignature: &sdb.MethodSignature{
+									ReturnType: nil,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "MyService.java.semanticdb"), data, 0644)
+
+	idx.Load()
+	fileURI := uri.FromPath(javaPath)
+	h.docs.Open(fileURI, javaSource)
+
+	params := CodeActionParams{
+		TextDocument: TextDocumentIdentifier{URI: fileURI},
+		Range:        Range{Start: Position{Line: 2, Character: 0}, End: Position{Line: 2, Character: 0}},
+		Context: CodeActionContext{
+			Only: []string{"source"},
+		},
+	}
+	rawParams, _ := json.Marshal(params)
+
+	got, err := h.handleCodeAction(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleCodeAction failed: %v", err)
+	}
+
+	actions := got.([]CodeAction)
+	for _, action := range actions {
+		if action.Title != "Implement abstract methods" {
+			continue
+		}
+		if action.Edit == nil {
+			t.Fatal("expected source action edit")
+		}
+		edits := action.Edit.Changes[fileURI]
+		if len(edits) != 1 {
+			t.Fatalf("expected 1 edit, got %d", len(edits))
+		}
+		if !strings.Contains(edits[0].NewText, "handle(") {
+			t.Fatalf("expected handle method stub, got: %s", edits[0].NewText)
+		}
+		return
+	}
+
+	t.Fatalf("expected source action, got %+v", actions)
+}
+
+func TestImplementMethods_DeepInheritance(t *testing.T) {
+	javaSource := "package com.example;\n\npublic class MyService extends BaseService {\n}\n"
+	tmpDir := t.TempDir()
+
+	srcDir := filepath.Join(tmpDir, "src", "main", "java", "com", "example")
+	os.MkdirAll(srcDir, 0755)
+	javaPath := filepath.Join(srcDir, "MyService.java")
+	os.WriteFile(javaPath, []byte(javaSource), 0644)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := index.NewIndex(logger, tmpDir)
+
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{
+			{
+				Uri: "src/main/java/com/example/MyService.java",
+				Symbols: []*sdb.SymbolInformation{
+					{
+						Symbol:      "com/example/MyService#",
+						DisplayName: "MyService",
+						Kind:        sdb.SymbolInformation_CLASS,
+						Signature: &sdb.Signature{
+							SealedValue: &sdb.Signature_ClassSignature{
+								ClassSignature: &sdb.ClassSignature{
+									Parents: []*sdb.Type{
+										{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "com/example/BaseService#"}}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				Uri: "src/main/java/com/example/BaseService.java",
+				Symbols: []*sdb.SymbolInformation{
+					{
+						Symbol:      "com/example/BaseService#",
+						DisplayName: "BaseService",
+						Kind:        sdb.SymbolInformation_CLASS,
+						Signature: &sdb.Signature{
+							SealedValue: &sdb.Signature_ClassSignature{
+								ClassSignature: &sdb.ClassSignature{
+									Parents: []*sdb.Type{
+										{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "com/example/Handler#"}}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				Uri: "src/main/java/com/example/Handler.java",
+				Symbols: []*sdb.SymbolInformation{
+					{
+						Symbol:      "com/example/Handler#",
+						DisplayName: "Handler",
+						Kind:        sdb.SymbolInformation_INTERFACE,
+					},
+					{
+						Symbol:      "com/example/Handler#handle().",
+						DisplayName: "handle",
+						Kind:        sdb.SymbolInformation_METHOD,
+						Properties:  int32(sdb.SymbolInformation_ABSTRACT),
+						Signature: &sdb.Signature{
+							SealedValue: &sdb.Signature_MethodSignature{
+								MethodSignature: &sdb.MethodSignature{
+									ReturnType: nil,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "Deep.java.semanticdb"), data, 0644)
+
+	idx.Load()
+
+	stubs := missingAbstractMethodStubs("com/example/MyService#", idx)
+	if len(stubs) == 0 {
+		t.Fatal("expected 1 stub for inherited abstract method, got 0")
+	}
+	found := false
+	for _, s := range stubs {
+		if strings.Contains(s, "void handle()") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected handle stub in %v", stubs)
 	}
 }

@@ -49,16 +49,9 @@ func implementMethodsEdit(fileURI string, idx *index.Index, overlay string, diag
 		return nil
 	}
 
-	var content []byte
-	if overlay != "" {
-		content = []byte(overlay)
-	} else {
-		filePath := uri.ToPath(fileURI)
-		var err error
-		content, err = os.ReadFile(filePath)
-		if err != nil {
-			return nil
-		}
+	content := readContent(fileURI, overlay)
+	if content == nil {
+		return nil
 	}
 
 	tree, err := getTree(content)
@@ -72,6 +65,35 @@ func implementMethodsEdit(fileURI string, idx *index.Index, overlay string, diag
 		return nil
 	}
 
+	return implementMethodsForClass(fileURI, idx, className, insertLine)
+}
+
+func implementMethodsSourceEdit(fileURI string, idx *index.Index, overlay string, cursorLine int) *WorkspaceEdit {
+	content := readContent(fileURI, overlay)
+	if content == nil {
+		return nil
+	}
+
+	tree, err := getTree(content)
+	if err != nil {
+		return nil
+	}
+	root := tree.RootNode()
+
+	className, _ := findClassContext(root, content, cursorLine)
+	if className == "" {
+		return nil
+	}
+
+	insertLine := findClassInsertionPoint(root, content, cursorLine)
+	if insertLine < 0 {
+		return nil
+	}
+
+	return implementMethodsForClass(fileURI, idx, className, insertLine)
+}
+
+func implementMethodsForClass(fileURI string, idx *index.Index, className string, insertLine int) *WorkspaceEdit {
 	// Find the class symbol from the index.
 	var classSym index.Symbol
 	found := false
@@ -86,52 +108,83 @@ func implementMethodsEdit(fileURI string, idx *index.Index, overlay string, diag
 		return nil
 	}
 
-	// Collect methods the class already implements.
-	ownMethods := make(map[string]bool)
-	for _, m := range idx.DirectMembersOfType(classSym.Symbol) {
-		if m.Kind == sdb.SymbolInformation_METHOD {
-			ownMethods[m.Name] = true
-		}
-	}
-
-	// Collect unimplemented abstract methods from all parents.
-	var stubs []string
-	seen := make(map[string]bool)
-	for _, parentType := range parentTypesForStub(classSym.Symbol, idx) {
-		for _, m := range idx.DirectMembersOfType(parentType.Sym) {
-			if m.Kind == sdb.SymbolInformation_CONSTRUCTOR {
-				continue
-			}
-			if m.Kind != sdb.SymbolInformation_METHOD || !m.IsAbstract {
-				continue
-			}
-			if ownMethods[m.Name] {
-				continue
-			}
-			if seen[m.Name] {
-				continue
-			}
-			seen[m.Name] = true
-			stubs = append(stubs, generateMethodStubForOwner(m, parentType, idx))
-		}
-	}
-
+	stubs := missingAbstractMethodStubs(classSym.Symbol, idx)
 	if len(stubs) == 0 {
 		return nil
 	}
 
-	newText := strings.Join(stubs, "")
-
-	editRange := Range{
-		Start: Position{Line: insertLine, Character: 0},
-		End:   Position{Line: insertLine, Character: 0},
-	}
-
 	return &WorkspaceEdit{
 		Changes: map[string][]TextEdit{
-			fileURI: {{Range: editRange, NewText: newText}},
+			fileURI: {{
+				Range: Range{
+					Start: Position{Line: insertLine, Character: 0},
+					End:   Position{Line: insertLine, Character: 0},
+				},
+				NewText: strings.Join(stubs, ""),
+			}},
 		},
 	}
+}
+
+func missingAbstractMethodStubs(classSym string, idx *index.Index) []string {
+	implemented := make(map[string]bool)
+	// Collect methods already implemented in the class itself.
+	for _, m := range idx.DirectMembersOfType(classSym) {
+		if m.Kind == sdb.SymbolInformation_METHOD && !m.IsStatic && !m.IsAbstract {
+			implemented[m.Name] = true
+		}
+	}
+
+	type abstractMethod struct {
+		sym   index.Symbol
+		owner *index.TypeExpr
+	}
+	var abstractMethods []abstractMethod
+	seenAbstract := make(map[string]bool)
+	visitedTypes := make(map[string]bool)
+
+	var collect func(sym string, owner *index.TypeExpr)
+	collect = func(sym string, owner *index.TypeExpr) {
+		if sym == "" || sym == "java/lang/Object#" || visitedTypes[sym] {
+			return
+		}
+		visitedTypes[sym] = true
+
+		members := idx.DirectMembersOfType(sym)
+		// First pass: collect all concrete implementations in this type.
+		for _, m := range members {
+			if m.Kind == sdb.SymbolInformation_METHOD && !m.IsStatic && !m.IsAbstract {
+				implemented[m.Name] = true
+			}
+		}
+
+		// Second pass: collect abstract methods.
+		for _, m := range members {
+			if m.Kind == sdb.SymbolInformation_METHOD && !m.IsStatic && m.IsAbstract {
+				if !seenAbstract[m.Name] {
+					seenAbstract[m.Name] = true
+					abstractMethods = append(abstractMethods, abstractMethod{m, owner})
+				}
+			}
+		}
+
+		// Recurse to parents.
+		for _, parent := range parentTypesForStub(sym, idx) {
+			collect(parent.Sym, parent)
+		}
+	}
+
+	for _, parent := range parentTypesForStub(classSym, idx) {
+		collect(parent.Sym, parent)
+	}
+
+	var stubs []string
+	for _, am := range abstractMethods {
+		if !implemented[am.sym.Name] {
+			stubs = append(stubs, generateMethodStubForOwner(am.sym, am.owner, idx))
+		}
+	}
+	return stubs
 }
 
 // generateMethodStub generates a Java method stub from an index Symbol.
