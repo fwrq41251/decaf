@@ -67,6 +67,8 @@ type ServerCapabilities struct {
 	CodeActionProvider        *CodeActionOptions       `json:"codeActionProvider,omitempty"`
 	ExecuteCommandProvider    *ExecuteCommandOptions   `json:"executeCommandProvider,omitempty"`
 	InlayHintProvider         bool                     `json:"inlayHintProvider,omitempty"`
+	CallHierarchyProvider     bool                     `json:"callHierarchyProvider,omitempty"`
+	TypeHierarchyProvider     bool                     `json:"typeHierarchyProvider,omitempty"`
 	Workspace                 *ServerWorkspaceCapabilities `json:"workspace,omitempty"`
 }
 
@@ -579,4 +581,70 @@ type WorkDoneProgressReport struct {
 type WorkDoneProgressEnd struct {
 	Kind    string `json:"kind"` // always "end"
 	Message string `json:"message,omitempty"`
+}
+
+// CallHierarchyItem represents a single item in the call hierarchy.
+type CallHierarchyItem struct {
+	Name           string `json:"name"`
+	Kind           int    `json:"kind"`
+	Detail         string `json:"detail,omitempty"`
+	URI            string `json:"uri"`
+	Range          Range  `json:"range"`
+	SelectionRange Range  `json:"selectionRange"`
+	Data           any    `json:"data,omitempty"`
+}
+
+// CallHierarchyPrepareParams is sent for textDocument/prepareCallHierarchy.
+type CallHierarchyPrepareParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+}
+
+// CallHierarchyIncomingCallsParams is sent for callHierarchy/incomingCalls.
+type CallHierarchyIncomingCallsParams struct {
+	Item CallHierarchyItem `json:"item"`
+}
+
+// CallHierarchyIncomingCall represents an incoming call.
+type CallHierarchyIncomingCall struct {
+	From       CallHierarchyItem `json:"from"`
+	FromRanges []Range           `json:"fromRanges"`
+}
+
+// CallHierarchyOutgoingCallsParams is sent for callHierarchy/outgoingCalls.
+type CallHierarchyOutgoingCallsParams struct {
+	Item CallHierarchyItem `json:"item"`
+}
+
+// CallHierarchyOutgoingCall represents an outgoing call.
+type CallHierarchyOutgoingCall struct {
+	To         CallHierarchyItem `json:"to"`
+	FromRanges []Range           `json:"fromRanges"`
+}
+
+// TypeHierarchyItem represents a single item in the type hierarchy.
+type TypeHierarchyItem struct {
+	Name           string `json:"name"`
+	Kind           int    `json:"kind"`
+	Detail         string `json:"detail,omitempty"`
+	URI            string `json:"uri"`
+	Range          Range  `json:"range"`
+	SelectionRange Range  `json:"selectionRange"`
+	Data           any    `json:"data,omitempty"`
+}
+
+// TypeHierarchyPrepareParams is sent for textDocument/prepareTypeHierarchy.
+type TypeHierarchyPrepareParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+}
+
+// TypeHierarchySupertypesParams is sent for typeHierarchy/supertypes.
+type TypeHierarchySupertypesParams struct {
+	Item TypeHierarchyItem `json:"item"`
+}
+
+// TypeHierarchySubtypesParams is sent for typeHierarchy/subtypes.
+type TypeHierarchySubtypesParams struct {
+	Item TypeHierarchyItem `json:"item"`
 }

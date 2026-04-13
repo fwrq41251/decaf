@@ -133,6 +133,14 @@ func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
 	d.RegisterConcurrent("textDocument/prepareRename", h.handlePrepareRename)
 	d.RegisterConcurrent("textDocument/inlayHint", h.handleInlayHint)
 
+	// Hierarchy — concurrent (read-only).
+	d.RegisterConcurrent("textDocument/prepareCallHierarchy", h.handlePrepareCallHierarchy)
+	d.RegisterConcurrent("callHierarchy/incomingCalls", h.handleIncomingCalls)
+	d.RegisterConcurrent("callHierarchy/outgoingCalls", h.handleOutgoingCalls)
+	d.RegisterConcurrent("textDocument/prepareTypeHierarchy", h.handlePrepareTypeHierarchy)
+	d.RegisterConcurrent("typeHierarchy/supertypes", h.handleSupertypes)
+	d.RegisterConcurrent("typeHierarchy/subtypes", h.handleSubtypes)
+
 	// Code actions — concurrent (read-only analysis).
 	d.RegisterConcurrent("textDocument/codeAction", h.handleCodeAction)
 

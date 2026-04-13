@@ -757,6 +757,26 @@ func (idx *Index) IsAssignableTo(candidateSym, targetSym string) bool {
 	return false
 }
 
+// SymbolReferences returns all references for a given symbol string.
+func (idx *Index) SymbolReferences(sym string) []Occurrence {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return deduplicateOccurrences(copyOccurrences(idx.references[sym]))
+}
+
+// Implementors returns the direct child type symbols that extend/implement the given type.
+func (idx *Index) Implementors(typeSym string) []string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	impls := idx.implementors[typeSym]
+	if len(impls) == 0 {
+		return nil
+	}
+	result := make([]string, len(impls))
+	copy(result, impls)
+	return result
+}
+
 func isTypeKind(kind sdb.SymbolInformation_Kind) bool {
 	switch kind {
 	case sdb.SymbolInformation_CLASS, sdb.SymbolInformation_INTERFACE,

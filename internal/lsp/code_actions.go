@@ -108,6 +108,16 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 		if action := overrideMethodAction(p.TextDocument.URI, h.idx, overlay, cursorLine); action != nil {
 			actions = append(actions, *action)
 		}
+
+		candidates := collectFieldCandidates(p.TextDocument.URI, h.idx, overlay, cursorLine)
+
+		if action := getterAction(p.TextDocument.URI, cursorLine, candidates); action != nil {
+			actions = append(actions, *action)
+		}
+
+		if action := setterAction(p.TextDocument.URI, cursorLine, candidates); action != nil {
+			actions = append(actions, *action)
+		}
 	}
 
 	if len(actions) == 0 {
