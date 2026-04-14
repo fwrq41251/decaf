@@ -22,19 +22,27 @@ Editor (Neovim/Zed)
 
 ## Features
 
-- **Diagnostics**: Real-time compilation errors/warnings forwarded from Bloop
-- **Goto Definition**: Jump to symbol definitions in your project, external libraries, and the JDK (lazy indexed)
-- **Find References**: Find all usages of a symbol across the workspace
-- **Hover**: Display type signatures, symbol info, and **Javadoc documentation**
-- **Completion**: Type-aware completion ranking with support for overloaded methods
-- **Signature Help**: Method signature display with parameter tracking
-- **Rename**: Project-wide renaming, including automatic file renaming for top-level classes
-- **Document Symbol**: Outline view with class/method hierarchy
-- **Document Highlight**: Highlight all occurrences of a symbol in the current file
-- **Implementation**: Find classes implementing an interface or extending a class
-- **Workspace Symbol**: Fuzzy search across all indexed symbols
-- **Compile on Save**: Automatic incremental compilation and index updates
-- **Progress Tracking**: Real-time feedback via LSP workDoneProgress during setup and compilation
+- **Diagnostics**: Real-time compilation errors/warnings forwarded from Bloop.
+- **Goto Definition**: Jump to symbol definitions in your project, external libraries, and the JDK (lazy indexed).
+- **Find References**: Find all usages of a symbol across the workspace.
+- **Hover**: Display type signatures, symbol info, and **Javadoc documentation**.
+- **Completion**: Type-aware completion ranking, overloaded methods, `new` keyword support, and lambda parameter hints.
+- **Postfix Completion**: Quick templates like `expr.var`, `expr.if`, `expr.for`, `expr.sout`, and more.
+- **Code Actions**:
+    - **Implement abstract methods**: Automatically generate stubs for missing methods.
+    - **Organize Imports**: Clean up and sort your import statements.
+    - **Generate Accessors**: Quick generation of Getters, Setters, and Constructors.
+    - **Initialize Java File**: Boilerplate generation for new classes, interfaces, or enums.
+- **Inlay Hints**: Inline hints for parameter names and inferred variable types.
+- **Call & Type Hierarchy**: Navigate complex codebases with incoming/outgoing calls and class inheritance trees.
+- **Signature Help**: Method signature display with parameter tracking.
+- **Rename**: Project-wide renaming, including automatic file renaming for top-level classes.
+- **Document Symbol**: Outline view with class/method hierarchy.
+- **Document Highlight**: Highlight all occurrences of a symbol in the current file.
+- **Implementation**: Find classes implementing an interface or extending a class.
+- **Workspace Symbol**: Fuzzy search across all indexed symbols.
+- **Compile on Save**: Automatic incremental compilation and index updates.
+- **Progress Tracking**: Real-time feedback via LSP workDoneProgress during setup and compilation.
 
 ## Prerequisites
 
@@ -44,7 +52,7 @@ Editor (Neovim/Zed)
   cs install bloop
   ```
 - **Maven** (for Maven projects)
-- **Gradle** (for Gradle projects) — the [Bloop Gradle plugin](https://scalacenter.github.io/bloop/docs/build-tools/gradle) must be applied to your build
+- **Gradle** (for Gradle projects)
 
 > **Note:** You do **not** need to manually configure `semanticdb-javac` or run `bloopInstall`. decaf handles all of this automatically on startup.
 
@@ -60,11 +68,11 @@ go build -o decaf ./cmd/decaf
 
 Just open your Maven or Gradle project in an editor configured with decaf. On first startup, decaf will automatically:
 
-1. **Detect `pom.xml` or `build.gradle`/`build.gradle.kts`** in your workspace
-2. **Run `mvn bloopInstall`** (Maven) or **`gradle bloopInstall`** (Gradle) to export project config to `.bloop/`
-3. **Download `semanticdb-javac`** from Maven Central (cached in `~/.cache/decaf/`)
-4. **Inject it into `.bloop/*.json`** configs (adds `-Xplugin:semanticdb`)
-5. **Connect to Bloop**, compile, and index `.semanticdb` files
+1. **Detect `pom.xml` or `build.gradle`/`build.gradle.kts`** in your workspace.
+2. **Run `mvn bloopInstall`** (Maven) or **`gradle bloopInstall`** (Gradle) to export project config to `.bloop/`.
+3. **Download `semanticdb-javac`** from Maven Central (cached in `~/.cache/decaf/`).
+4. **Inject it into `.bloop/*.json`** configs (adds `-Xplugin:semanticdb`).
+5. **Connect to Bloop**, compile, and index `.semanticdb` files.
 
 After the initial setup, subsequent startups skip steps 2-4 (already configured) and go straight to compilation.
 
