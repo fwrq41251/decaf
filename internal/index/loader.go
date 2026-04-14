@@ -314,9 +314,6 @@ func (idx *Index) LogStatsSnapshot(label string) {
 	fileSymbols := len(idx.fileSymbols)
 	idx.mu.RUnlock()
 
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-
 	idx.logger.Printf("--- stats snapshot [%s] ---", label)
 	idx.logger.Printf("index stats: definitions=%d references=%d fileOccurrences=%d files=%d fileSymbols=%d",
 		definitions, references, fileOccurrences, files, fileSymbols)
@@ -328,14 +325,6 @@ func (idx *Index) LogStatsSnapshot(label string) {
 		internPool, modTimes, sdbToURIs)
 	idx.logger.Printf("index stats: indexedJARs=%d classLocations=%d externalTypes=%d fullyIndexedClasses=%d",
 		indexedJARs, classLocations, externalTypes, fullyIndexedClasses)
-	idx.logger.Printf("mem stats: Alloc=%dMB TotalAlloc=%dMB Sys=%dMB HeapInuse=%dMB HeapIdle=%dMB HeapObjects=%d GCCycles=%d",
-		mem.Alloc/1024/1024,
-		mem.TotalAlloc/1024/1024,
-		mem.Sys/1024/1024,
-		mem.HeapInuse/1024/1024,
-		mem.HeapIdle/1024/1024,
-		mem.HeapObjects,
-		mem.NumGC)
 }
 
 // Close stops the file watcher. Safe to call multiple times.
@@ -635,6 +624,7 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 
 	// Index occurrences (both definitions and references with ranges).
 	uriID := idx.stringID(uri)
+	refSymSet := make(map[string]struct{})
 	for _, occ := range doc.Occurrences {
 		occSym := idx.intern(occ.Symbol)
 		o := storedOccurrence{
@@ -657,20 +647,17 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 			}
 		} else {
 			idx.references[occSym] = append(idx.references[occSym], occID)
-			refSyms := idx.uriRefSymbols[uri]
-			seen := false
-			for _, sym := range refSyms {
-				if sym == occSym {
-					seen = true
-					break
-				}
-			}
-			if !seen {
-				idx.uriRefSymbols[uri] = append(refSyms, occSym)
-			}
+			refSymSet[occSym] = struct{}{}
 		}
 
 		idx.fileOccurrences[uri] = append(idx.fileOccurrences[uri], occID)
+	}
+	if len(refSymSet) > 0 {
+		refSyms := make([]string, 0, len(refSymSet))
+		for sym := range refSymSet {
+			refSyms = append(refSyms, sym)
+		}
+		idx.uriRefSymbols[uri] = refSyms
 	}
 
 	// Sort occurrences by start position for binary search in symbolAt.

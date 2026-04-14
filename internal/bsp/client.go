@@ -83,6 +83,13 @@ func (c *Client) Start(ctx context.Context, rootURI string) error {
 	}
 	socketPath := filepath.Join(socketDir, "bsp.socket")
 	c.socketDir = socketDir
+	cleanup := true
+	defer func() {
+		if cleanup {
+			os.RemoveAll(socketDir)
+			c.socketDir = ""
+		}
+	}()
 
 	c.logger.Printf("starting bloop bsp using socket: %s", socketPath)
 	
@@ -108,6 +115,11 @@ func (c *Client) Start(ctx context.Context, rootURI string) error {
 	var conn net.Conn
 	var dialErr error
 	for time.Since(start) < 5*time.Second {
+		select {
+		case err := <-c.exitErr:
+			return fmt.Errorf("bloop process exited before socket was ready: %w", err)
+		default:
+		}
 		conn, dialErr = net.Dial("unix", socketPath)
 		if dialErr == nil {
 			break
@@ -156,6 +168,7 @@ func (c *Client) Start(ctx context.Context, rootURI string) error {
 	}
 	c.targets = targetsResult.Targets
 	c.logger.Printf("found %d build targets", len(c.targets))
+	cleanup = false
 	return nil
 }
 

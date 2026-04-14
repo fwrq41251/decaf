@@ -22,6 +22,7 @@ type Handler struct {
 	initialized atomic.Bool
 	shutdown    atomic.Bool
 	exitCh      chan struct{}
+	exitOnce    sync.Once
 	rootURI     string
 	bspClient   *bsp.Client
 	transport   *jsonrpc.Transport
@@ -148,8 +149,8 @@ func (h *Handler) RegisterAll(d *jsonrpc.Dispatcher) {
 	// window/showMessageRequest, which requires the main loop to keep reading).
 	d.RegisterConcurrent("workspace/executeCommand", h.handleExecuteCommand)
 
-	// Rename mutates state — sequential.
-	d.Register("textDocument/rename", h.handleRename)
+	// Rename is read-only (computes a WorkspaceEdit without modifying handler state).
+	d.RegisterConcurrent("textDocument/rename", h.handleRename)
 }
 
 // showMessage sends a window/showMessage notification to the editor.

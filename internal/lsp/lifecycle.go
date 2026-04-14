@@ -74,7 +74,7 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 	h.logger.Println("client sent initialized notification")
 
 	// Register file watchers for .java files so we detect branch switches etc.
-	h.registerFileWatchers()
+	h.registerFileWatchers(ctx)
 
 	// Initialize SemanticDB index.
 	sourceRoot := uri.ToPath(h.rootURI)
@@ -240,11 +240,11 @@ func (h *Handler) handleShutdown(ctx context.Context, _ json.RawMessage) (any, e
 
 func (h *Handler) handleExit(_ context.Context, _ json.RawMessage) (any, error) {
 	h.logger.Println("exit notification received")
-	close(h.exitCh)
+	h.exitOnce.Do(func() { close(h.exitCh) })
 	return nil, jsonrpc.ErrExit
 }
 
-func (h *Handler) registerFileWatchers() {
+func (h *Handler) registerFileWatchers(ctx context.Context) {
 	registration := map[string]any{
 		"registrations": []map[string]any{
 			{
@@ -262,17 +262,8 @@ func (h *Handler) registerFileWatchers() {
 		},
 	}
 
-	req, err := jsonrpc.NewRequestWithID(
-		fmt.Sprintf("%d", progressSeq.Add(1)),
-		"client/registerCapability",
-		registration,
-	)
-	if err != nil {
-		h.logger.Printf("failed to create registerCapability request: %v", err)
-		return
-	}
-	if err := h.transport.WriteRequest(req); err != nil {
-		h.logger.Printf("failed to send registerCapability: %v", err)
+	if err := h.dispatcher.Call(ctx, "client/registerCapability", registration, nil); err != nil {
+		h.logger.Printf("failed to register file watchers: %v", err)
 		return
 	}
 	h.logger.Println("registered file watcher for **/*.java")
