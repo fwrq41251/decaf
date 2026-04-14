@@ -65,6 +65,7 @@ func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) 
 // completeDot handles member completion after a dot (e.g. "foo.ba").
 func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionItem {
 	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
+	expectedType := h.resolveCurrentArgumentTypeExpr(cctx, resolver)
 
 	// Resolve the receiver expression to a type with generic arguments.
 	// Also track whether this is a static access (e.g. "Objects.") vs instance access (e.g. "obj.").
@@ -98,6 +99,7 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 			continue
 		}
 		// Build sortText using full match quality scoring.
+		candidateType := h.memberCompletionTypeExpr(typeExpr, m)
 		matchScore := fmt.Sprintf("%d", index.CompletionMatchScoreLower(m.Name, lowerQuery))
 		kind := sdbKindToCompletionKind(m.Kind)
 		kindOrder := "1" // methods
@@ -109,7 +111,7 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 			continue
 		}
 		seen[key] = struct{}{}
-		sortText := matchScore + kindOrder + completionNameSortKey(m.Name)
+		sortText := completionTypeMatchPrefix(h, expectedType, candidateType) + matchScore + kindOrder + completionNameSortKey(m.Name)
 		if kind == CompletionKindMethod || kind == CompletionKindConstructor {
 			sortText += signatureSortSuffix(m.Signature)
 		}
@@ -122,6 +124,31 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 		items = items[:100]
 	}
 	return items
+}
+
+func completionTypeMatchPrefix(h *Handler, expectedType, candidateType *index.TypeExpr) string {
+	if candidateType == nil || expectedType == nil {
+		return "2"
+	}
+	if sameTypeExpr(candidateType, expectedType) {
+		return "0"
+	}
+	if h.idx.IsAssignableTo(candidateType.Sym, expectedType.Sym) {
+		return "1"
+	}
+	return "2"
+}
+
+func (h *Handler) memberCompletionTypeExpr(owner *index.TypeExpr, sym index.Symbol) *index.TypeExpr {
+	if owner == nil {
+		return nil
+	}
+	te := symbolReturnTypeExpr(sym, h.idx)
+	if te == nil {
+		return nil
+	}
+	te = substituteTypeParams(te, owner, h.idx)
+	return substituteNamedTypeParams(te, owner, h.idx)
 }
 
 func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
@@ -1152,20 +1179,6 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		return fmt.Sprintf("%d", score)
 	}
 
-	// typeMatchPrefix returns "0" for exact type match, "1" for assignable subtype, "2" for no match.
-	typeMatchPrefix := func(candidateType *index.TypeExpr) string {
-		if candidateType == nil || expectedType == nil {
-			return "2"
-		}
-		if sameTypeExpr(candidateType, expectedType) {
-			return "0"
-		}
-		if h.idx.IsAssignableTo(candidateType.Sym, expectedType.Sym) {
-			return "1"
-		}
-		return "2"
-	}
-
 	contextPrefix := func(kind int) string {
 		if !cctx.InTypePosition {
 			return "1"
@@ -1192,7 +1205,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			Kind:       kind,
 			InsertText: name,
 			Detail:     detail,
-			SortText:   contextPrefix(kind) + typeMatchPrefix(candidateType) + matchQuality(name) + scopeOrder + completionNameSortKey(name),
+			SortText:   contextPrefix(kind) + completionTypeMatchPrefix(h, expectedType, candidateType) + matchQuality(name) + scopeOrder + completionNameSortKey(name),
 			FilterText: name,
 		}
 		items = append(items, item)
@@ -1244,7 +1257,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 				Label:      formatMethodDeclDetail(m),
 				Kind:       CompletionKindMethod,
 				Detail:     formatMethodDeclDetail(m),
-				SortText:   contextPrefix(CompletionKindMethod) + typeMatchPrefix(m.ReturnType) + matchQuality(m.Name) + "04" + completionNameSortKey(m.Name) + methodDeclSortSuffix(m),
+				SortText:   contextPrefix(CompletionKindMethod) + completionTypeMatchPrefix(h, expectedType, m.ReturnType) + matchQuality(m.Name) + "04" + completionNameSortKey(m.Name) + methodDeclSortSuffix(m),
 				FilterText: m.Name,
 			}
 			if cctx.ParenFollows {
@@ -1275,7 +1288,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			}
 			seen[key] = struct{}{}
 			retType := symbolReturnTypeExpr(m, h.idx)
-			sortText := contextPrefix(kind) + typeMatchPrefix(retType) + matchQuality(m.Name) + "05" + completionNameSortKey(m.Name)
+			sortText := contextPrefix(kind) + completionTypeMatchPrefix(h, expectedType, retType) + matchQuality(m.Name) + "05" + completionNameSortKey(m.Name)
 			if kind == CompletionKindMethod || kind == CompletionKindConstructor {
 				sortText += signatureSortSuffix(m.Signature)
 			}
@@ -1360,7 +1373,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			}
 			seen[key] = struct{}{}
 		}
-		sortText := contextPrefix(kind) + typeMatchPrefix(symbolReturnTypeExpr(s, h.idx)) + matchQuality(s.Name) + scopeOrder
+		sortText := contextPrefix(kind) + completionTypeMatchPrefix(h, expectedType, symbolReturnTypeExpr(s, h.idx)) + matchQuality(s.Name) + scopeOrder
 		if isTypeCompletionKind(kind) {
 			sortText += typeCompletionPriority(cctx, s)
 		}
@@ -1396,6 +1409,9 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 func symbolReturnTypeExpr(sym index.Symbol, idx *index.Index) *index.TypeExpr {
 	if te := idx.DeclTypeOf(sym.Symbol); te != nil {
 		return te
+	}
+	if retSym := idx.TypeOfSymbol(sym.Symbol); retSym != "" {
+		return &index.TypeExpr{Sym: retSym}
 	}
 	if sym.Signature != nil && sym.Signature.ReturnTypeSym != "" {
 		return &index.TypeExpr{Sym: sym.Signature.ReturnTypeSym}

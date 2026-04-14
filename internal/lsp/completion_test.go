@@ -582,6 +582,105 @@ func TestCompleteDot_FallbackStaysEmptyWhenNothingMatches(t *testing.T) {
 	}
 }
 
+func TestCompleteDot_ExpectedArgumentTypeRanksMatchingReturnTypeFirst(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "java/lang/String#", DisplayName: "String", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "java/util/List#", DisplayName: "List", Kind: sdb.SymbolInformation_INTERFACE},
+				{Symbol: "pkg/Test#", DisplayName: "Test", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	setIndexField(t, idx, "classTypeParams", map[string][]string{
+		"java/util/List#": {"java/util/List#[E]"},
+	})
+	setIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"string": {{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS}},
+		"list":   {{Name: "List", Symbol: "java/util/List#", Kind: sdb.SymbolInformation_INTERFACE}},
+		"test":   {{Name: "Test", Symbol: "pkg/Test#", Kind: sdb.SymbolInformation_CLASS}},
+	})
+	setIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"java/util/List#": {
+			{
+				Name:   "get",
+				Symbol: "java/util/List#get().",
+				Kind:   sdb.SymbolInformation_METHOD,
+				Signature: &index.SignatureInfo{
+					Label:     "E get(int index)",
+					HasParams: true,
+					Params:    []index.ParamInfo{{Name: "index", Type: "int"}},
+				},
+			},
+			{
+				Name:   "size",
+				Symbol: "java/util/List#size().",
+				Kind:   sdb.SymbolInformation_METHOD,
+				Signature: &index.SignatureInfo{
+					Label: "int size()",
+				},
+			},
+		},
+		"pkg/Test#": {
+			{
+				Name:   "process",
+				Symbol: "pkg/Test#process().",
+				Kind:   sdb.SymbolInformation_METHOD,
+				Signature: &index.SignatureInfo{
+					Label:         "void process(String value)",
+					HasParams:     true,
+					Params:        []index.ParamInfo{{Name: "value", Type: "String", TypeSym: "java/lang/String#"}},
+					ReturnTypeSym: "void",
+				},
+			},
+		},
+	})
+	setIndexField(t, idx, "symbolDeclType", map[string]*index.TypeExpr{
+		"java/util/List#get().": {Sym: "java/util/List#[E]"},
+	})
+
+	cctx := &CompletionCtx{
+		Kind:           CompletionDot,
+		Receiver:       "list",
+		Package:        "pkg",
+		EnclosingClass: "Test",
+		Locals: []ValueDecl{{
+			Name: "list",
+			Type: &index.TypeExpr{Sym: "java/util/List#", Args: []*index.TypeExpr{{Sym: "java/lang/String#"}}},
+		}},
+		Call: &CallContext{MethodName: "process", ParamIndex: 0},
+	}
+
+	items := h.completeDot(cctx, "file://"+tmpDir+"/src/Test.java")
+	sortCompletionItems(items)
+
+	getIdx := -1
+	sizeIdx := -1
+	for i, item := range items {
+		switch item.Label {
+		case "get(int index)":
+			getIdx = i
+		case "size()":
+			sizeIdx = i
+		}
+	}
+
+	if getIdx == -1 {
+		t.Fatalf("expected get(int index) in completion items, got %+v", items)
+	}
+	if sizeIdx == -1 {
+		t.Fatalf("expected size() in completion items, got %+v", items)
+	}
+	if getIdx > sizeIdx {
+		t.Errorf("expected String-returning get() to rank before size(), got get=%d size=%d items=%+v", getIdx, sizeIdx, items)
+	}
+}
+
 func TestCompleteDot_CustomSAMLambdaParam(t *testing.T) {
 	h, idx, tmpDir := newTestHandler(t)
 	defer idx.Close()

@@ -94,7 +94,12 @@ func (r *typeResolver) resolve(name string) string {
 		return ""
 	}
 
-	// 0. Strip generic arguments for symbol resolution.
+	// 0. If it's already a SemanticDB symbol, return it as is.
+	if strings.HasSuffix(name, "#") || strings.HasSuffix(name, ".") || strings.Contains(name, "(") {
+		return name
+	}
+
+	// 1. Strip generic arguments for symbol resolution.
 	baseName := name
 	if ltIdx := strings.IndexByte(name, '<'); ltIdx >= 0 {
 		baseName = name[:ltIdx]
