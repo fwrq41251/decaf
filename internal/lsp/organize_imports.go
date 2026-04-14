@@ -59,10 +59,15 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 	// Filter existing imports: keep wildcards and used specific imports.
 	// Drop specific imports whose package is already covered by a wildcard.
 	var kept []string
+	seenImports := make(map[string]bool, len(block.imports))
 	for _, imp := range block.imports {
+		if seenImports[imp] {
+			continue
+		}
 		simple := simpleNameFromImport(imp)
 		if simple == "*" {
 			kept = append(kept, imp)
+			seenImports[imp] = true
 			continue
 		}
 		if wildcardPkgs[packageFromFQN(imp)] {
@@ -71,6 +76,7 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 		}
 		if usedSimpleNames[simple] {
 			kept = append(kept, imp)
+			seenImports[imp] = true
 		}
 	}
 
@@ -112,10 +118,15 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 	// Filter static imports: keep only those whose member name appears in the source.
 	usedIdents := collectIdentifiers(root, content)
 	var keptStatic []string
+	seenStaticImports := make(map[string]bool, len(block.staticImports))
 	for _, imp := range block.staticImports {
+		if seenStaticImports[imp] {
+			continue
+		}
 		member := simpleNameFromImport(imp)
 		if member == "*" || usedIdents[member] {
 			keptStatic = append(keptStatic, imp)
+			seenStaticImports[imp] = true
 		}
 	}
 
@@ -155,7 +166,7 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 
 	// If there were no imports before and we're adding some, ensure a blank line before.
 	newText := sb.String()
-	if len(block.imports) == 0 && len(kept) > 0 {
+	if len(block.imports) == 0 && len(block.staticImports) == 0 && (len(kept) > 0 || len(keptStatic) > 0) {
 		// If we are at the very beginning of the file (no package), no need for leading newline.
 		if block.startLine > 0 {
 			newText = "\n" + newText

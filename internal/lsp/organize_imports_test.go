@@ -311,6 +311,65 @@ public class App {
 	}
 }
 
+func TestOrganizeImports_DoesNotAddExtraBlankLineWhenStaticImportsExist(t *testing.T) {
+	source := `package com.example;
+
+import static java.util.Collections.emptyList;
+
+public class App {
+    Helper helper = emptyList();
+}
+`
+	occs := []*sdb.SymbolOccurrence{
+		{Symbol: "org/example/Helper#", Role: sdb.SymbolOccurrence_REFERENCE,
+			Range: &sdb.Range{StartLine: 5, StartCharacter: 4, EndLine: 5, EndCharacter: 10}},
+	}
+	syms := []*sdb.SymbolInformation{
+		{Symbol: "org/example/Helper#", DisplayName: "Helper", Kind: sdb.SymbolInformation_CLASS},
+	}
+
+	fileURI, idx := setupTestIndex(t, source, occs, syms)
+	edit := organizeImports(fileURI, idx, "")
+
+	if edit == nil {
+		t.Fatal("expected a non-nil edit")
+	}
+	text := edit.Changes[fileURI][0].NewText
+	if strings.HasPrefix(text, "\n") {
+		t.Fatalf("organizeImports should not prepend an extra blank line when imports already exist, got:\n%q", text)
+	}
+	if !containsStr(text, "import static java.util.Collections.emptyList;\n\nimport org.example.Helper;\n") {
+		t.Fatalf("expected static and regular import groups with a single separator, got:\n%s", text)
+	}
+}
+
+func TestOrganizeImports_DeduplicatesExistingImports(t *testing.T) {
+	source := `package com.example;
+
+import java.util.List;
+import java.util.List;
+
+public class App {
+    List<String> items;
+}
+`
+	occs := []*sdb.SymbolOccurrence{
+		{Symbol: "java/util/List#", Role: sdb.SymbolOccurrence_REFERENCE,
+			Range: &sdb.Range{StartLine: 6, StartCharacter: 4, EndLine: 6, EndCharacter: 8}},
+	}
+
+	fileURI, idx := setupTestIndex(t, source, occs, nil)
+	edit := organizeImports(fileURI, idx, "")
+
+	if edit == nil {
+		t.Fatal("expected a non-nil edit")
+	}
+	lines := splitNonEmpty(edit.Changes[fileURI][0].NewText)
+	if len(lines) != 1 || lines[0] != "import java.util.List;" {
+		t.Fatalf("expected a single deduplicated import, got %v", lines)
+	}
+}
+
 func TestOrganizeImports_EmptyFile(t *testing.T) {
 	source := `package com.example;
 

@@ -54,6 +54,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 	// Quick fix: add missing import / implement methods.
 	if wantQuickFix {
 		overlay, _ := h.docs.Get(p.TextDocument.URI)
+		seenImportFixes := make(map[string]struct{})
 		for _, diag := range p.Context.Diagnostics {
 			// Add missing import.
 			name := extractMissingSymbolName(diag.Message)
@@ -67,10 +68,14 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 					if fqn == "" {
 						continue
 					}
+					if _, ok := seenImportFixes[fqn]; ok {
+						continue
+					}
 					edit := addImportEdit(p.TextDocument.URI, overlay, fqn)
 					if edit == nil {
 						continue
 					}
+					seenImportFixes[fqn] = struct{}{}
 					actions = append(actions, CodeAction{
 						Title:       fmt.Sprintf("Add import '%s'", fqn),
 						Kind:        CodeActionQuickFix,

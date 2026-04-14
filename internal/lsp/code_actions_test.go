@@ -151,3 +151,69 @@ public class Use {
 		}
 	}
 }
+
+func TestCodeAction_DeduplicatesImportFixesWithSameFQN(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+
+	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	close(h.indexReady)
+	h.idx = idx
+	h.rootURI = "file://" + tmpDir
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Request.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "org/winry/model/Request#", DisplayName: "Request", Kind: sdb.SymbolInformation_CLASS},
+				{Symbol: "org/winry/model/Request#", DisplayName: "Request", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	}
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	if err := os.MkdirAll(sdbDir, 0755); err != nil {
+		t.Fatalf("mkdir semanticdb dir: %v", err)
+	}
+	data, _ := proto.Marshal(docs)
+	if err := os.WriteFile(filepath.Join(sdbDir, "Request.java.semanticdb"), data, 0644); err != nil {
+		t.Fatalf("write semanticdb: %v", err)
+	}
+	idx.Load()
+
+	fileURI := "file://" + tmpDir + "/src/Use.java"
+	content := `package com.example;
+public class Use {
+    Request request;
+}`
+	h.docs.Open(fileURI, content)
+
+	params := CodeActionParams{
+		TextDocument: TextDocumentIdentifier{URI: fileURI},
+		Range:        Range{},
+		Context: CodeActionContext{
+			Only: []string{CodeActionQuickFix},
+			Diagnostics: []Diagnostic{{
+				Message: "cannot find symbol\n  symbol:   class Request",
+			}},
+		},
+	}
+	rawParams, _ := json.Marshal(params)
+
+	got, err := h.handleCodeAction(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleCodeAction failed: %v", err)
+	}
+
+	actions := got.([]CodeAction)
+	var count int
+	for _, action := range actions {
+		if action.Title == "Add import 'org.winry.model.Request'" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 Request import action, got %d: %+v", count, actions)
+	}
+}
