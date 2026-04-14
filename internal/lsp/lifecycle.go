@@ -73,9 +73,6 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 	h.bgMu.Unlock()
 	h.logger.Println("client sent initialized notification")
 
-	// Register file watchers for .java files so we detect branch switches etc.
-	h.registerFileWatchers(ctx)
-
 	// Initialize SemanticDB index.
 	sourceRoot := uri.ToPath(h.rootURI)
 	h.idx = index.NewIndex(h.logger, sourceRoot)
@@ -104,6 +101,12 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 		if needsFullBuild {
 			defer h.closeIndexReady()
 		}
+
+		// Register file watchers here (in a goroutine) because dispatcher.Call
+		// blocks waiting for a client response, and handleInitialized runs
+		// sequentially on the dispatcher loop — calling it there deadlocks.
+		h.registerFileWatchers(ctx)
+
 		prog := h.beginProgress(ctx, "decaf", "initializing…")
 
 		if needsFullBuild {
