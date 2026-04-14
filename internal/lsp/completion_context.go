@@ -62,6 +62,9 @@ type CompletionCtx struct {
 	Kind           CompletionKind
 	Scope          CompletionScope
 	Receiver       string       // the text before the dot (for dot completion)
+	ReceiverExpr   string       // the original expression text before the dot (for postfix completion)
+	ReceiverStart  int          // byte offset of the receiver expression start
+	DotOffset      int          // byte offset of the dot character
 	Prefix         string       // the identifier prefix being typed
 	LambdaParams   []ValueDecl  // parameters of the nearest enclosing lambda
 	Locals         []ValueDecl  // local variables visible at cursor
@@ -124,7 +127,13 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 	// 2. Determine completion kind and extract receiver/prefix.
 	// parseContent is identical to content before cursorOffset, so prefix
 	// extraction (which walks backwards) produces the same result.
-	ctx.Kind, ctx.Receiver, ctx.Prefix = determineCompletionKind(parseContent, cursorOffset, root)
+	info := determineCompletionKind(parseContent, cursorOffset, root)
+	ctx.Kind = info.kind
+	ctx.Receiver = info.receiver
+	ctx.ReceiverExpr = info.receiverExpr
+	ctx.ReceiverStart = info.receiverStart
+	ctx.DotOffset = info.dotOffset
+	ctx.Prefix = info.prefix
 
 	// 2b. Detect if prefix is preceded by "new" keyword.
 	if ctx.Kind == CompletionLexical {
@@ -349,9 +358,19 @@ func isAfterNewKeyword(content []byte, cursorOffset int, prefix string) bool {
 	return false
 }
 
+// dotCompletionInfo holds the result of dot completion detection.
+type dotCompletionInfo struct {
+	kind          CompletionKind
+	receiver      string // simplified receiver for type resolution
+	receiverExpr  string // original expression text
+	receiverStart int    // byte offset of expression start
+	dotOffset     int    // byte offset of the dot
+	prefix        string
+}
+
 // determineCompletionKind examines text before cursor to detect dot completion,
 // using the Tree-sitter AST to extract the receiver expression.
-func determineCompletionKind(content []byte, cursorOffset int, root *slog.Node) (CompletionKind, string, string) {
+func determineCompletionKind(content []byte, cursorOffset int, root *slog.Node) dotCompletionInfo {
 	// Walk backwards from cursor to collect identifier prefix.
 	pos := cursorOffset
 	for pos > 0 && isIdentChar(content[pos-1]) {
@@ -367,13 +386,43 @@ func determineCompletionKind(content []byte, cursorOffset int, root *slog.Node) 
 	}
 	if dotPos > 0 && content[dotPos-1] == '.' {
 		dotBytePos := dotPos - 1 // index of the dot
-		receiver := extractReceiverFromAST(root, content, dotBytePos)
+		receiver, receiverExpr, receiverStart := extractReceiverFromASTFull(root, content, dotBytePos)
 		if receiver != "" {
-			return CompletionDot, receiver, prefix
+			return dotCompletionInfo{
+				kind:          CompletionDot,
+				receiver:      receiver,
+				receiverExpr:  receiverExpr,
+				receiverStart: receiverStart,
+				dotOffset:     dotBytePos,
+				prefix:        prefix,
+			}
 		}
 	}
 
-	return CompletionLexical, "", prefix
+	return dotCompletionInfo{kind: CompletionLexical, prefix: prefix}
+}
+
+// extractReceiverFromASTFull extracts the receiver expression and its byte range.
+// Returns the simplified receiver, original expression text, and start byte offset.
+func extractReceiverFromASTFull(root *slog.Node, content []byte, dotBytePos int) (string, string, int) {
+	if dotBytePos <= 0 {
+		return "", "", 0
+	}
+
+	beforeDot := dotBytePos - 1
+	for beforeDot > 0 && (content[beforeDot] == ' ' || content[beforeDot] == '\t' || content[beforeDot] == '\n' || content[beforeDot] == '\r') {
+		beforeDot--
+	}
+
+	node := findReceiverNode(root, content, beforeDot, dotBytePos)
+	if node == nil {
+		return "", "", 0
+	}
+
+	receiver := exprToReceiver(node, content)
+	receiverExpr := node.Content(content)
+	receiverStart := int(node.StartByte())
+	return receiver, receiverExpr, receiverStart
 }
 
 // extractReceiverFromAST uses the Tree-sitter AST to extract the receiver

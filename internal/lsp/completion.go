@@ -49,6 +49,8 @@ func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) 
 	contentBytes := []byte(content)
 	if cctx.Kind == CompletionDot {
 		items = h.completeDot(cctx, p.TextDocument.URI)
+		// Append postfix completion items (e.g. expr.var, expr.if, expr.for).
+		items = append(items, completePostfix(cctx, contentBytes)...)
 	} else {
 		items = h.completeLexical(cctx, p.TextDocument.URI, contentBytes)
 	}

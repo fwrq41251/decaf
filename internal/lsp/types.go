@@ -333,6 +333,7 @@ type CompletionItem struct {
 	Documentation       *MarkupContent `json:"documentation,omitempty"`
 	InsertText          string         `json:"insertText,omitempty"`
 	InsertTextFormat    int            `json:"insertTextFormat,omitempty"`
+	TextEdit            *TextEdit      `json:"textEdit,omitempty"`
 	AdditionalTextEdits []TextEdit     `json:"additionalTextEdits,omitempty"`
 }
 
