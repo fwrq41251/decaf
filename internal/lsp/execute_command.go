@@ -96,15 +96,7 @@ func (h *Handler) executeGenerateAccessor(ctx context.Context, args []json.RawMe
 			return nil, nil
 		}
 
-		editRange := Range{
-			Start: Position{Line: insertLine, Character: 0},
-			End:   Position{Line: insertLine, Character: 0},
-		}
-		edit := &WorkspaceEdit{
-			Changes: map[string][]TextEdit{
-				fileURI: {{Range: editRange, NewText: newText}},
-			},
-		}
+		edit := insertTextAtLine(fileURI, insertLine, newText)
 
 		return nil, h.dispatcher.Call(ctx, "workspace/applyEdit", ApplyWorkspaceEditParams{
 			Label: fmt.Sprintf("Generate %s for '%s'", kind, c.field.Name),
@@ -166,15 +158,7 @@ func (h *Handler) executeOverrideMethod(ctx context.Context, args []json.RawMess
 	// Find the selected method and apply the edit.
 	for _, m := range methods {
 		if m.method.Name == selected.Title {
-			editRange := Range{
-				Start: Position{Line: insertLine, Character: 0},
-				End:   Position{Line: insertLine, Character: 0},
-			}
-			edit := &WorkspaceEdit{
-				Changes: map[string][]TextEdit{
-					fileURI: {{Range: editRange, NewText: generateMethodStubForOwner(m.method, m.parentType, h.idx)}},
-				},
-			}
+			edit := insertTextAtLine(fileURI, insertLine, generateMethodStubForOwner(m.method, m.parentType, h.idx))
 
 			// Apply the edit via workspace/applyEdit.
 			return nil, h.dispatcher.Call(ctx, "workspace/applyEdit", ApplyWorkspaceEditParams{

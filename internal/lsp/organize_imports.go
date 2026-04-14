@@ -1,12 +1,10 @@
 package lsp
 
 import (
-	"os"
 	"sort"
 	"strings"
 
 	"github.com/fwrq41251/decaf/internal/index"
-	"github.com/fwrq41251/decaf/internal/uri"
 	slog "github.com/smacker/go-tree-sitter"
 )
 
@@ -22,16 +20,9 @@ type importBlock struct {
 // adds missing ones, and sorts the remainder.
 // If overlay is non-empty it is used as the file content instead of reading from disk.
 func organizeImports(fileURI string, idx *index.Index, overlay string) *WorkspaceEdit {
-	var content []byte
-	if overlay != "" {
-		content = []byte(overlay)
-	} else {
-		filePath := uri.ToPath(fileURI)
-		var err error
-		content, err = os.ReadFile(filePath)
-		if err != nil {
-			return nil
-		}
+	content := readContent(fileURI, overlay)
+	if content == nil {
+		return nil
 	}
 
 	tree, err := getTree(content)
@@ -171,16 +162,10 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 		}
 	}
 
-	editRange := Range{
+	return singleFileEdit(fileURI, Range{
 		Start: Position{Line: block.startLine, Character: 0},
 		End:   Position{Line: block.endLine, Character: 0},
-	}
-
-	return &WorkspaceEdit{
-		Changes: map[string][]TextEdit{
-			fileURI: {{Range: editRange, NewText: newText}},
-		},
-	}
+	}, newText)
 }
 
 // parseImportBlock finds the contiguous import region in a Java source file using AST.
@@ -330,16 +315,9 @@ func importSortKey(imp string) string {
 // addImportEdit computes a WorkspaceEdit that adds a single import statement
 // for the given fully-qualified name at the correct sorted position.
 func addImportEdit(fileURI string, overlay string, fqn string) *WorkspaceEdit {
-	var content []byte
-	if overlay != "" {
-		content = []byte(overlay)
-	} else {
-		filePath := uri.ToPath(fileURI)
-		var err error
-		content, err = os.ReadFile(filePath)
-		if err != nil {
-			return nil
-		}
+	content := readContent(fileURI, overlay)
+	if content == nil {
+		return nil
 	}
 
 	tree, err := getTree(content)
@@ -365,16 +343,7 @@ func addImportEdit(fileURI string, overlay string, fqn string) *WorkspaceEdit {
 	// Calculate the insertion.
 	insertLine, newText := calculateImportInsert(root, content, block, fqn)
 
-	editRange := Range{
-		Start: Position{Line: insertLine, Character: 0},
-		End:   Position{Line: insertLine, Character: 0},
-	}
-
-	return &WorkspaceEdit{
-		Changes: map[string][]TextEdit{
-			fileURI: {{Range: editRange, NewText: newText}},
-		},
-	}
+	return insertTextAtLine(fileURI, insertLine, newText)
 }
 
 // calculateImportInsert determines the line and text for inserting a new import.

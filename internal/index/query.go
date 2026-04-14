@@ -512,7 +512,7 @@ func (idx *Index) findOccurrenceAt(uri string, line, character int) *Occurrence 
 		if r.EndLine < line32 {
 			break
 		}
-		if containsPosition(r, line, character) {
+		if ContainsPosition(r, line, character) {
 			occ := idx.occurrenceByID(occs[j])
 			return &occ
 		}
@@ -792,7 +792,7 @@ func (idx *Index) Implementors(typeSym string) []string {
 	return result
 }
 
-func isTypeKind(kind sdb.SymbolInformation_Kind) bool {
+func IsTypeKind(kind sdb.SymbolInformation_Kind) bool {
 	switch kind {
 	case sdb.SymbolInformation_CLASS, sdb.SymbolInformation_INTERFACE,
 		sdb.SymbolInformation_OBJECT, sdb.SymbolInformation_PACKAGE_OBJECT:
@@ -811,7 +811,7 @@ func (idx *Index) ensureMembersOf(sym string) {
 	}
 }
 
-func containsPosition(r Range, line, character int) bool {
+func ContainsPosition(r Range, line, character int) bool {
 	if int(r.StartLine) > line || int(r.EndLine) < line {
 		return false
 	}

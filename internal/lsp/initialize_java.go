@@ -41,17 +41,7 @@ func initializeJavaTypeEdit(rootURI, fileURI, kind string) *WorkspaceEdit {
 		return nil
 	}
 
-	return &WorkspaceEdit{
-		Changes: map[string][]TextEdit{
-			fileURI: {{
-				Range: Range{
-					Start: Position{Line: 0, Character: 0},
-					End:   Position{Line: 0, Character: 0},
-				},
-				NewText: template,
-			}},
-		},
-	}
+	return insertTextAtLine(fileURI, 0, template)
 }
 
 func initializeJavaTypeTemplate(rootURI, fileURI, kind string) string {

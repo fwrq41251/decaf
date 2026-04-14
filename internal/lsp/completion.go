@@ -9,7 +9,6 @@ import (
 
 	"github.com/fwrq41251/decaf/internal/index"
 	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
-	slog "github.com/smacker/go-tree-sitter"
 )
 
 var javaKeywords = []string{
@@ -42,7 +41,7 @@ func (h *Handler) handleCompletion(ctx context.Context, params json.RawMessage) 
 	}
 
 	// Parse completion context using Tree-sitter.
-	cctx := parseCompletionCtx(h.logger, []byte(content), p.Position.Line, p.Position.Character)
+	cctx := parseCompletionCtxWithContext(ctx, h.logger, []byte(content), p.Position.Line, p.Position.Character)
 
 	var items []CompletionItem
 
@@ -100,7 +99,7 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 		}
 		// Build sortText using full match quality scoring.
 		candidateType := h.memberCompletionTypeExpr(typeExpr, m)
-		matchScore := fmt.Sprintf("%d", index.CompletionMatchScoreLower(m.Name, lowerQuery))
+		matchScore := completionMatchScorePrefix(m.Name, lowerQuery)
 		kind := sdbKindToCompletionKind(m.Kind)
 		kindOrder := "1" // methods
 		if kind == CompletionKindField || kind == CompletionKindProperty {
@@ -166,7 +165,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 		}
 		seen["field|"+name] = struct{}{}
 
-		sortPrefix := fmt.Sprintf("%d", index.CompletionMatchScoreLower(name, lowerQuery))
+		sortPrefix := completionMatchScorePrefix(name, lowerQuery)
 		items = append(items, CompletionItem{
 			Label:      name,
 			Kind:       CompletionKindField,
@@ -187,7 +186,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 		}
 		seen[key] = struct{}{}
 
-		sortPrefix := fmt.Sprintf("%d", index.CompletionMatchScoreLower(m.Name, lowerQuery))
+		sortPrefix := completionMatchScorePrefix(m.Name, lowerQuery)
 		item := CompletionItem{
 			Label:      formatMethodDeclDetail(m),
 			Kind:       CompletionKindMethod,
@@ -214,7 +213,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 		}
 		seen[key] = struct{}{}
 
-		sortPrefix := fmt.Sprintf("%d", index.CompletionMatchScoreLower(sym.Name, lowerQuery))
+		sortPrefix := completionMatchScorePrefix(sym.Name, lowerQuery)
 		sortText := sortPrefix + sortBucket + completionNameSortKey(sym.Name)
 		if sym.Signature != nil {
 			sortText += signatureSortSuffix(sym.Signature)
@@ -473,16 +472,7 @@ func (h *Handler) resolveCurrentArgumentTypeExpr(cctx *CompletionCtx, resolver *
 			syms = h.findMembersByName(sym, cctx.Call.Constructor)
 		}
 	} else if cctx.Call.Receiver != "" {
-		fakeCctx := &CompletionCtx{
-			Receiver:       cctx.Call.Receiver,
-			Locals:         cctx.Locals,
-			LambdaParams:   cctx.LambdaParams,
-			Params:         cctx.Params,
-			ClassFields:    cctx.ClassFields,
-			Imports:        cctx.Imports,
-			Package:        cctx.Package,
-			EnclosingClass: cctx.EnclosingClass,
-		}
+		fakeCctx := cloneCompletionCtxWithReceiver(cctx, cctx.Call.Receiver)
 		ownerType, _ = h.resolveReceiverTypeExpr(fakeCctx, resolver)
 		if ownerType != nil {
 			syms = h.findMembersByName(ownerType.Sym, cctx.Call.MethodName)
@@ -710,16 +700,7 @@ func (h *Handler) resolveVarInitializerMethodCall(vi *VarInitializer, cctx *Comp
 	if vi.Receiver == "" {
 		return h.resolveUnqualifiedVarInitializerMethodCall(vi, cctx, resolver)
 	}
-	fakeCctx := &CompletionCtx{
-		Receiver:       vi.Receiver,
-		Locals:         cctx.Locals,
-		LambdaParams:   cctx.LambdaParams,
-		Params:         cctx.Params,
-		ClassFields:    cctx.ClassFields,
-		Imports:        cctx.Imports,
-		Package:        cctx.Package,
-		EnclosingClass: cctx.EnclosingClass,
-	}
+	fakeCctx := cloneCompletionCtxWithReceiver(cctx, vi.Receiver)
 	ownerType, _ := h.resolveReceiverTypeExpr(fakeCctx, resolver)
 	if ownerType == nil {
 		return nil, nil
@@ -1783,7 +1764,7 @@ func (h *Handler) resolveSignatureFromAST(fileURI string, line, character int) [
 
 found:
 	// Parse completion context at the call site for type resolution.
-	cctx := parseCompletionCtx(h.logger, src, line, character)
+	cctx := parseCompletionCtxWithContext(context.Background(), h.logger, src, line, character)
 	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
 
 	if callNode.Type() == "object_creation_expression" {
@@ -1852,8 +1833,8 @@ func (h *Handler) countActiveParameter(fileURI string, line, character int) int 
 	}
 
 	src := []byte(content)
-	parser := javaParserPool.Get().(*slog.Parser)
-	defer javaParserPool.Put(parser)
+	parser := index.AcquireJavaParser()
+	defer index.ReleaseJavaParser(parser)
 
 	tree, err := parser.ParseCtx(context.Background(), nil, src)
 	if err != nil {

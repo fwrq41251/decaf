@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -197,15 +196,8 @@ func (h *Handler) reindex() {
 // getFileContent returns the content of a file, preferring the in-memory overlay
 // from docStore over reading from disk. Returns empty string on error.
 func (h *Handler) getFileContent(fileURI string) string {
-	if content, ok := h.docs.Get(fileURI); ok {
-		return content
-	}
-	filePath := uri.ToPath(fileURI)
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return ""
-	}
-	return string(data)
+	overlay, ok := h.docs.Get(fileURI)
+	return readContentString(fileURI, overlay, ok)
 }
 
 // toFileURI converts a SemanticDB relative URI to an absolute file:// URI.

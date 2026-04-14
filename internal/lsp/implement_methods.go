@@ -1,13 +1,12 @@
 package lsp
 
 import (
+	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/fwrq41251/decaf/internal/index"
 	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
-	"github.com/fwrq41251/decaf/internal/uri"
 	slog "github.com/smacker/go-tree-sitter"
 )
 
@@ -69,12 +68,16 @@ func implementMethodsEdit(fileURI string, idx *index.Index, overlay string, diag
 }
 
 func implementMethodsSourceEdit(fileURI string, idx *index.Index, overlay string, cursorLine int) *WorkspaceEdit {
+	return implementMethodsSourceEditWithContext(context.Background(), fileURI, idx, overlay, cursorLine)
+}
+
+func implementMethodsSourceEditWithContext(ctx context.Context, fileURI string, idx *index.Index, overlay string, cursorLine int) *WorkspaceEdit {
 	content := readContent(fileURI, overlay)
 	if content == nil {
 		return nil
 	}
 
-	tree, err := getTree(content)
+	tree, err := getTreeWithContext(ctx, content)
 	if err != nil {
 		return nil
 	}
@@ -94,16 +97,7 @@ func implementMethodsSourceEdit(fileURI string, idx *index.Index, overlay string
 }
 
 func implementMethodsForClass(fileURI string, idx *index.Index, className string, insertLine int) *WorkspaceEdit {
-	// Find the class symbol from the index.
-	var classSym index.Symbol
-	found := false
-	for _, sym := range idx.FileSymbols(fileURI) {
-		if sym.Name == className && sym.Kind == sdb.SymbolInformation_CLASS {
-			classSym = sym
-			found = true
-			break
-		}
-	}
+	classSym, found := findClassSymbol(fileURI, className, idx)
 	if !found {
 		return nil
 	}
@@ -113,17 +107,7 @@ func implementMethodsForClass(fileURI string, idx *index.Index, className string
 		return nil
 	}
 
-	return &WorkspaceEdit{
-		Changes: map[string][]TextEdit{
-			fileURI: {{
-				Range: Range{
-					Start: Position{Line: insertLine, Character: 0},
-					End:   Position{Line: insertLine, Character: 0},
-				},
-				NewText: strings.Join(stubs, ""),
-			}},
-		},
-	}
+	return insertTextAtLine(fileURI, insertLine, strings.Join(stubs, ""))
 }
 
 func missingAbstractMethodStubs(classSym string, idx *index.Index) []string {
@@ -440,15 +424,7 @@ func hasOverridableMethods(fileURI string, idx *index.Index, overlay string, cur
 		return false
 	}
 
-	var classSym index.Symbol
-	found := false
-	for _, sym := range idx.FileSymbols(fileURI) {
-		if sym.Name == className && sym.Kind == sdb.SymbolInformation_CLASS {
-			classSym = sym
-			found = true
-			break
-		}
-	}
+	classSym, found := findClassSymbol(fileURI, className, idx)
 	if !found {
 		return false
 	}
@@ -503,15 +479,7 @@ func collectOverridableMethods(fileURI string, idx *index.Index, overlay string,
 		return nil, -1
 	}
 
-	var classSym index.Symbol
-	found := false
-	for _, sym := range idx.FileSymbols(fileURI) {
-		if sym.Name == className && sym.Kind == sdb.SymbolInformation_CLASS {
-			classSym = sym
-			found = true
-			break
-		}
-	}
+	classSym, found := findClassSymbol(fileURI, className, idx)
 	if !found {
 		return nil, -1
 	}
@@ -554,16 +522,4 @@ func collectOverridableMethods(fileURI string, idx *index.Index, overlay string,
 		}
 	}
 	return methods, insertLine
-}
-
-// readContent returns file content from overlay or disk.
-func readContent(fileURI string, overlay string) []byte {
-	if overlay != "" {
-		return []byte(overlay)
-	}
-	content, err := os.ReadFile(uri.ToPath(fileURI))
-	if err != nil {
-		return nil
-	}
-	return content
 }

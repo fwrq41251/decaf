@@ -101,7 +101,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 			actions = append(actions, *action)
 		}
 
-		if edit := implementMethodsSourceEdit(p.TextDocument.URI, h.idx, overlay, cursorLine); edit != nil {
+		if edit := implementMethodsSourceEditWithContext(ctx, p.TextDocument.URI, h.idx, overlay, cursorLine); edit != nil {
 			actions = append(actions, CodeAction{
 				Title: "Implement abstract methods",
 				Kind:  "source",
@@ -109,7 +109,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 			})
 		}
 
-		if edit := generateConstructorEdit(p.TextDocument.URI, h.idx, overlay, cursorLine); edit != nil {
+		if edit := generateConstructorEditWithContext(ctx, p.TextDocument.URI, h.idx, overlay, cursorLine); edit != nil {
 			actions = append(actions, CodeAction{
 				Title: "Generate constructor",
 				Kind:  "source",
@@ -121,7 +121,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 			actions = append(actions, *action)
 		}
 
-		candidates := collectFieldCandidates(p.TextDocument.URI, h.idx, overlay, cursorLine)
+		candidates := collectFieldCandidatesWithContext(ctx, p.TextDocument.URI, h.idx, overlay, cursorLine)
 
 		if action := getterAction(p.TextDocument.URI, cursorLine, candidates); action != nil {
 			actions = append(actions, *action)

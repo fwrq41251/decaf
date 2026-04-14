@@ -1,12 +1,11 @@
 package lsp
 
 import (
-	"os"
+	"context"
 	"strings"
 
 	"github.com/fwrq41251/decaf/internal/index"
 	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
-	"github.com/fwrq41251/decaf/internal/uri"
 	slog "github.com/smacker/go-tree-sitter"
 )
 
@@ -39,19 +38,16 @@ func findClassContext(root *slog.Node, content []byte, line int) (string, *slog.
 // generateConstructorEdit computes a WorkspaceEdit that inserts a constructor
 // for the class at cursorLine, taking all non-static fields as parameters.
 func generateConstructorEdit(fileURI string, idx *index.Index, overlay string, cursorLine int) *WorkspaceEdit {
-	var content []byte
-	if overlay != "" {
-		content = []byte(overlay)
-	} else {
-		filePath := uri.ToPath(fileURI)
-		var err error
-		content, err = os.ReadFile(filePath)
-		if err != nil {
-			return nil
-		}
+	return generateConstructorEditWithContext(context.Background(), fileURI, idx, overlay, cursorLine)
+}
+
+func generateConstructorEditWithContext(ctx context.Context, fileURI string, idx *index.Index, overlay string, cursorLine int) *WorkspaceEdit {
+	content := readContent(fileURI, overlay)
+	if content == nil {
+		return nil
 	}
 
-	tree, err := getTree(content)
+	tree, err := getTreeWithContext(ctx, content)
 	if err != nil {
 		return nil
 	}
@@ -62,16 +58,7 @@ func generateConstructorEdit(fileURI string, idx *index.Index, overlay string, c
 		return nil
 	}
 
-	// Find the class symbol from the index.
-	var classSym index.Symbol
-	found := false
-	for _, sym := range idx.FileSymbols(fileURI) {
-		if sym.Name == className && sym.Kind == sdb.SymbolInformation_CLASS {
-			classSym = sym
-			found = true
-			break
-		}
-	}
+	classSym, found := findClassSymbol(fileURI, className, idx)
 	if !found {
 		return nil
 	}
@@ -99,16 +86,7 @@ func generateConstructorEdit(fileURI string, idx *index.Index, overlay string, c
 		return nil
 	}
 
-	editRange := Range{
-		Start: Position{Line: insertLine, Character: 0},
-		End:   Position{Line: insertLine, Character: 0},
-	}
-
-	return &WorkspaceEdit{
-		Changes: map[string][]TextEdit{
-			fileURI: {{Range: editRange, NewText: newText}},
-		},
-	}
+	return insertTextAtLine(fileURI, insertLine, newText)
 }
 
 // findConstructorInsertPoint returns the line where the constructor should be
@@ -142,21 +120,7 @@ func formatConstructor(className string, fields []index.Symbol, idx *index.Index
 	var params []string
 	var assignments []string
 	for _, f := range fields {
-		typeName := "Object"
-		if idx != nil {
-			if te := idx.DeclTypeOf(f.Symbol); te != nil {
-				if rendered := formatMethodStubType(te); rendered != "" {
-					typeName = rendered
-				}
-			} else if typeSym := idx.TypeOfSymbol(f.Symbol); typeSym != "" {
-				typeName = formatMethodStubType(&index.TypeExpr{Sym: typeSym})
-			}
-		}
-		if typeName == "Object" && f.Signature != nil && f.Signature.Label != "" {
-			if labelIdx := strings.Index(f.Signature.Label, ": "); labelIdx >= 0 {
-				typeName = f.Signature.Label[labelIdx+2:]
-			}
-		}
+		typeName := resolveFieldType(f, idx)
 		params = append(params, typeName+" "+f.Name)
 		assignments = append(assignments, "        this."+f.Name+" = "+f.Name+";\n")
 	}

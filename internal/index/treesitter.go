@@ -18,6 +18,20 @@ var parserPool = sync.Pool{
 	},
 }
 
+func AcquireJavaParser() *slog.Parser {
+	return parserPool.Get().(*slog.Parser)
+}
+
+func ReleaseJavaParser(parser *slog.Parser) {
+	parserPool.Put(parser)
+}
+
+func ParseJava(ctx context.Context, content []byte) (*slog.Tree, error) {
+	parser := AcquireJavaParser()
+	defer ReleaseJavaParser(parser)
+	return parser.ParseCtx(ctx, nil, content)
+}
+
 // FindSymbolLocation uses Tree-sitter to find the line/column of a symbol's definition in a Java file.
 // sym: the SemanticDB symbol name, e.g., "java/lang/String#length()."
 // filePath: the absolute path to the .java file.
@@ -27,8 +41,8 @@ func FindSymbolLocation(filePath, sym string) (int, int) {
 		return -1, -1
 	}
 
-	parser := parserPool.Get().(*slog.Parser)
-	defer parserPool.Put(parser)
+	parser := AcquireJavaParser()
+	defer ReleaseJavaParser(parser)
 
 	tree, err := parser.ParseCtx(context.Background(), nil, content)
 	if err != nil {

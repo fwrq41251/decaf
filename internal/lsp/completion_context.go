@@ -80,18 +80,20 @@ type CompletionCtx struct {
 	Call           *CallContext // non-nil when cursor is inside method call arguments
 }
 
-var _ = javaParserPool
+func parseCompletionCtx(logger *log.Logger, content []byte, line, character int) *CompletionCtx {
+	return parseCompletionCtxWithContext(context.Background(), logger, content, line, character)
+}
 
-// parseCompletionCtx parses the buffer content with Tree-sitter and extracts
+// parseCompletionCtxWithContext parses the buffer content with Tree-sitter and extracts
 // completion context at the given cursor position (0-indexed line and character).
-func parseCompletionCtx(logger *log.Logger, content []byte, line, character int) (ctx *CompletionCtx) {
+func parseCompletionCtxWithContext(reqCtx context.Context, logger *log.Logger, content []byte, line, character int) (resCtx *CompletionCtx) {
 	defer func() {
 		if r := recover(); r != nil {
 			if logger != nil {
 				logger.Printf("panic in parseCompletionCtx: %v\n%s", r, debug.Stack())
 			}
 			// Return an empty context if parsing or extraction panics.
-			ctx = &CompletionCtx{}
+			resCtx = &CompletionCtx{}
 		}
 	}()
 
@@ -113,94 +115,98 @@ func parseCompletionCtx(logger *log.Logger, content []byte, line, character int)
 		copy(parseContent[cursorOffset+len(placeholder):], content[cursorOffset:])
 	}
 
-	parser := javaParserPool.Get().(*slog.Parser)
-	defer javaParserPool.Put(parser)
+	parser := index.AcquireJavaParser()
+	defer index.ReleaseJavaParser(parser)
 
-	tree, err := parser.ParseCtx(context.Background(), nil, parseContent)
+	if reqCtx == nil {
+		reqCtx = context.Background()
+	}
+
+	tree, err := parser.ParseCtx(reqCtx, nil, parseContent)
 	if err != nil {
 		return &CompletionCtx{}
 	}
 	root := tree.RootNode()
 
-	ctx = &CompletionCtx{}
+	resCtx = &CompletionCtx{}
 
 	// 2. Determine completion kind and extract receiver/prefix.
 	// parseContent is identical to content before cursorOffset, so prefix
 	// extraction (which walks backwards) produces the same result.
 	info := determineCompletionKind(parseContent, cursorOffset, root)
-	ctx.Kind = info.kind
-	ctx.Receiver = info.receiver
-	ctx.ReceiverExpr = info.receiverExpr
-	ctx.ReceiverStart = info.receiverStart
-	ctx.DotOffset = info.dotOffset
-	ctx.Prefix = info.prefix
+	resCtx.Kind = info.kind
+	resCtx.Receiver = info.receiver
+	resCtx.ReceiverExpr = info.receiverExpr
+	resCtx.ReceiverStart = info.receiverStart
+	resCtx.DotOffset = info.dotOffset
+	resCtx.Prefix = info.prefix
 
 	// 2b. Detect if prefix is preceded by "new" keyword.
-	if ctx.Kind == CompletionLexical {
-		ctx.AfterNew = isAfterNewKeyword(parseContent, cursorOffset, ctx.Prefix)
+	if resCtx.Kind == CompletionLexical {
+		resCtx.AfterNew = isAfterNewKeyword(parseContent, cursorOffset, resCtx.Prefix)
 	}
 
 	// 2c. Detect if '(' follows the cursor position.
 	// Use original content to check the real document, not the placeholder.
-	ctx.ParenFollows = hasParenAfterCursor(content, cursorOffset)
+	resCtx.ParenFollows = hasParenAfterCursor(content, cursorOffset)
 
 	// 3. Extract imports and package from root.
-	extractImportsAndPackage(root, parseContent, ctx)
+	extractImportsAndPackage(root, parseContent, resCtx)
 
 	// 4. Find enclosing class and method to determine scope.
 	cursorNode := nodeAtPosition(root, line, character)
 	if cursorNode != nil {
-		if !ctx.InTypePosition {
-			ctx.InTypePosition = isTypeCompletionPosition(cursorNode, cursorOffset)
+		if !resCtx.InTypePosition {
+			resCtx.InTypePosition = isTypeCompletionPosition(cursorNode, cursorOffset)
 		}
-		if !ctx.InTypePosition {
+		if !resCtx.InTypePosition {
 			if prev := nodeAtByteOffset(root, parseContent, previousNonWhitespaceOffset(parseContent, cursorOffset)); prev != nil && prev != cursorNode {
-				ctx.InTypePosition = isTypeCompletionPosition(prev, cursorOffset)
+				resCtx.InTypePosition = isTypeCompletionPosition(prev, cursorOffset)
 			}
 		}
-		if !ctx.InTypePosition && ctx.Kind == CompletionLexical {
-			ctx.InTypePosition = looksLikeTypePositionText(parseContent, cursorOffset, ctx.Prefix)
+		if !resCtx.InTypePosition && resCtx.Kind == CompletionLexical {
+			resCtx.InTypePosition = looksLikeTypePositionText(parseContent, cursorOffset, resCtx.Prefix)
 		}
 
 		classNode := findAncestor(cursorNode, "class_declaration", "interface_declaration", "enum_declaration")
 		if classNode != nil {
-			ctx.Scope = ScopeClass
+			resCtx.Scope = ScopeClass
 			for i := 0; i < int(classNode.NamedChildCount()); i++ {
 				child := classNode.NamedChild(i)
 				if child.Type() == "identifier" {
-					ctx.EnclosingClass = child.Content(parseContent)
+					resCtx.EnclosingClass = child.Content(parseContent)
 					break
 				}
 			}
 
 			// 5. Extract class fields and methods.
-			extractClassMembers(classNode, parseContent, ctx)
+			extractClassMembers(classNode, parseContent, resCtx)
 		}
 
 		// Find enclosing method or block for scope.
 		blockNode := findAncestor(cursorNode, "block", "constructor_body", "static_initializer")
 		if blockNode != nil {
-			ctx.Scope = ScopeBlock
+			resCtx.Scope = ScopeBlock
 		}
 
 		// Find specific method/constructor for parameter extraction.
 		methodNode := findAncestor(cursorNode, "method_declaration", "constructor_declaration")
 		if methodNode != nil {
 			// 7. Extract method parameters.
-			extractMethodParams(methodNode, parseContent, ctx)
+			extractMethodParams(methodNode, parseContent, resCtx)
 		}
 
 		// 8. Extract local variables from current scope.
-		extractLocals(cursorNode, parseContent, cursorOffset, ctx)
+		extractLocals(cursorNode, parseContent, cursorOffset, resCtx)
 
 		// 9. Detect if cursor is inside a method call's argument list.
-		ctx.Call = extractCallContext(cursorNode, parseContent, cursorOffset)
+		resCtx.Call = extractCallContext(cursorNode, parseContent, cursorOffset)
 
 		// 10. Extract parameters from the nearest enclosing lambda body.
-		extractLambdaParams(root, cursorNode, parseContent, cursorOffset, ctx)
+		extractLambdaParams(root, cursorNode, parseContent, cursorOffset, resCtx)
 	}
 
-	return ctx
+	return resCtx
 }
 
 func looksLikeTypePositionText(content []byte, cursorOffset int, prefix string) bool {

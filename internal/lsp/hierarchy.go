@@ -69,7 +69,7 @@ func (h *Handler) handleIncomingCalls(ctx context.Context, params json.RawMessag
 	for uri, fileRefs := range refsByFile {
 		fileURI := h.toFileURI(uri)
 		symbols := h.idx.FileSymbols(fileURI)
-		
+
 		// Filter and sort potential callables for this file once.
 		var callables []*index.Symbol
 		for i := range symbols {
@@ -78,7 +78,7 @@ func (h *Handler) handleIncomingCalls(ctx context.Context, params json.RawMessag
 				callables = append(callables, s)
 			}
 		}
-		
+
 		// Sort callables by start position to allow early exit during search.
 		sort.Slice(callables, func(i, j int) bool {
 			if callables[i].Range.StartLine != callables[j].Range.StartLine {
@@ -93,7 +93,7 @@ func (h *Handler) handleIncomingCalls(ctx context.Context, params json.RawMessag
 			if enclosingSym == nil {
 				continue
 			}
-			
+
 			enclosing := symbolToCallHierarchyItem(enclosingSym, h)
 			if enclosing == nil {
 				continue
@@ -133,8 +133,8 @@ func findEnclosingInSortedList(symbols []*index.Symbol, line, character int) *in
 		if int(s.Range.StartLine) > line || (int(s.Range.StartLine) == line && int(s.Range.StartCharacter) > character) {
 			break
 		}
-		
-		if containsPosition(s.Range, line, character) {
+
+		if index.ContainsPosition(s.Range, line, character) {
 			if best == nil || isNarrower(s.Range, best.Range) {
 				best = s
 			}
@@ -223,7 +223,7 @@ func (h *Handler) callHierarchyItemAt(fileURI string, line, character int) *Call
 // findEnclosingCallable finds the method/constructor that contains the given position.
 func (h *Handler) findEnclosingCallable(fileURI string, line, character int) *CallHierarchyItem {
 	symbols := h.idx.FileSymbols(fileURI)
-	
+
 	var callables []*index.Symbol
 	for i := range symbols {
 		s := &symbols[i]
@@ -231,7 +231,7 @@ func (h *Handler) findEnclosingCallable(fileURI string, line, character int) *Ca
 			callables = append(callables, s)
 		}
 	}
-	
+
 	sort.Slice(callables, func(i, j int) bool {
 		if callables[i].Range.StartLine != callables[j].Range.StartLine {
 			return callables[i].Range.StartLine < callables[j].Range.StartLine
@@ -282,7 +282,7 @@ func (h *Handler) handlePrepareTypeHierarchy(ctx context.Context, params json.Ra
 		return nil, nil
 	}
 	def := h.idx.SymbolDefinition(occ.Symbol)
-	if def == nil || !isTypeKind(def.Kind) {
+	if def == nil || !index.IsTypeKind(def.Kind) {
 		return nil, nil
 	}
 	item := symbolToTypeHierarchyItem(def, h)
@@ -382,30 +382,6 @@ func isCallableKind(kind sdb.SymbolInformation_Kind) bool {
 	return kind == sdb.SymbolInformation_METHOD || kind == sdb.SymbolInformation_CONSTRUCTOR
 }
 
-func isTypeKind(kind sdb.SymbolInformation_Kind) bool {
-	switch kind {
-	case sdb.SymbolInformation_CLASS, sdb.SymbolInformation_INTERFACE,
-		sdb.SymbolInformation_OBJECT, sdb.SymbolInformation_PACKAGE_OBJECT:
-		return true
-	default:
-		return false
-	}
-}
-
-func containsPosition(r index.Range, line, character int) bool {
-	if int(r.StartLine) > line || int(r.EndLine) < line {
-		return false
-	}
-	if int(r.StartLine) == line && int(r.StartCharacter) > character {
-		return false
-	}
-	// LSP ranges are exclusive of the end position.
-	if int(r.EndLine) == line && int(r.EndCharacter) <= character {
-		return false
-	}
-	return true
-}
-
 func isNarrower(a, b index.Range) bool {
 	aLines := a.EndLine - a.StartLine
 	bLines := b.EndLine - b.StartLine
@@ -421,12 +397,12 @@ func rangeContains(outer Range, inner Range) bool {
 		EndLine:        int32(outer.End.Line),
 		EndCharacter:   int32(outer.End.Character),
 	}
-	
+
 	// Start must be within outer.
-	if !containsPosition(o, inner.Start.Line, inner.Start.Character) {
+	if !index.ContainsPosition(o, inner.Start.Line, inner.Start.Character) {
 		return false
 	}
-	
+
 	// End must be within outer or exactly at the outer end (since both are exclusive).
 	if int32(inner.End.Line) > o.EndLine {
 		return false
@@ -434,6 +410,6 @@ func rangeContains(outer Range, inner Range) bool {
 	if int32(inner.End.Line) == o.EndLine && int32(inner.End.Character) > o.EndCharacter {
 		return false
 	}
-	
+
 	return true
 }

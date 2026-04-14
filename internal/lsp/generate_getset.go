@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"unicode"
@@ -65,12 +66,16 @@ type fieldWithType struct {
 
 // collectFieldCandidates returns non-static fields within the current class context.
 func collectFieldCandidates(fileURI string, idx *index.Index, overlay string, cursorLine int) []fieldWithType {
+	return collectFieldCandidatesWithContext(context.Background(), fileURI, idx, overlay, cursorLine)
+}
+
+func collectFieldCandidatesWithContext(ctx context.Context, fileURI string, idx *index.Index, overlay string, cursorLine int) []fieldWithType {
 	content := readContent(fileURI, overlay)
 	if content == nil {
 		return nil
 	}
 
-	tree, err := getTree(content)
+	tree, err := getTreeWithContext(ctx, content)
 	if err != nil {
 		return nil
 	}
@@ -81,15 +86,7 @@ func collectFieldCandidates(fileURI string, idx *index.Index, overlay string, cu
 		return nil
 	}
 
-	var classSym index.Symbol
-	found := false
-	for _, sym := range idx.FileSymbols(fileURI) {
-		if sym.Name == className && sym.Kind == sdb.SymbolInformation_CLASS {
-			classSym = sym
-			found = true
-			break
-		}
-	}
+	classSym, found := findClassSymbol(fileURI, className, idx)
 	if !found {
 		return nil
 	}

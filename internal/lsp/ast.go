@@ -3,10 +3,9 @@ package lsp
 import (
 	"context"
 	"strings"
-	"sync"
 
+	"github.com/fwrq41251/decaf/internal/index"
 	slog "github.com/smacker/go-tree-sitter"
-	"github.com/tree-sitter/tree-sitter-java/bindings/go"
 )
 
 // ImportSpec represents a single import statement.
@@ -16,18 +15,15 @@ type ImportSpec struct {
 	Wildcard bool
 }
 
-var javaParserPool = sync.Pool{
-	New: func() any {
-		p := slog.NewParser()
-		p.SetLanguage(slog.NewLanguage(tree_sitter_java.Language()))
-		return p
-	},
+func getTree(content []byte) (*slog.Tree, error) {
+	return getTreeWithContext(context.Background(), content)
 }
 
-func getTree(content []byte) (*slog.Tree, error) {
-	parser := javaParserPool.Get().(*slog.Parser)
-	defer javaParserPool.Put(parser)
-	return parser.ParseCtx(context.Background(), nil, content)
+func getTreeWithContext(ctx context.Context, content []byte) (*slog.Tree, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return index.ParseJava(ctx, content)
 }
 
 // nodeAtPosition returns the deepest node containing the given position.
