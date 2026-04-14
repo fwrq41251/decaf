@@ -479,6 +479,47 @@ func TestCompleteLexical_TypePositionPrefersTypes(t *testing.T) {
 	}
 }
 
+func TestCompleteLexical_TypePositionKeywordRanksBeforeTypeForSamePrefix(t *testing.T) {
+	h, idx, tmpDir := newTestHandler(t)
+	defer idx.Close()
+
+	loadSDB(t, tmpDir, idx, &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/Types.java",
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "java/lang/StackFrame#", DisplayName: "StackFrame", Kind: sdb.SymbolInformation_CLASS},
+			},
+		}},
+	})
+
+	items := h.completeLexical(&CompletionCtx{
+		Prefix:         "sta",
+		InTypePosition: true,
+	}, "file://"+tmpDir+"/src/Test.java", nil)
+	sortCompletionItems(items)
+
+	staticIdx := -1
+	stackFrameIdx := -1
+	for i, item := range items {
+		switch item.Label {
+		case "static":
+			staticIdx = i
+		case "StackFrame":
+			stackFrameIdx = i
+		}
+	}
+
+	if staticIdx == -1 {
+		t.Fatal("expected 'static' keyword in completion items")
+	}
+	if stackFrameIdx == -1 {
+		t.Fatal("expected 'StackFrame' type in completion items")
+	}
+	if staticIdx > stackFrameIdx {
+		t.Errorf("keyword 'static' (idx %d) should rank before type 'StackFrame' (idx %d)", staticIdx, stackFrameIdx)
+	}
+}
+
 func TestCompleteDot_FallbackUsesClassContextAndObjectMethods(t *testing.T) {
 	h, idx, _ := newTestHandler(t)
 	defer idx.Close()

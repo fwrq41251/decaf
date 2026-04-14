@@ -1173,6 +1173,12 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		if isTypeCompletionKind(kind) {
 			return "0"
 		}
+		// Declaration-head completions often mix modifiers and types
+		// ("public sta", "final Str"). Keep keywords in the same top bucket as
+		// types so prefix quality and scope order can decide between them.
+		if kind == CompletionKindKeyword {
+			return "0"
+		}
 		return "2"
 	}
 
