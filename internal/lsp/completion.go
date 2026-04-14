@@ -78,7 +78,7 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 	// Get members of the resolved type.
 	members := h.idx.MembersOfType(typeExpr.Sym)
 	query := cctx.Prefix
-	lowerPrefix := strings.ToLower(cctx.Prefix)
+	lowerQuery := strings.ToLower(query)
 
 	var items []CompletionItem
 	seen := make(map[string]struct{})
@@ -87,7 +87,7 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 		if m.Kind == sdb.SymbolInformation_CONSTRUCTOR {
 			continue
 		}
-		if !index.FuzzyMatch(m.Name, query) {
+		if !index.FuzzyMatchLower(m.Name, lowerQuery) {
 			continue
 		}
 		// Filter by static/instance context.
@@ -97,11 +97,8 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 		if !staticAccess && m.IsStatic {
 			continue
 		}
-		// Build sortText: case-insensitive prefix match first, then fields before methods.
-		sortPrefix := "1" // fuzzy match (chars not contiguous)
-		if lowerPrefix != "" && strings.HasPrefix(strings.ToLower(m.Name), lowerPrefix) {
-			sortPrefix = "0" // case-insensitive prefix match
-		}
+		// Build sortText using full match quality scoring.
+		matchScore := fmt.Sprintf("%d", index.CompletionMatchScoreLower(m.Name, lowerQuery))
 		kind := sdbKindToCompletionKind(m.Kind)
 		kindOrder := "1" // methods
 		if kind == CompletionKindField || kind == CompletionKindProperty {
@@ -112,28 +109,29 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 			continue
 		}
 		seen[key] = struct{}{}
-		sortText := sortPrefix + kindOrder + completionNameSortKey(m.Name)
+		sortText := matchScore + kindOrder + completionNameSortKey(m.Name)
 		if kind == CompletionKindMethod || kind == CompletionKindConstructor {
 			sortText += signatureSortSuffix(m.Signature)
 		}
 
 		item := methodCompletionItem(m.Name, kind, m.Signature, sortText, m.Doc, cctx.ParenFollows)
 		items = append(items, item)
-		if len(items) >= 100 {
-			break
-		}
+	}
+	sortCompletionItems(items)
+	if len(items) > 100 {
+		items = items[:100]
 	}
 	return items
 }
 
 func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 	query := cctx.Prefix
-	lowerPrefix := strings.ToLower(cctx.Prefix)
+	lowerQuery := strings.ToLower(query)
 	seen := make(map[string]struct{})
 	var items []CompletionItem
 
 	addField := func(name, detail, sortBucket string) {
-		if !index.FuzzyMatch(name, query) {
+		if !index.FuzzyMatchLower(name, lowerQuery) {
 			return
 		}
 		if _, ok := seen["field|"+name]; ok {
@@ -141,10 +139,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 		}
 		seen["field|"+name] = struct{}{}
 
-		sortPrefix := "1"
-		if lowerPrefix != "" && strings.HasPrefix(strings.ToLower(name), lowerPrefix) {
-			sortPrefix = "0"
-		}
+		sortPrefix := fmt.Sprintf("%d", index.CompletionMatchScoreLower(name, lowerQuery))
 		items = append(items, CompletionItem{
 			Label:      name,
 			Kind:       CompletionKindField,
@@ -156,7 +151,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 	}
 
 	addMethodDecl := func(m MethodDecl, sortBucket string) {
-		if !index.FuzzyMatch(m.Name, query) {
+		if !index.FuzzyMatchLower(m.Name, lowerQuery) {
 			return
 		}
 		key := "methoddecl|" + completionItemKeyForMethodDecl(m)
@@ -165,10 +160,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 		}
 		seen[key] = struct{}{}
 
-		sortPrefix := "1"
-		if lowerPrefix != "" && strings.HasPrefix(strings.ToLower(m.Name), lowerPrefix) {
-			sortPrefix = "0"
-		}
+		sortPrefix := fmt.Sprintf("%d", index.CompletionMatchScoreLower(m.Name, lowerQuery))
 		item := CompletionItem{
 			Label:      formatMethodDeclDetail(m),
 			Kind:       CompletionKindMethod,
@@ -186,7 +178,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 	}
 
 	addIndexedMethod := func(sym index.Symbol, sortBucket string) {
-		if !index.FuzzyMatch(sym.Name, query) {
+		if !index.FuzzyMatchLower(sym.Name, lowerQuery) {
 			return
 		}
 		key := "indexed|" + completionItemKeyForSymbol(sym)
@@ -195,10 +187,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 		}
 		seen[key] = struct{}{}
 
-		sortPrefix := "1"
-		if lowerPrefix != "" && strings.HasPrefix(strings.ToLower(sym.Name), lowerPrefix) {
-			sortPrefix = "0"
-		}
+		sortPrefix := fmt.Sprintf("%d", index.CompletionMatchScoreLower(sym.Name, lowerQuery))
 		sortText := sortPrefix + sortBucket + completionNameSortKey(sym.Name)
 		if sym.Signature != nil {
 			sortText += signatureSortSuffix(sym.Signature)
@@ -208,27 +197,21 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 
 	for _, f := range cctx.ClassFields {
 		addField(f.Name, f.Type.String(), "0")
-		if len(items) >= 20 {
-			return items
-		}
 	}
 	for _, m := range cctx.ClassMethods {
 		addMethodDecl(m, "1")
-		if len(items) >= 20 {
-			return items
-		}
 	}
 	for _, m := range h.idx.MembersOfType("java/lang/Object#") {
 		if m.IsStatic {
 			continue
 		}
 		addIndexedMethod(m, "2")
-		if len(items) >= 20 {
-			break
-		}
 	}
 
 	sortCompletionItems(items)
+	if len(items) > 100 {
+		items = items[:100]
+	}
 	return items
 }
 
@@ -1561,8 +1544,15 @@ func typeCompletionPriority(cctx *CompletionCtx, s index.Symbol) string {
 }
 
 func isExplicitlyImportedType(imports []ImportSpec, fqn string) bool {
+	pkg := packageName(fqn)
 	for _, imp := range imports {
-		if imp.Static || imp.Wildcard {
+		if imp.Static {
+			continue
+		}
+		if imp.Wildcard {
+			if strings.TrimSuffix(imp.Path, ".*") == pkg {
+				return true
+			}
 			continue
 		}
 		if imp.Path == fqn {

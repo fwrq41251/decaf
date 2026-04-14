@@ -291,8 +291,14 @@ func (idx *Index) CompletionSymbols(uri string, query string) []Symbol {
 	return result
 }
 
+// FuzzyMatch checks if query is a subsequence of name (case-insensitive).
 func FuzzyMatch(name, query string) bool {
 	return fuzzyMatchLower(strings.ToLower(name), strings.ToLower(query))
+}
+
+// FuzzyMatchLower is like FuzzyMatch but assumes query is already lowercase.
+func FuzzyMatchLower(name, lowerQuery string) bool {
+	return fuzzyMatchLower(strings.ToLower(name), lowerQuery)
 }
 
 const (
@@ -307,23 +313,28 @@ const (
 // CompletionMatchScore ranks how well name matches query (case-insensitive).
 // Lower is better: MatchExact < MatchPrefix < MatchWordStart < MatchSubstring < MatchFuzzy < MatchNone.
 func CompletionMatchScore(name, query string) int {
-	if query == "" {
+	return CompletionMatchScoreLower(name, strings.ToLower(query))
+}
+
+// CompletionMatchScoreLower is like CompletionMatchScore but assumes query is already lowercase.
+func CompletionMatchScoreLower(name, lowerQuery string) int {
+	if lowerQuery == "" {
 		return MatchExact
 	}
 	lowerName := strings.ToLower(name)
-	if lowerName == query {
+	if lowerName == lowerQuery {
 		return MatchExact
 	}
-	if strings.HasPrefix(lowerName, query) {
+	if strings.HasPrefix(lowerName, lowerQuery) {
 		return MatchPrefix
 	}
-	if camelOrWordStartMatch(name, query) {
+	if camelOrWordStartMatch(name, lowerQuery) {
 		return MatchWordStart
 	}
-	if strings.Contains(lowerName, query) {
+	if strings.Contains(lowerName, lowerQuery) {
 		return MatchSubstring
 	}
-	if fuzzyMatchLower(lowerName, query) {
+	if fuzzyMatchLower(lowerName, lowerQuery) {
 		return MatchFuzzy
 	}
 	return MatchNone
@@ -373,7 +384,10 @@ func isWordStart(name string, i int) bool {
 	if prev == '_' || prev == '$' || prev == '.' || prev == '/' {
 		return true
 	}
-	return ('a' <= prev && prev <= 'z') && ('A' <= curr && curr <= 'Z')
+	if ('a' <= prev && prev <= 'z') && ('A' <= curr && curr <= 'Z') {
+		return true
+	}
+	return ('0' <= prev && prev <= '9') && ('A' <= curr && curr <= 'Z')
 }
 
 // SymbolSignature returns the method signature for the symbol at the given position.
