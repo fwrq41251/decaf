@@ -448,10 +448,17 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 		return "", nil
 	}
 
+	// When renaming a constructor, treat it as a class rename so that all class
+	// references, constructor occurrences, and the file are renamed together.
+	classSym := sym
+	if strings.Contains(sym, "#`<init>`(") {
+		classSym = extractOwner(sym)
+	}
+
 	var result []Occurrence
 
-	// Collect definition occurrences.
-	for _, id := range idx.definitions[sym] {
+	// Collect class definition and reference occurrences.
+	for _, id := range idx.definitions[classSym] {
 		d := idx.symbol(id)
 		if !d.Range.IsEmpty() {
 			result = append(result, Occurrence{
@@ -462,13 +469,35 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 			})
 		}
 	}
-
-	// Collect reference occurrences.
-	for _, occID := range idx.references[sym] {
+	for _, occID := range idx.references[classSym] {
 		result = append(result, idx.occurrenceByID(occID))
 	}
 
-	return sym, result
+	// Also include constructor occurrences (definitions and references).
+	// Constructors use <init> symbols but their source name matches the class name.
+	if strings.HasSuffix(classSym, "#") {
+		for _, mid := range idx.ownerMembers[classSym] {
+			m := idx.symbol(mid)
+			if m.Kind == sdb.SymbolInformation_CONSTRUCTOR {
+				for _, id := range idx.definitions[m.Symbol] {
+					d := idx.symbol(id)
+					if !d.Range.IsEmpty() {
+						result = append(result, Occurrence{
+							Symbol: d.Symbol,
+							Role:   sdb.SymbolOccurrence_DEFINITION,
+							URI:    d.URI,
+							Range:  d.Range,
+						})
+					}
+				}
+				for _, occID := range idx.references[m.Symbol] {
+					result = append(result, idx.occurrenceByID(occID))
+				}
+			}
+		}
+	}
+
+	return classSym, result
 }
 
 // OccurrenceAt returns the SemanticDB occurrence at the given position.

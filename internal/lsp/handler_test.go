@@ -352,16 +352,18 @@ func TestRenameTopLevelClass(t *testing.T) {
 	close(h.indexReady)
 	h.idx = idx
 
-	// Foo.java defines Foo and references it; Bar.java references Foo.
+	// Foo.java defines Foo with a constructor; Bar.java references Foo and calls new Foo().
 	docs := &sdb.TextDocuments{
 		Documents: []*sdb.TextDocument{
 			{
 				Uri: "src/Foo.java",
 				Symbols: []*sdb.SymbolInformation{
 					{Symbol: "com/example/Foo#", DisplayName: "Foo", Kind: sdb.SymbolInformation_CLASS},
+					{Symbol: "com/example/Foo#`<init>`().", DisplayName: "Foo", Kind: sdb.SymbolInformation_CONSTRUCTOR},
 				},
 				Occurrences: []*sdb.SymbolOccurrence{
 					{Symbol: "com/example/Foo#", Role: sdb.SymbolOccurrence_DEFINITION, Range: &sdb.Range{StartLine: 2, StartCharacter: 13, EndLine: 2, EndCharacter: 16}},
+					{Symbol: "com/example/Foo#`<init>`().", Role: sdb.SymbolOccurrence_DEFINITION, Range: &sdb.Range{StartLine: 4, StartCharacter: 11, EndLine: 4, EndCharacter: 14}},
 					{Symbol: "com/example/Foo#", Role: sdb.SymbolOccurrence_REFERENCE, Range: &sdb.Range{StartLine: 5, StartCharacter: 8, EndLine: 5, EndCharacter: 11}},
 				},
 			},
@@ -369,6 +371,7 @@ func TestRenameTopLevelClass(t *testing.T) {
 				Uri: "src/Bar.java",
 				Occurrences: []*sdb.SymbolOccurrence{
 					{Symbol: "com/example/Foo#", Role: sdb.SymbolOccurrence_REFERENCE, Range: &sdb.Range{StartLine: 3, StartCharacter: 4, EndLine: 3, EndCharacter: 7}},
+					{Symbol: "com/example/Foo#`<init>`().", Role: sdb.SymbolOccurrence_REFERENCE, Range: &sdb.Range{StartLine: 5, StartCharacter: 20, EndLine: 5, EndCharacter: 23}},
 				},
 			},
 		},
@@ -403,8 +406,8 @@ func TestRenameTopLevelClass(t *testing.T) {
 	for _, edits := range edit.Changes {
 		totalEdits += len(edits)
 	}
-	if totalEdits != 3 {
-		t.Errorf("expected 3 text edits, got %d", totalEdits)
+	if totalEdits != 5 {
+		t.Errorf("expected 5 text edits (3 class + 2 constructor), got %d", totalEdits)
 	}
 
 	// Case 2: client supports rename — should produce DocumentChanges with RenameFile.
@@ -449,6 +452,103 @@ func TestRenameTopLevelClass(t *testing.T) {
 	}
 	if !strings.HasSuffix(renameOps[0].NewURI, "/src/Baz.java") {
 		t.Errorf("expected NewURI to end with /src/Baz.java, got %s", renameOps[0].NewURI)
+	}
+}
+
+func TestRenameFromConstructorRenamesClassAndFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+	h.rootURI = "file://" + tmpDir
+	h.clientCaps = ClientCapabilities{
+		Workspace: &WorkspaceClientCapabilities{
+			WorkspaceEdit: &WorkspaceEditClientCapabilities{
+				ResourceOperations: []string{"create", "rename", "delete"},
+			},
+		},
+	}
+
+	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	close(h.indexReady)
+	h.idx = idx
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{
+			{
+				Uri: "src/Foo.java",
+				Symbols: []*sdb.SymbolInformation{
+					{Symbol: "com/example/Foo#", DisplayName: "Foo", Kind: sdb.SymbolInformation_CLASS},
+					{Symbol: "com/example/Foo#`<init>`().", DisplayName: "Foo", Kind: sdb.SymbolInformation_CONSTRUCTOR},
+				},
+				Occurrences: []*sdb.SymbolOccurrence{
+					{Symbol: "com/example/Foo#", Role: sdb.SymbolOccurrence_DEFINITION, Range: &sdb.Range{StartLine: 2, StartCharacter: 13, EndLine: 2, EndCharacter: 16}},
+					{Symbol: "com/example/Foo#`<init>`().", Role: sdb.SymbolOccurrence_DEFINITION, Range: &sdb.Range{StartLine: 4, StartCharacter: 11, EndLine: 4, EndCharacter: 14}},
+				},
+			},
+			{
+				Uri: "src/Bar.java",
+				Occurrences: []*sdb.SymbolOccurrence{
+					{Symbol: "com/example/Foo#", Role: sdb.SymbolOccurrence_REFERENCE, Range: &sdb.Range{StartLine: 3, StartCharacter: 4, EndLine: 3, EndCharacter: 7}},
+				},
+			},
+		},
+	}
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "Foo.java.semanticdb"), data, 0644)
+	idx.Load()
+
+	// Rename from constructor position (line 4, character 12 — inside the constructor name).
+	renameParams := RenameParams{
+		TextDocument: TextDocumentIdentifier{URI: "file://" + tmpDir + "/src/Foo.java"},
+		Position:     Position{Line: 4, Character: 12},
+		NewName:      "Qux",
+	}
+	rawParams, _ := json.Marshal(renameParams)
+
+	got, err := h.handleRename(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleRename failed: %v", err)
+	}
+	edit := got.(WorkspaceEdit)
+
+	// Should produce DocumentChanges (text edits + file rename).
+	if len(edit.DocumentChanges) == 0 {
+		t.Fatal("expected DocumentChanges to be populated when renaming from constructor")
+	}
+
+	// Count text edits and rename ops.
+	totalEdits := 0
+	var renameOps []RenameFile
+	for _, dc := range edit.DocumentChanges {
+		raw, _ := dc.MarshalJSON()
+		var probe struct {
+			Kind string `json:"kind"`
+		}
+		json.Unmarshal(raw, &probe)
+		if probe.Kind == "rename" {
+			var rf RenameFile
+			json.Unmarshal(raw, &rf)
+			renameOps = append(renameOps, rf)
+		} else {
+			var tde TextDocumentEdit
+			json.Unmarshal(raw, &tde)
+			totalEdits += len(tde.Edits)
+		}
+	}
+	if totalEdits != 3 {
+		t.Errorf("expected 3 text edits (1 class def + 1 constructor def + 1 class ref), got %d", totalEdits)
+	}
+	if len(renameOps) != 1 {
+		t.Fatalf("expected 1 RenameFile operation, got %d", len(renameOps))
+	}
+	if !strings.HasSuffix(renameOps[0].OldURI, "/src/Foo.java") {
+		t.Errorf("expected OldURI to end with /src/Foo.java, got %s", renameOps[0].OldURI)
+	}
+	if !strings.HasSuffix(renameOps[0].NewURI, "/src/Qux.java") {
+		t.Errorf("expected NewURI to end with /src/Qux.java, got %s", renameOps[0].NewURI)
 	}
 }
 

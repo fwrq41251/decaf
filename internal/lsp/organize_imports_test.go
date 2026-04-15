@@ -386,6 +386,68 @@ public class App {}
 	}
 }
 
+func TestOrganizeImports_FallbackTreeSitter(t *testing.T) {
+	// Simulate a file with no SemanticDB data (compile error) but with type references.
+	source := `package com.example;
+
+public class App {
+    List<String> items;
+    Map<String, String> map;
+}
+`
+	// No occurrences — simulates compile failure (no .semanticdb generated).
+	// But provide symbol definitions so the index knows about these types.
+	syms := []*sdb.SymbolInformation{
+		{Symbol: "com/example/App#", DisplayName: "App", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "java/util/List#", DisplayName: "List", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "java/util/Map#", DisplayName: "Map", Kind: sdb.SymbolInformation_CLASS},
+	}
+
+	fileURI, idx := setupTestIndex(t, source, nil, syms)
+	edit := organizeImports(fileURI, idx, "")
+
+	if edit == nil {
+		t.Fatal("expected non-nil edit from tree-sitter fallback")
+	}
+	edits := edit.Changes[fileURI]
+	if len(edits) != 1 {
+		t.Fatalf("expected 1 edit, got %d", len(edits))
+	}
+	text := edits[0].NewText
+	if !containsStr(text, "import java.util.List;") {
+		t.Errorf("should add java.util.List import, got:\n%s", text)
+	}
+	if !containsStr(text, "import java.util.Map;") {
+		t.Errorf("should add java.util.Map import, got:\n%s", text)
+	}
+}
+
+func TestOrganizeImports_FallbackSkipsAmbiguous(t *testing.T) {
+	// When multiple types match the same name, the fallback should skip it.
+	source := `package com.example;
+
+public class App {
+    List<String> items;
+}
+`
+	syms := []*sdb.SymbolInformation{
+		{Symbol: "com/example/App#", DisplayName: "App", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "java/util/List#", DisplayName: "List", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "java/awt/List#", DisplayName: "List", Kind: sdb.SymbolInformation_CLASS},
+	}
+
+	fileURI, idx := setupTestIndex(t, source, nil, syms)
+	edit := organizeImports(fileURI, idx, "")
+
+	// Should not add any import since "List" is ambiguous.
+	if edit != nil {
+		edits := edit.Changes[fileURI]
+		if len(edits) == 1 && edits[0].NewText != "" {
+			t.Errorf("should not add ambiguous import, got:\n%s", edits[0].NewText)
+		}
+	}
+}
+
 func TestComputeImportEdit(t *testing.T) {
 	source := []byte(`package com.example;
 

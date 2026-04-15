@@ -48,6 +48,27 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 		}
 	}
 
+	// Fallback: when no SemanticDB data is available (e.g. file has compile errors),
+	// use tree-sitter to extract type identifiers and resolve them via the index.
+	if len(occs) == 0 {
+		typeNames := collectTypeIdentifiers(root, content)
+		for name := range typeNames {
+			candidates := idx.SearchSymbols(name)
+			// Filter to exact name matches that are type symbols.
+			var matched []index.Symbol
+			for _, sym := range candidates {
+				if sym.Name == name && index.IsTypeKind(sym.Kind) {
+					matched = append(matched, sym)
+				}
+			}
+			// Only use unambiguous matches (exactly one type with this name).
+			if len(matched) == 1 {
+				usedSymbols[matched[0].Symbol] = true
+				usedSimpleNames[name] = true
+			}
+		}
+	}
+
 	// Collect wildcard-imported packages (e.g. "java.util" from "java.util.*").
 	wildcardPkgs := make(map[string]bool)
 	for _, imp := range block.imports {
@@ -452,6 +473,27 @@ func computeImportEdit(content []byte, imports []ImportSpec, pkg string, fqn str
 		Range:   Range{Start: Position{Line: insertLine, Character: 0}, End: Position{Line: insertLine, Character: 0}},
 		NewText: newText,
 	}
+}
+
+// collectTypeIdentifiers walks the AST and returns a set of type identifier texts
+// (excluding import and package declarations). In Java tree-sitter, type references
+// use the "type_identifier" node type, which reliably identifies class/interface names.
+func collectTypeIdentifiers(root *slog.Node, content []byte) map[string]bool {
+	types := make(map[string]bool)
+	var walk func(n *slog.Node)
+	walk = func(n *slog.Node) {
+		switch n.Type() {
+		case "import_declaration", "package_declaration":
+			return
+		case "type_identifier":
+			types[n.Content(content)] = true
+		}
+		for i := 0; i < int(n.ChildCount()); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	return types
 }
 
 // collectIdentifiers walks the AST and returns a set of all identifier texts
