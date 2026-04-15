@@ -732,6 +732,23 @@ func (idx *Index) TypeBySimpleName(name string) []Symbol {
 	return result
 }
 
+// MembersBySimpleName returns non-type symbols matching the given simple name.
+func (idx *Index) MembersBySimpleName(name string) []Symbol {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	lowerName := strings.ToLower(name)
+	ids := idx.memberBySimpleName[lowerName]
+	if len(ids) == 0 {
+		return nil
+	}
+	result := make([]Symbol, len(ids))
+	for i, id := range ids {
+		result[i] = *idx.symbol(id)
+	}
+	return result
+}
+
 // DeclTypeOf returns the declared type of a symbol as a TypeExpr (preserving generics).
 func (idx *Index) DeclTypeOf(sym string) *TypeExpr {
 	idx.mu.RLock()

@@ -5,8 +5,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/fwrq41251/decaf/internal/index"
 	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
@@ -48,6 +50,30 @@ func setupTestIndex(t *testing.T, javaSource string, occs []*sdb.SymbolOccurrenc
 
 	fileURI := uri.FromPath(javaPath)
 	return fileURI, idx
+}
+
+func setOrganizeIndexField(t *testing.T, idx *index.Index, field string, value any) {
+	t.Helper()
+	v := reflect.ValueOf(idx).Elem().FieldByName(field)
+	if !v.IsValid() {
+		t.Fatalf("field %s not found", field)
+	}
+	switch typed := value.(type) {
+	case map[string][]*index.Symbol:
+		converted := make(map[string][]index.SymbolID, len(typed))
+		for key, syms := range typed {
+			ids := make([]index.SymbolID, len(syms))
+			for i, sym := range syms {
+				if sym == nil {
+					continue
+				}
+				ids[i] = idx.AddSymbolForTest(*sym)
+			}
+			converted[key] = ids
+		}
+		value = converted
+	}
+	reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem().Set(reflect.ValueOf(value))
 }
 
 func TestOrganizeImports_RemoveUnused(t *testing.T) {
@@ -343,6 +369,241 @@ public class App {
 	}
 }
 
+func TestOrganizeImports_AddsMissingStaticMethodImport(t *testing.T) {
+	source := `package com.example;
+
+public class App {
+    void test() {
+        assertThat("x");
+    }
+}
+`
+	fileURI, idx := setupTestIndex(t, source, nil, nil)
+	setOrganizeIndexField(t, idx, "memberBySimpleName", map[string][]*index.Symbol{
+		"assertthat": {
+			{
+				Name:     "assertThat",
+				Symbol:   "org/assertj/core/api/Assertions#assertThat().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+				Signature: &index.SignatureInfo{
+					Label:     "assertThat(String actual)",
+					HasParams: true,
+					Params:    []index.ParamInfo{{Name: "actual", Type: "String", TypeSym: "java/lang/String#"}},
+				},
+			},
+		},
+	})
+
+	edit := organizeImports(fileURI, idx, "")
+	if edit == nil {
+		t.Fatal("expected non-nil edit for missing static import")
+	}
+	text := edit.Changes[fileURI][0].NewText
+	if !containsStr(text, "import static org.assertj.core.api.Assertions.assertThat;") {
+		t.Fatalf("should add static method import, got:\n%s", text)
+	}
+}
+
+func TestOrganizeImports_SkipsAmbiguousStaticMethodImport(t *testing.T) {
+	source := `package com.example;
+
+public class App {
+    void test() {
+        assertThat("x");
+    }
+}
+`
+	fileURI, idx := setupTestIndex(t, source, nil, nil)
+	setOrganizeIndexField(t, idx, "memberBySimpleName", map[string][]*index.Symbol{
+		"assertthat": {
+			{
+				Name:     "assertThat",
+				Symbol:   "org/assertj/core/api/Assertions#assertThat().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+				Signature: &index.SignatureInfo{
+					Label:     "assertThat(String actual)",
+					HasParams: true,
+					Params:    []index.ParamInfo{{Name: "actual", Type: "String", TypeSym: "java/lang/String#"}},
+				},
+			},
+			{
+				Name:     "assertThat",
+				Symbol:   "org/example/TestDsl#assertThat().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+				Signature: &index.SignatureInfo{
+					Label:     "assertThat(String actual)",
+					HasParams: true,
+					Params:    []index.ParamInfo{{Name: "actual", Type: "String", TypeSym: "java/lang/String#"}},
+				},
+			},
+		},
+	})
+
+	edit := organizeImports(fileURI, idx, "")
+	if edit != nil {
+		text := edit.Changes[fileURI][0].NewText
+		if containsStr(text, "import static ") {
+			t.Fatalf("should skip ambiguous static import, got:\n%s", text)
+		}
+	}
+}
+
+func TestOrganizeImports_DisambiguatesStaticMethodImportByArgumentType(t *testing.T) {
+	source := `package com.example;
+
+public class App {
+    void test() {
+        assertThat("x");
+    }
+}
+`
+	fileURI, idx := setupTestIndex(t, source, nil, nil)
+	setOrganizeIndexField(t, idx, "memberBySimpleName", map[string][]*index.Symbol{
+		"assertthat": {
+			{
+				Name:     "assertThat",
+				Symbol:   "org/assertj/core/api/Assertions#assertThat().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+				Signature: &index.SignatureInfo{
+					Label:     "assertThat(String actual)",
+					HasParams: true,
+					Params:    []index.ParamInfo{{Name: "actual", Type: "String", TypeSym: "java/lang/String#"}},
+				},
+			},
+			{
+				Name:     "assertThat",
+				Symbol:   "org/example/IntAssertions#assertThat().",
+				Kind:     sdb.SymbolInformation_METHOD,
+				IsStatic: true,
+				Signature: &index.SignatureInfo{
+					Label:     "assertThat(int actual)",
+					HasParams: true,
+					Params:    []index.ParamInfo{{Name: "actual", Type: "int"}},
+				},
+			},
+		},
+	})
+	setOrganizeIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"string": {
+			{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+
+	edit := organizeImports(fileURI, idx, "")
+	if edit == nil {
+		t.Fatal("expected non-nil edit for type-disambiguated static import")
+	}
+	text := edit.Changes[fileURI][0].NewText
+	if !containsStr(text, "import static org.assertj.core.api.Assertions.assertThat;") {
+		t.Fatalf("should choose String overload owner, got:\n%s", text)
+	}
+	if containsStr(text, "import static org.example.IntAssertions.assertThat;") {
+		t.Fatalf("should not choose int overload owner, got:\n%s", text)
+	}
+}
+
+func TestOrganizeImports_AddsMissingStaticFieldImport(t *testing.T) {
+	source := `package com.example;
+
+public class App {
+    String test() {
+        return EMPTY;
+    }
+}
+`
+	fileURI, idx := setupTestIndex(t, source, nil, nil)
+	setOrganizeIndexField(t, idx, "memberBySimpleName", map[string][]*index.Symbol{
+		"empty": {
+			{
+				Name:     "EMPTY",
+				Symbol:   "org/apache/commons/lang3/StringUtils#EMPTY.",
+				Kind:     sdb.SymbolInformation_FIELD,
+				IsStatic: true,
+			},
+		},
+	})
+
+	edit := organizeImports(fileURI, idx, "")
+	if edit == nil {
+		t.Fatal("expected non-nil edit for missing static field import")
+	}
+	text := edit.Changes[fileURI][0].NewText
+	if !containsStr(text, "import static org.apache.commons.lang3.StringUtils.EMPTY;") {
+		t.Fatalf("should add static field import, got:\n%s", text)
+	}
+}
+
+func TestOrganizeImports_SkipsAmbiguousStaticFieldImport(t *testing.T) {
+	source := `package com.example;
+
+public class App {
+    String test() {
+        return EMPTY;
+    }
+}
+`
+	fileURI, idx := setupTestIndex(t, source, nil, nil)
+	setOrganizeIndexField(t, idx, "memberBySimpleName", map[string][]*index.Symbol{
+		"empty": {
+			{
+				Name:     "EMPTY",
+				Symbol:   "org/apache/commons/lang3/StringUtils#EMPTY.",
+				Kind:     sdb.SymbolInformation_FIELD,
+				IsStatic: true,
+			},
+			{
+				Name:     "EMPTY",
+				Symbol:   "org/example/Constants#EMPTY.",
+				Kind:     sdb.SymbolInformation_FIELD,
+				IsStatic: true,
+			},
+		},
+	})
+
+	edit := organizeImports(fileURI, idx, "")
+	if edit != nil {
+		text := edit.Changes[fileURI][0].NewText
+		if containsStr(text, "import static ") {
+			t.Fatalf("should skip ambiguous static field import, got:\n%s", text)
+		}
+	}
+}
+
+func TestOrganizeImports_SkipsStaticFieldImportWhenLocalShadowsName(t *testing.T) {
+	source := `package com.example;
+
+public class App {
+    String test() {
+        String EMPTY = "";
+        return EMPTY;
+    }
+}
+`
+	fileURI, idx := setupTestIndex(t, source, nil, nil)
+	setOrganizeIndexField(t, idx, "memberBySimpleName", map[string][]*index.Symbol{
+		"empty": {
+			{
+				Name:     "EMPTY",
+				Symbol:   "org/apache/commons/lang3/StringUtils#EMPTY.",
+				Kind:     sdb.SymbolInformation_FIELD,
+				IsStatic: true,
+			},
+		},
+	})
+
+	edit := organizeImports(fileURI, idx, "")
+	if edit != nil {
+		text := edit.Changes[fileURI][0].NewText
+		if containsStr(text, "import static org.apache.commons.lang3.StringUtils.EMPTY;") {
+			t.Fatalf("should skip static field import when local variable shadows name, got:\n%s", text)
+		}
+	}
+}
+
 func TestOrganizeImports_DeduplicatesExistingImports(t *testing.T) {
 	source := `package com.example;
 
@@ -427,24 +688,377 @@ func TestOrganizeImports_FallbackSkipsAmbiguous(t *testing.T) {
 	source := `package com.example;
 
 public class App {
-    List<String> items;
+    Request request;
 }
 `
 	syms := []*sdb.SymbolInformation{
 		{Symbol: "com/example/App#", DisplayName: "App", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "org/example/Request#", DisplayName: "Request", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "com/sun/net/httpserver/Request#", DisplayName: "Request", Kind: sdb.SymbolInformation_CLASS},
+	}
+
+	fileURI, idx := setupTestIndex(t, source, nil, syms)
+	edit := organizeImports(fileURI, idx, "")
+
+	// Should not add any import since "Request" is ambiguous and not JDK-preferred.
+	if edit != nil {
+		edits := edit.Changes[fileURI]
+		if len(edits) == 1 && edits[0].NewText != "" {
+			t.Errorf("should not add ambiguous import, got:\n%s", edits[0].NewText)
+		}
+	}
+}
+
+func TestOrganizeImports_FallbackSupplementsPartialSemanticDB(t *testing.T) {
+	source := `package com.example;
+
+public class App {
+    List<String> items;
+    Map<String, String> map;
+}
+`
+	// Simulate partial SemanticDB output: the file itself is indexed, but type
+	// references are missing because compilation did not fully succeed.
+	occs := []*sdb.SymbolOccurrence{
+		{Symbol: "com/example/App#", Role: sdb.SymbolOccurrence_DEFINITION,
+			Range: &sdb.Range{StartLine: 2, StartCharacter: 13, EndLine: 2, EndCharacter: 16}},
+	}
+	syms := []*sdb.SymbolInformation{
+		{Symbol: "com/example/App#", DisplayName: "App", Kind: sdb.SymbolInformation_CLASS},
 		{Symbol: "java/util/List#", DisplayName: "List", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "java/util/Map#", DisplayName: "Map", Kind: sdb.SymbolInformation_CLASS},
+	}
+
+	fileURI, idx := setupTestIndex(t, source, occs, syms)
+	edit := organizeImports(fileURI, idx, "")
+
+	if edit == nil {
+		t.Fatal("expected non-nil edit from supplemental tree-sitter fallback")
+	}
+	edits := edit.Changes[fileURI]
+	if len(edits) != 1 {
+		t.Fatalf("expected 1 edit, got %d", len(edits))
+	}
+	text := edits[0].NewText
+	if !containsStr(text, "import java.util.List;") {
+		t.Errorf("should add java.util.List import, got:\n%s", text)
+	}
+	if !containsStr(text, "import java.util.Map;") {
+		t.Errorf("should add java.util.Map import, got:\n%s", text)
+	}
+}
+
+func TestOrganizeImports_PrefersContextualPackageForAmbiguousType(t *testing.T) {
+	source := `package com.example;
+
+import java.util.Map;
+
+public class App {
+    private Map<String, List<String>> values;
+}
+`
+	syms := []*sdb.SymbolInformation{
+		{Symbol: "com/example/App#", DisplayName: "App", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "java/util/Map#", DisplayName: "Map", Kind: sdb.SymbolInformation_INTERFACE},
+		{Symbol: "java/util/List#", DisplayName: "List", Kind: sdb.SymbolInformation_INTERFACE},
 		{Symbol: "java/awt/List#", DisplayName: "List", Kind: sdb.SymbolInformation_CLASS},
 	}
 
 	fileURI, idx := setupTestIndex(t, source, nil, syms)
 	edit := organizeImports(fileURI, idx, "")
 
-	// Should not add any import since "List" is ambiguous.
-	if edit != nil {
-		edits := edit.Changes[fileURI]
-		if len(edits) == 1 && edits[0].NewText != "" {
-			t.Errorf("should not add ambiguous import, got:\n%s", edits[0].NewText)
-		}
+	if edit == nil {
+		t.Fatal("expected non-nil edit for contextual ambiguous import")
+	}
+	text := edit.Changes[fileURI][0].NewText
+	if !containsStr(text, "import java.util.List;") {
+		t.Fatalf("should add java.util.List based on java.util context, got:\n%s", text)
+	}
+	if containsStr(text, "java.awt.List") {
+		t.Fatalf("should not add java.awt.List, got:\n%s", text)
+	}
+}
+
+func TestOrganizeImports_RemovesConflictingImportWhenExactMatchKnown(t *testing.T) {
+	source := `package com.example;
+
+import com.sun.net.httpserver.Request;
+import org.winry.RequestHandler;
+import org.winry.model.Request;
+
+public class LRangeHandler implements RequestHandler {
+
+    @Override
+    public String handleRequest(Request request) {
+        return null;
+    }
+}
+`
+	occs := []*sdb.SymbolOccurrence{
+		{Symbol: "org/winry/RequestHandler#", Role: sdb.SymbolOccurrence_REFERENCE,
+			Range: &sdb.Range{StartLine: 5, StartCharacter: 38, EndLine: 5, EndCharacter: 52}},
+		{Symbol: "org/winry/model/Request#", Role: sdb.SymbolOccurrence_REFERENCE,
+			Range: &sdb.Range{StartLine: 8, StartCharacter: 32, EndLine: 8, EndCharacter: 39}},
+	}
+	syms := []*sdb.SymbolInformation{
+		{Symbol: "com/example/LRangeHandler#", DisplayName: "LRangeHandler", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "org/winry/RequestHandler#", DisplayName: "RequestHandler", Kind: sdb.SymbolInformation_INTERFACE},
+		{Symbol: "org/winry/model/Request#", DisplayName: "Request", Kind: sdb.SymbolInformation_CLASS},
+		{Symbol: "com/sun/net/httpserver/Request#", DisplayName: "Request", Kind: sdb.SymbolInformation_CLASS},
+	}
+
+	fileURI, idx := setupTestIndex(t, source, occs, syms)
+	edit := organizeImports(fileURI, idx, "")
+
+	if edit == nil {
+		t.Fatal("expected non-nil edit for conflicting imports")
+	}
+	text := edit.Changes[fileURI][0].NewText
+	if containsStr(text, "import com.sun.net.httpserver.Request;") {
+		t.Fatalf("should remove unrelated Request import, got:\n%s", text)
+	}
+	if !containsStr(text, "import org.winry.model.Request;") {
+		t.Fatalf("should keep exact Request import, got:\n%s", text)
+	}
+}
+
+func TestOrganizeImports_PrefersWorkspaceAndJDKTypesForAmbiguousImports(t *testing.T) {
+	source := `package com.example;
+
+import java.util.Map;
+import org.winry.RequestHandler;
+
+public class LRangeHandler implements RequestHandler {
+
+    private Map<String, List<String>> listStore;
+
+    public LRangeHandler(Map<String, List<String>> listStore) {
+        this.listStore = listStore;
+    }
+
+    @Override
+    public String handleRequest(Request request) {
+        return null;
+    }
+}
+`
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src", "main", "java", "com", "example")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("mkdir src dir: %v", err)
+	}
+	javaPath := filepath.Join(srcDir, "LRangeHandler.java")
+	if err := os.WriteFile(javaPath, []byte(source), 0644); err != nil {
+		t.Fatalf("write java source: %v", err)
+	}
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := index.NewIndex(logger, tmpDir)
+
+	setOrganizeIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"requesthandler": {
+			{Name: "RequestHandler", Symbol: "org/winry/RequestHandler#", Kind: sdb.SymbolInformation_INTERFACE, URI: "src/main/java/org/winry/RequestHandler.java"},
+		},
+		"request": {
+			{Name: "Request", Symbol: "org/winry/model/Request#", Kind: sdb.SymbolInformation_CLASS, URI: "src/main/java/org/winry/model/Request.java"},
+			{Name: "Request", Symbol: "com/sun/net/httpserver/Request#", Kind: sdb.SymbolInformation_CLASS},
+		},
+		"string": {
+			{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS},
+			{Name: "String", Symbol: "com/sun/org/apache/xpath/internal/operations/String#", Kind: sdb.SymbolInformation_CLASS},
+		},
+		"map": {
+			{Name: "Map", Symbol: "java/util/Map#", Kind: sdb.SymbolInformation_INTERFACE},
+		},
+		"list": {
+			{Name: "List", Symbol: "java/util/List#", Kind: sdb.SymbolInformation_INTERFACE},
+			{Name: "List", Symbol: "java/awt/List#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+	setOrganizeIndexField(t, idx, "definitions", map[string][]*index.Symbol{
+		"org/winry/RequestHandler#": {
+			{Name: "RequestHandler", Symbol: "org/winry/RequestHandler#", Kind: sdb.SymbolInformation_INTERFACE, URI: "src/main/java/org/winry/RequestHandler.java"},
+		},
+		"org/winry/model/Request#": {
+			{Name: "Request", Symbol: "org/winry/model/Request#", Kind: sdb.SymbolInformation_CLASS, URI: "src/main/java/org/winry/model/Request.java"},
+		},
+		"com/sun/net/httpserver/Request#": {
+			{Name: "Request", Symbol: "com/sun/net/httpserver/Request#", Kind: sdb.SymbolInformation_CLASS},
+		},
+		"java/lang/String#": {
+			{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS},
+		},
+		"com/sun/org/apache/xpath/internal/operations/String#": {
+			{Name: "String", Symbol: "com/sun/org/apache/xpath/internal/operations/String#", Kind: sdb.SymbolInformation_CLASS},
+		},
+		"java/util/Map#": {
+			{Name: "Map", Symbol: "java/util/Map#", Kind: sdb.SymbolInformation_INTERFACE},
+		},
+		"java/util/List#": {
+			{Name: "List", Symbol: "java/util/List#", Kind: sdb.SymbolInformation_INTERFACE},
+		},
+		"java/awt/List#": {
+			{Name: "List", Symbol: "java/awt/List#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+
+	fileURI := uri.FromPath(javaPath)
+	edit := organizeImports(fileURI, idx, "")
+
+	if edit == nil {
+		t.Fatal("expected non-nil edit for ambiguous import resolution")
+	}
+	text := edit.Changes[fileURI][0].NewText
+	if containsStr(text, "com.sun.net.httpserver.Request") {
+		t.Fatalf("should not import external Request when workspace type exists, got:\n%s", text)
+	}
+	if !containsStr(text, "import org.winry.model.Request;") {
+		t.Fatalf("should import workspace Request, got:\n%s", text)
+	}
+	if containsStr(text, "com.sun.org.apache.xpath.internal.operations.String") {
+		t.Fatalf("should not import non-java.lang String, got:\n%s", text)
+	}
+	if containsStr(text, "import java.lang.String;") {
+		t.Fatalf("should not import java.lang.String, got:\n%s", text)
+	}
+	if !containsStr(text, "import java.util.List;") {
+		t.Fatalf("should import java.util.List from JDK preference, got:\n%s", text)
+	}
+}
+
+func TestOrganizeImports_UsesOverrideSignatureTypes(t *testing.T) {
+	source := `package com.example;
+
+import java.util.Map;
+import org.winry.RequestHandler;
+
+public class LRangeHandler implements RequestHandler {
+
+    private Map<String, List<String>> listStore;
+
+    @Override
+    public String handleRequest(Request request) {
+        return null;
+    }
+}
+`
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src", "main", "java", "com", "example")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("mkdir src dir: %v", err)
+	}
+	javaPath := filepath.Join(srcDir, "LRangeHandler.java")
+	if err := os.WriteFile(javaPath, []byte(source), 0644); err != nil {
+		t.Fatalf("write java source: %v", err)
+	}
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := index.NewIndex(logger, tmpDir)
+
+	relURI := "src/main/java/com/example/LRangeHandler.java"
+	setOrganizeIndexField(t, idx, "fileSymbols", map[string][]*index.Symbol{
+		relURI: {
+			{Name: "LRangeHandler", Symbol: "com/example/LRangeHandler#", Kind: sdb.SymbolInformation_CLASS, URI: relURI},
+		},
+	})
+	setOrganizeIndexField(t, idx, "definitions", map[string][]*index.Symbol{
+		"com/example/LRangeHandler#": {
+			{Name: "LRangeHandler", Symbol: "com/example/LRangeHandler#", Kind: sdb.SymbolInformation_CLASS, URI: relURI},
+		},
+		"org/winry/RequestHandler#": {
+			{Name: "RequestHandler", Symbol: "org/winry/RequestHandler#", Kind: sdb.SymbolInformation_INTERFACE},
+		},
+		"org/winry/RequestHandler#handleRequest().": {
+			{Name: "handleRequest", Symbol: "org/winry/RequestHandler#handleRequest().", Kind: sdb.SymbolInformation_METHOD, Signature: &index.SignatureInfo{
+				Label:         "String handleRequest(Request request)",
+				ReturnTypeSym: "java/lang/String#",
+				HasParams:     true,
+				Params:        []index.ParamInfo{{Name: "request", Type: "Request", TypeSym: "org/winry/model/Request#"}},
+			}},
+		},
+		"org/winry/model/Request#": {
+			{Name: "Request", Symbol: "org/winry/model/Request#", Kind: sdb.SymbolInformation_CLASS},
+		},
+		"com/sun/net/httpserver/Request#": {
+			{Name: "Request", Symbol: "com/sun/net/httpserver/Request#", Kind: sdb.SymbolInformation_CLASS},
+		},
+		"java/lang/String#": {
+			{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS},
+		},
+		"com/sun/org/apache/xpath/internal/operations/String#": {
+			{Name: "String", Symbol: "com/sun/org/apache/xpath/internal/operations/String#", Kind: sdb.SymbolInformation_CLASS},
+		},
+		"java/util/Map#": {
+			{Name: "Map", Symbol: "java/util/Map#", Kind: sdb.SymbolInformation_INTERFACE},
+		},
+		"java/util/List#": {
+			{Name: "List", Symbol: "java/util/List#", Kind: sdb.SymbolInformation_INTERFACE},
+		},
+		"java/awt/List#": {
+			{Name: "List", Symbol: "java/awt/List#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+	setOrganizeIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"requesthandler": {
+			{Name: "RequestHandler", Symbol: "org/winry/RequestHandler#", Kind: sdb.SymbolInformation_INTERFACE},
+		},
+		"request": {
+			{Name: "Request", Symbol: "org/winry/model/Request#", Kind: sdb.SymbolInformation_CLASS},
+			{Name: "Request", Symbol: "com/sun/net/httpserver/Request#", Kind: sdb.SymbolInformation_CLASS},
+		},
+		"string": {
+			{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS},
+			{Name: "String", Symbol: "com/sun/org/apache/xpath/internal/operations/String#", Kind: sdb.SymbolInformation_CLASS},
+		},
+		"map": {
+			{Name: "Map", Symbol: "java/util/Map#", Kind: sdb.SymbolInformation_INTERFACE},
+		},
+		"list": {
+			{Name: "List", Symbol: "java/util/List#", Kind: sdb.SymbolInformation_INTERFACE},
+			{Name: "List", Symbol: "java/awt/List#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+	setOrganizeIndexField(t, idx, "ownerMembers", map[string][]*index.Symbol{
+		"org/winry/RequestHandler#": {
+			{Name: "handleRequest", Symbol: "org/winry/RequestHandler#handleRequest().", Kind: sdb.SymbolInformation_METHOD, Signature: &index.SignatureInfo{
+				Label:         "String handleRequest(Request request)",
+				ReturnTypeSym: "java/lang/String#",
+				HasParams:     true,
+				Params:        []index.ParamInfo{{Name: "request", Type: "Request", TypeSym: "org/winry/model/Request#"}},
+			}},
+		},
+	})
+	setOrganizeIndexField(t, idx, "parentTypes", map[string][]*index.TypeExpr{
+		"com/example/LRangeHandler#": {{Sym: "org/winry/RequestHandler#"}},
+	})
+	setOrganizeIndexField(t, idx, "childToParents", map[string][]string{
+		"com/example/LRangeHandler#": {"org/winry/RequestHandler#"},
+	})
+	setOrganizeIndexField(t, idx, "symbolDeclType", map[string]*index.TypeExpr{
+		"org/winry/RequestHandler#handleRequest().": {Sym: "java/lang/String#"},
+	})
+	setOrganizeIndexField(t, idx, "symbolDeclParamTypes", map[string][]*index.TypeExpr{
+		"org/winry/RequestHandler#handleRequest().": {{Sym: "org/winry/model/Request#"}},
+	})
+
+	fileURI := uri.FromPath(javaPath)
+	edit := organizeImports(fileURI, idx, "")
+
+	if edit == nil {
+		t.Fatal("expected non-nil edit for override signature import resolution")
+	}
+	text := edit.Changes[fileURI][0].NewText
+	if !containsStr(text, "import org.winry.model.Request;") {
+		t.Fatalf("should import Request from override signature, got:\n%s", text)
+	}
+	if containsStr(text, "com.sun.net.httpserver.Request") {
+		t.Fatalf("should not import conflicting Request when override signature is known, got:\n%s", text)
+	}
+	if containsStr(text, "com.sun.org.apache.xpath.internal.operations.String") || containsStr(text, "import java.lang.String;") {
+		t.Fatalf("should not import String when override return type resolves to java.lang.String, got:\n%s", text)
+	}
+	if !containsStr(text, "import java.util.List;") {
+		t.Fatalf("should still import java.util.List, got:\n%s", text)
 	}
 }
 
@@ -499,10 +1113,10 @@ public class App {}
 
 func TestParseImportBlock(t *testing.T) {
 	tests := []struct {
-		name       string
-		lines      []string
-		wantStart  int
-		wantEnd    int
+		name        string
+		lines       []string
+		wantStart   int
+		wantEnd     int
 		wantImports int
 	}{
 		{

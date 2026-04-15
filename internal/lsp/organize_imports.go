@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/fwrq41251/decaf/internal/index"
+	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
 	slog "github.com/smacker/go-tree-sitter"
 )
 
@@ -32,6 +33,7 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 	root := tree.RootNode()
 
 	block := parseImportBlock(root, content)
+	filePackage := detectPackage(root, content)
 
 	// Gather all SemanticDB symbols referenced in this file.
 	occs := idx.AllFileOccurrences(fileURI)
@@ -39,6 +41,7 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 	for _, occ := range occs {
 		usedSymbols[occ.Symbol] = true
 	}
+	collectOverrideMethodTypeSymbols(root, content, fileURI, idx, usedSymbols)
 
 	// Determine which simple names are actually used in the file.
 	usedSimpleNames := make(map[string]bool)
@@ -47,25 +50,31 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 			usedSimpleNames[name] = true
 		}
 	}
+	preferredPkgs := collectPreferredImportPackages(block, usedSymbols)
 
-	// Fallback: when no SemanticDB data is available (e.g. file has compile errors),
-	// use tree-sitter to extract type identifiers and resolve them via the index.
-	if len(occs) == 0 {
-		typeNames := collectTypeIdentifiers(root, content)
+	// Supplement SemanticDB data with tree-sitter type identifiers. This keeps
+	// organize-imports working when the file has compile errors or when SemanticDB
+	// was produced only partially and misses some unresolved type references.
+	typeNames := collectTypeIdentifiers(root, content)
+	for {
+		progress := false
 		for name := range typeNames {
-			candidates := idx.SearchSymbols(name)
-			// Filter to exact name matches that are type symbols.
-			var matched []index.Symbol
-			for _, sym := range candidates {
-				if sym.Name == name && index.IsTypeKind(sym.Kind) {
-					matched = append(matched, sym)
-				}
+			if usedSimpleNames[name] {
+				continue
 			}
-			// Only use unambiguous matches (exactly one type with this name).
-			if len(matched) == 1 {
-				usedSymbols[matched[0].Symbol] = true
-				usedSimpleNames[name] = true
+			sym := resolveTypeNameForImport(name, idx, filePackage, preferredPkgs)
+			if sym == "" {
+				continue
 			}
+			usedSymbols[sym] = true
+			usedSimpleNames[name] = true
+			if pkg := packageFromFQN(fqnFromSymbol(sym)); pkg != "" {
+				preferredPkgs[pkg] = true
+			}
+			progress = true
+		}
+		if !progress {
+			break
 		}
 	}
 
@@ -81,6 +90,18 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 	// Drop specific imports whose package is already covered by a wildcard.
 	var kept []string
 	seenImports := make(map[string]bool, len(block.imports))
+	resolvedBySimpleName := make(map[string]map[string]bool)
+	for sym := range usedSymbols {
+		fqn := fqnFromSymbol(sym)
+		if fqn == "" {
+			continue
+		}
+		simple := simpleNameFromImport(fqn)
+		if resolvedBySimpleName[simple] == nil {
+			resolvedBySimpleName[simple] = make(map[string]bool)
+		}
+		resolvedBySimpleName[simple][fqn] = true
+	}
 	for _, imp := range block.imports {
 		if seenImports[imp] {
 			continue
@@ -93,6 +114,13 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 		}
 		if wildcardPkgs[packageFromFQN(imp)] {
 			// Already covered by a wildcard import — skip.
+			continue
+		}
+		if resolved := resolvedBySimpleName[simple]; len(resolved) > 0 {
+			if resolved[imp] {
+				kept = append(kept, imp)
+				seenImports[imp] = true
+			}
 			continue
 		}
 		if usedSimpleNames[simple] {
@@ -108,7 +136,6 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 		importedSet[imp] = true
 	}
 
-	filePackage := detectPackage(root, content)
 	for sym := range usedSymbols {
 		fqn := fqnFromSymbol(sym)
 		if fqn == "" {
@@ -149,6 +176,20 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 			keptStatic = append(keptStatic, imp)
 			seenStaticImports[imp] = true
 		}
+	}
+	for _, imp := range collectMissingStaticMethodImports(root, content, fileURI, idx, block, filePackage) {
+		if seenStaticImports[imp] {
+			continue
+		}
+		keptStatic = append(keptStatic, imp)
+		seenStaticImports[imp] = true
+	}
+	for _, imp := range collectMissingStaticFieldImports(root, content, fileURI, idx, block, filePackage) {
+		if seenStaticImports[imp] {
+			continue
+		}
+		keptStatic = append(keptStatic, imp)
+		seenStaticImports[imp] = true
 	}
 
 	// Build the replacement text.
@@ -198,6 +239,345 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 		Start: Position{Line: block.startLine, Character: 0},
 		End:   Position{Line: block.endLine, Character: 0},
 	}, newText)
+}
+
+func collectOverrideMethodTypeSymbols(root *slog.Node, content []byte, fileURI string, idx *index.Index, usedSymbols map[string]bool) {
+	for _, classInfo := range collectClassMethodDecls(root, content) {
+		classSym, found := findClassSymbol(fileURI, classInfo.name, idx)
+		if !found {
+			continue
+		}
+		collectOverrideMethodTypeSymbolsForClass(classSym.Symbol, classInfo.methods, idx, usedSymbols)
+	}
+}
+
+type classMethodDecls struct {
+	name    string
+	methods []methodDeclInfo
+}
+
+type methodDeclInfo struct {
+	name       string
+	paramCount int
+}
+
+func collectClassMethodDecls(root *slog.Node, content []byte) []classMethodDecls {
+	var result []classMethodDecls
+	var walk func(*slog.Node)
+	walk = func(n *slog.Node) {
+		if n == nil {
+			return
+		}
+		if n.Type() == "class_declaration" {
+			if info := collectClassMethodDeclsFromNode(n, content); info.name != "" {
+				result = append(result, info)
+			}
+		}
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			walk(n.NamedChild(i))
+		}
+	}
+	walk(root)
+	return result
+}
+
+func collectClassMethodDeclsFromNode(classNode *slog.Node, content []byte) classMethodDecls {
+	var info classMethodDecls
+	for i := 0; i < int(classNode.NamedChildCount()); i++ {
+		child := classNode.NamedChild(i)
+		switch child.Type() {
+		case "identifier":
+			if info.name == "" {
+				info.name = child.Content(content)
+			}
+		case "class_body":
+			info.methods = collectMethodDeclsFromBody(child, content)
+		}
+	}
+	return info
+}
+
+func collectMethodDeclsFromBody(body *slog.Node, content []byte) []methodDeclInfo {
+	var methods []methodDeclInfo
+	for i := 0; i < int(body.NamedChildCount()); i++ {
+		child := body.NamedChild(i)
+		if child.Type() != "method_declaration" {
+			continue
+		}
+		if method := collectMethodDeclInfo(child, content); method.name != "" {
+			methods = append(methods, method)
+		}
+	}
+	return methods
+}
+
+func collectMethodDeclInfo(methodNode *slog.Node, content []byte) methodDeclInfo {
+	var info methodDeclInfo
+	for i := 0; i < int(methodNode.NamedChildCount()); i++ {
+		child := methodNode.NamedChild(i)
+		switch child.Type() {
+		case "identifier":
+			if info.name == "" {
+				info.name = child.Content(content)
+			}
+		case "formal_parameters":
+			info.paramCount = countMethodParameters(child)
+		}
+	}
+	return info
+}
+
+func countMethodParameters(paramsNode *slog.Node) int {
+	count := 0
+	for i := 0; i < int(paramsNode.NamedChildCount()); i++ {
+		child := paramsNode.NamedChild(i)
+		if child.Type() == "formal_parameter" || child.Type() == "spread_parameter" {
+			count++
+		}
+	}
+	return count
+}
+
+func collectOverrideMethodTypeSymbolsForClass(classSym string, methods []methodDeclInfo, idx *index.Index, usedSymbols map[string]bool) {
+	if classSym == "" || len(methods) == 0 {
+		return
+	}
+	visitedParents := make(map[string]bool)
+	for _, parentType := range parentTypesForStub(classSym, idx) {
+		collectOverrideMethodTypeSymbolsFromParent(parentType, methods, idx, usedSymbols, visitedParents)
+	}
+}
+
+func collectOverrideMethodTypeSymbolsFromParent(parentType *index.TypeExpr, methods []methodDeclInfo, idx *index.Index, usedSymbols map[string]bool, visited map[string]bool) {
+	if parentType == nil || parentType.Sym == "" || visited[parentType.Sym] {
+		return
+	}
+	visited[parentType.Sym] = true
+
+	for _, method := range idx.DirectMembersOfType(parentType.Sym) {
+		if method.Kind != sdb.SymbolInformation_METHOD || method.IsStatic {
+			continue
+		}
+		if !matchesOverrideCandidate(method, methods, idx) {
+			continue
+		}
+		if ret := idx.DeclTypeOf(method.Symbol); ret != nil {
+			addTypeExprSymbols(usedSymbols, substituteTypeParams(ret, parentType, idx))
+		} else if method.Signature != nil && method.Signature.ReturnTypeSym != "" {
+			usedSymbols[method.Signature.ReturnTypeSym] = true
+		}
+		if pts := idx.DeclParamTypesOf(method.Symbol); len(pts) > 0 {
+			for _, pt := range pts {
+				addTypeExprSymbols(usedSymbols, substituteTypeParams(pt, parentType, idx))
+			}
+		} else if method.Signature != nil {
+			for _, p := range method.Signature.Params {
+				if p.TypeSym != "" {
+					usedSymbols[p.TypeSym] = true
+				}
+			}
+		}
+	}
+
+	for _, next := range parentTypesForStub(parentType.Sym, idx) {
+		collectOverrideMethodTypeSymbolsFromParent(next, methods, idx, usedSymbols, visited)
+	}
+}
+
+func matchesOverrideCandidate(method index.Symbol, methods []methodDeclInfo, idx *index.Index) bool {
+	methodArity := -1
+	if pts := idx.DeclParamTypesOf(method.Symbol); len(pts) > 0 {
+		methodArity = len(pts)
+	} else if method.Signature != nil {
+		methodArity = len(method.Signature.Params)
+		if methodArity == 0 && method.Signature.HasParams {
+			methodArity = len(method.Signature.ParseParams())
+		}
+	}
+
+	for _, decl := range methods {
+		if decl.name != method.Name {
+			continue
+		}
+		if methodArity >= 0 && decl.paramCount != methodArity {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func addTypeExprSymbols(usedSymbols map[string]bool, te *index.TypeExpr) {
+	if te == nil {
+		return
+	}
+	if te.Sym != "" {
+		usedSymbols[te.Sym] = true
+	}
+	for _, arg := range te.Args {
+		addTypeExprSymbols(usedSymbols, arg)
+	}
+}
+
+func collectPreferredImportPackages(block importBlock, usedSymbols map[string]bool) map[string]bool {
+	preferred := make(map[string]bool)
+	for _, imp := range block.imports {
+		if imp == "" {
+			continue
+		}
+		pkg := packageFromFQN(strings.TrimSuffix(imp, ".*"))
+		if strings.HasSuffix(imp, ".*") {
+			pkg = strings.TrimSuffix(imp, ".*")
+		}
+		if pkg != "" {
+			preferred[pkg] = true
+		}
+	}
+	for sym := range usedSymbols {
+		if pkg := packageFromFQN(fqnFromSymbol(sym)); pkg != "" {
+			preferred[pkg] = true
+		}
+	}
+	return preferred
+}
+
+var preferredJDKTypeSymbols = map[string]string{
+	"List":          "java/util/List#",
+	"Map":           "java/util/Map#",
+	"Set":           "java/util/Set#",
+	"Collection":    "java/util/Collection#",
+	"Collections":   "java/util/Collections#",
+	"Optional":      "java/util/Optional#",
+	"ArrayList":     "java/util/ArrayList#",
+	"HashMap":       "java/util/HashMap#",
+	"HashSet":       "java/util/HashSet#",
+	"LocalDate":     "java/time/LocalDate#",
+	"LocalDateTime": "java/time/LocalDateTime#",
+	"Instant":       "java/time/Instant#",
+	"Duration":      "java/time/Duration#",
+	"Path":          "java/nio/file/Path#",
+	"Paths":         "java/nio/file/Paths#",
+}
+
+func resolveTypeNameForImport(name string, idx *index.Index, filePackage string, preferredPkgs map[string]bool) string {
+	candidates := idx.TypeBySimpleName(name)
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	filtered := make([]index.Symbol, 0, len(candidates))
+	seen := make(map[string]bool, len(candidates))
+	for _, sym := range candidates {
+		if sym.Name != name || !index.IsTypeKind(sym.Kind) || seen[sym.Symbol] {
+			continue
+		}
+		seen[sym.Symbol] = true
+		filtered = append(filtered, sym)
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	if len(filtered) == 1 {
+		return filtered[0].Symbol
+	}
+
+	if sym := uniqueCandidateMatching(filtered, func(sym index.Symbol) bool {
+		return packageFromFQN(fqnFromSymbol(sym.Symbol)) == filePackage
+	}); sym != "" {
+		return sym
+	}
+
+	if sym := uniqueCandidateMatching(filtered, isJavaLangType); sym != "" {
+		return sym
+	}
+
+	if preferred, ok := preferredJDKTypeSymbols[name]; ok {
+		for _, sym := range filtered {
+			if sym.Symbol == preferred {
+				return sym.Symbol
+			}
+		}
+	}
+
+	if sym := uniqueCandidateMatching(filtered, isWorkspaceType); sym != "" {
+		return sym
+	}
+
+	bestScore := 0
+	bestSym := ""
+	tied := false
+	for _, sym := range filtered {
+		pkg := packageFromFQN(fqnFromSymbol(sym.Symbol))
+		score := bestPackageAffinity(pkg, preferredPkgs)
+		if score > bestScore {
+			bestScore = score
+			bestSym = sym.Symbol
+			tied = false
+			continue
+		}
+		if score == bestScore && score > 0 && bestSym != "" && bestSym != sym.Symbol {
+			tied = true
+		}
+	}
+	if bestScore > 0 && !tied {
+		return bestSym
+	}
+	return ""
+}
+
+func uniqueCandidateMatching(candidates []index.Symbol, match func(index.Symbol) bool) string {
+	found := ""
+	for _, sym := range candidates {
+		if !match(sym) {
+			continue
+		}
+		if found != "" && found != sym.Symbol {
+			return ""
+		}
+		found = sym.Symbol
+	}
+	return found
+}
+
+func isJavaLangType(sym index.Symbol) bool {
+	return strings.HasPrefix(fqnFromSymbol(sym.Symbol), "java.lang.")
+}
+
+func isWorkspaceType(sym index.Symbol) bool {
+	return sym.URI != ""
+}
+
+func bestPackageAffinity(pkg string, preferredPkgs map[string]bool) int {
+	best := 0
+	for preferred := range preferredPkgs {
+		if preferred == "" {
+			continue
+		}
+		if score := packageAffinityScore(pkg, preferred); score > best {
+			best = score
+		}
+	}
+	return best
+}
+
+func packageAffinityScore(a, b string) int {
+	if a == "" || b == "" {
+		return 0
+	}
+	aParts := strings.Split(a, ".")
+	bParts := strings.Split(b, ".")
+	limit := len(aParts)
+	if len(bParts) < limit {
+		limit = len(bParts)
+	}
+	score := 0
+	for i := 0; i < limit; i++ {
+		if aParts[i] != bParts[i] {
+			break
+		}
+		score++
+	}
+	return score
 }
 
 // parseImportBlock finds the contiguous import region in a Java source file using AST.
@@ -515,6 +895,359 @@ func collectIdentifiers(root *slog.Node, content []byte) map[string]bool {
 	}
 	walk(root)
 	return idents
+}
+
+type unqualifiedMethodCall struct {
+	name       string
+	line       int
+	character  int
+	paramCount int
+	argTypes   []*index.TypeExpr
+}
+
+type unresolvedIdentifierUse struct {
+	name      string
+	line      int
+	character int
+}
+
+func collectMissingStaticMethodImports(root *slog.Node, content []byte, fileURI string, idx *index.Index, block importBlock, filePackage string) []string {
+	existingStatic := make(map[string]bool, len(block.staticImports))
+	existingStaticNames := make(map[string]bool, len(block.staticImports))
+	for _, imp := range block.staticImports {
+		existingStatic[imp] = true
+		existingStaticNames[simpleNameFromImport(imp)] = true
+	}
+
+	var missing []string
+	seen := make(map[string]bool)
+	for _, call := range collectUnqualifiedMethodCalls(root, content) {
+		if call.name == "" || existingStaticNames[call.name] {
+			continue
+		}
+		if occ := idx.OccurrenceAt(fileURI, call.line, call.character); occ != nil && occ.Symbol != "" {
+			continue
+		}
+		imp := resolveStaticMethodImport(call.name, call.paramCount, call.argTypes, idx, filePackage)
+		if imp == "" || existingStatic[imp] || seen[imp] {
+			continue
+		}
+		seen[imp] = true
+		missing = append(missing, imp)
+	}
+	return missing
+}
+
+func collectUnqualifiedMethodCalls(root *slog.Node, content []byte) []unqualifiedMethodCall {
+	var calls []unqualifiedMethodCall
+	var walk func(*slog.Node)
+	walk = func(n *slog.Node) {
+		if n == nil {
+			return
+		}
+		if n.Type() == "method_invocation" {
+			if obj := n.ChildByFieldName("object"); obj == nil {
+				if name := n.ChildByFieldName("name"); name != nil {
+					call := unqualifiedMethodCall{
+						name:       name.Content(content),
+						line:       int(name.StartPoint().Row),
+						character:  int(name.StartPoint().Column),
+						paramCount: countInvocationArguments(n.ChildByFieldName("arguments")),
+						argTypes:   collectInvocationArgumentTypes(n.ChildByFieldName("arguments"), content),
+					}
+					calls = append(calls, call)
+				}
+			}
+		}
+		for i := 0; i < int(n.ChildCount()); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	return calls
+}
+
+func collectMissingStaticFieldImports(root *slog.Node, content []byte, fileURI string, idx *index.Index, block importBlock, filePackage string) []string {
+	existingStatic := make(map[string]bool, len(block.staticImports))
+	existingStaticNames := make(map[string]bool, len(block.staticImports))
+	for _, imp := range block.staticImports {
+		existingStatic[imp] = true
+		existingStaticNames[simpleNameFromImport(imp)] = true
+	}
+
+	var missing []string
+	seen := make(map[string]bool)
+	for _, ident := range collectUnresolvedIdentifierUses(root, content) {
+		if ident.name == "" || existingStaticNames[ident.name] {
+			continue
+		}
+		if occ := idx.OccurrenceAt(fileURI, ident.line, ident.character); occ != nil && occ.Symbol != "" {
+			continue
+		}
+		imp := resolveStaticFieldImport(ident.name, idx, filePackage)
+		if imp == "" || existingStatic[imp] || seen[imp] {
+			continue
+		}
+		seen[imp] = true
+		missing = append(missing, imp)
+	}
+	return missing
+}
+
+func collectUnresolvedIdentifierUses(root *slog.Node, content []byte) []unresolvedIdentifierUse {
+	declared := collectDeclaredIdentifiers(root, content)
+	var uses []unresolvedIdentifierUse
+	var walk func(*slog.Node)
+	walk = func(n *slog.Node) {
+		if n == nil {
+			return
+		}
+		if n.Type() == "identifier" && isStaticFieldIdentifierUse(n) {
+			name := n.Content(content)
+			if !declared[name] {
+				uses = append(uses, unresolvedIdentifierUse{
+					name:      name,
+					line:      int(n.StartPoint().Row),
+					character: int(n.StartPoint().Column),
+				})
+			}
+		}
+		for i := 0; i < int(n.ChildCount()); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	return uses
+}
+
+func collectDeclaredIdentifiers(root *slog.Node, content []byte) map[string]bool {
+	declared := make(map[string]bool)
+	var walk func(*slog.Node)
+	walk = func(n *slog.Node) {
+		if n == nil {
+			return
+		}
+		switch n.Type() {
+		case "class_declaration", "interface_declaration", "enum_declaration", "annotation_type_declaration",
+			"method_declaration", "constructor_declaration", "variable_declarator", "formal_parameter",
+			"spread_parameter", "catch_formal_parameter", "resource", "enhanced_for_statement",
+			"lambda_expression", "type_parameter":
+			for i := 0; i < int(n.NamedChildCount()); i++ {
+				child := n.NamedChild(i)
+				if child.Type() == "identifier" {
+					declared[child.Content(content)] = true
+				}
+			}
+		}
+		for i := 0; i < int(n.ChildCount()); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(root)
+	return declared
+}
+
+func isStaticFieldIdentifierUse(n *slog.Node) bool {
+	parent := n.Parent()
+	if parent == nil {
+		return false
+	}
+	switch parent.Type() {
+	case "package_declaration", "import_declaration", "method_invocation", "field_access",
+		"class_declaration", "interface_declaration", "enum_declaration", "annotation_type_declaration",
+		"method_declaration", "constructor_declaration", "variable_declarator", "formal_parameter",
+		"spread_parameter", "catch_formal_parameter", "resource", "type_parameter", "enum_constant":
+		return false
+	}
+	return true
+}
+
+func countInvocationArguments(argsNode *slog.Node) int {
+	if argsNode == nil {
+		return 0
+	}
+	return int(argsNode.NamedChildCount())
+}
+
+func collectInvocationArgumentTypes(argsNode *slog.Node, content []byte) []*index.TypeExpr {
+	if argsNode == nil {
+		return nil
+	}
+	argTypes := make([]*index.TypeExpr, 0, int(argsNode.NamedChildCount()))
+	for i := 0; i < int(argsNode.NamedChildCount()); i++ {
+		arg := argsNode.NamedChild(i)
+		te, _ := inferTypeFromExpr(arg, content, nil)
+		argTypes = append(argTypes, te)
+	}
+	return argTypes
+}
+
+func resolveStaticMethodImport(name string, paramCount int, argTypes []*index.TypeExpr, idx *index.Index, filePackage string) string {
+	candidates := idx.MembersBySimpleName(name)
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	resolver := &typeResolver{idx: idx, pkg: filePackage}
+	bestScore := -1 << 30
+	bestImport := ""
+	tied := false
+	for _, sym := range candidates {
+		if sym.Kind != sdb.SymbolInformation_METHOD || !sym.IsStatic {
+			continue
+		}
+		if !staticMethodMatchesArity(sym, paramCount, idx) {
+			continue
+		}
+		owner := ownerFQNFromMemberSymbol(sym.Symbol)
+		if owner == "" {
+			continue
+		}
+		if pkg := packageFromFQN(owner); pkg == "" || pkg == "java.lang" || pkg == filePackage {
+			continue
+		}
+		score := staticMethodImportScore(sym, argTypes, idx, resolver)
+		imp := owner + "." + name
+		if score > bestScore {
+			bestScore = score
+			bestImport = imp
+			tied = false
+			continue
+		}
+		if score == bestScore && bestImport != "" && bestImport != imp {
+			tied = true
+		}
+	}
+
+	if bestImport == "" || tied {
+		return ""
+	}
+	return bestImport
+}
+
+func resolveStaticFieldImport(name string, idx *index.Index, filePackage string) string {
+	candidates := idx.MembersBySimpleName(name)
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	uniqueImports := make(map[string]bool)
+	for _, sym := range candidates {
+		if sym.Kind != sdb.SymbolInformation_FIELD || !sym.IsStatic {
+			continue
+		}
+		owner := ownerFQNFromMemberSymbol(sym.Symbol)
+		if owner == "" {
+			continue
+		}
+		if pkg := packageFromFQN(owner); pkg == "" || pkg == "java.lang" || pkg == filePackage {
+			continue
+		}
+		uniqueImports[owner+"."+name] = true
+	}
+
+	if len(uniqueImports) != 1 {
+		return ""
+	}
+	for imp := range uniqueImports {
+		return imp
+	}
+	return ""
+}
+
+func staticMethodMatchesArity(sym index.Symbol, desiredArity int, idx *index.Index) bool {
+	if pts := idx.DeclParamTypesOf(sym.Symbol); len(pts) > 0 {
+		return len(pts) == desiredArity
+	}
+	if sig := sym.Signature; sig != nil {
+		if len(sig.Params) > 0 {
+			return len(sig.Params) == desiredArity
+		}
+		if sig.HasParams {
+			return len(sig.ParseParams()) == desiredArity
+		}
+	}
+	return desiredArity == 0
+}
+
+func staticMethodImportScore(sym index.Symbol, actualArgTypes []*index.TypeExpr, idx *index.Index, resolver *typeResolver) int {
+	score := 0
+	paramTypes := staticMethodParamTypes(sym, idx, resolver)
+	if len(paramTypes) > 0 {
+		score += 100
+	}
+	if len(actualArgTypes) == 0 || len(paramTypes) == 0 {
+		return score
+	}
+	for i := 0; i < len(actualArgTypes) && i < len(paramTypes); i++ {
+		actual := actualArgTypes[i]
+		formal := paramTypes[i]
+		if actual == nil || formal == nil {
+			continue
+		}
+		resolved := resolver.resolveParameterized(actual)
+		if resolved == nil {
+			resolved = actual
+		}
+		switch {
+		case sameTypeExpr(formal, resolved):
+			score += 20
+		case typeExprMatchesExpected(resolved, formal):
+			score += 10
+		case resolved.Sym != "" && formal.Sym != "" && idx.IsAssignableTo(resolved.Sym, formal.Sym):
+			score += 5
+		}
+	}
+	return score
+}
+
+func staticMethodParamTypes(sym index.Symbol, idx *index.Index, resolver *typeResolver) []*index.TypeExpr {
+	if pts := idx.DeclParamTypesOf(sym.Symbol); len(pts) > 0 {
+		return pts
+	}
+	if sym.Signature == nil {
+		return nil
+	}
+
+	var result []*index.TypeExpr
+	for _, param := range sym.Signature.Params {
+		if param.TypeSym != "" {
+			result = append(result, &index.TypeExpr{Sym: param.TypeSym})
+			continue
+		}
+		if te := signatureParamTypeExpr(param.Type, resolver); te != nil {
+			result = append(result, te)
+			continue
+		}
+		return nil
+	}
+	if len(result) > 0 {
+		return result
+	}
+
+	for _, raw := range sym.Signature.ParseParams() {
+		typeName := extractParamTypeName(raw)
+		if typeName == "" {
+			return nil
+		}
+		te := signatureParamTypeExpr(typeName, resolver)
+		if te == nil {
+			return nil
+		}
+		result = append(result, te)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func ownerFQNFromMemberSymbol(sym string) string {
+	hashIdx := strings.LastIndex(sym, "#")
+	if hashIdx < 0 {
+		return ""
+	}
+	return fqnFromSymbol(sym[:hashIdx+1])
 }
 
 func findChildByType(n *slog.Node, nodeType string) *slog.Node {
