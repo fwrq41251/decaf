@@ -282,7 +282,7 @@ func (h *Handler) handlePrepareTypeHierarchy(ctx context.Context, params json.Ra
 		return nil, nil
 	}
 	def := h.idx.SymbolDefinition(occ.Symbol)
-	if def == nil || !index.IsTypeKind(def.Kind) {
+	if def == nil || !index.IsTypeSymbol(*def) {
 		return nil, nil
 	}
 	item := symbolToTypeHierarchyItem(def, h)

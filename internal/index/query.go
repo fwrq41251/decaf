@@ -857,11 +857,20 @@ func (idx *Index) Implementors(typeSym string) []string {
 func IsTypeKind(kind sdb.SymbolInformation_Kind) bool {
 	switch kind {
 	case sdb.SymbolInformation_CLASS, sdb.SymbolInformation_INTERFACE,
-		sdb.SymbolInformation_OBJECT, sdb.SymbolInformation_PACKAGE_OBJECT:
+		sdb.SymbolInformation_OBJECT, sdb.SymbolInformation_PACKAGE_OBJECT,
+		sdb.SymbolInformation_TYPE, sdb.SymbolInformation_TRAIT:
 		return true
 	default:
 		return false
 	}
+}
+
+func IsTypeSymbol(sym Symbol) bool {
+	return IsTypeKind(sym.Kind) || IsTypeSymbolString(sym.Symbol)
+}
+
+func IsTypeSymbolString(sym string) bool {
+	return strings.HasSuffix(sym, "#")
 }
 
 // ensureMembersOf triggers lazy indexing of the class containing the given symbol.

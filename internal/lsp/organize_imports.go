@@ -56,6 +56,7 @@ func organizeImports(fileURI string, idx *index.Index, overlay string) *Workspac
 	// organize-imports working when the file has compile errors or when SemanticDB
 	// was produced only partially and misses some unresolved type references.
 	typeNames := collectTypeIdentifiers(root, content)
+
 	for {
 		progress := false
 		for name := range typeNames {
@@ -468,7 +469,7 @@ func resolveTypeNameForImport(name string, idx *index.Index, filePackage string,
 	filtered := make([]index.Symbol, 0, len(candidates))
 	seen := make(map[string]bool, len(candidates))
 	for _, sym := range candidates {
-		if sym.Name != name || !index.IsTypeKind(sym.Kind) || seen[sym.Symbol] {
+		if sym.Name != name || !index.IsTypeSymbol(sym) || seen[sym.Symbol] {
 			continue
 		}
 		seen[sym.Symbol] = true
@@ -477,6 +478,7 @@ func resolveTypeNameForImport(name string, idx *index.Index, filePackage string,
 	if len(filtered) == 0 {
 		return ""
 	}
+
 	if len(filtered) == 1 {
 		return filtered[0].Symbol
 	}
@@ -867,6 +869,10 @@ func collectTypeIdentifiers(root *slog.Node, content []byte) map[string]bool {
 			return
 		case "type_identifier":
 			types[n.Content(content)] = true
+		case "identifier":
+			if name := n.Content(content); looksLikeTypeIdentifier(name) && isTypeIdentifierFallbackNode(n) {
+				types[name] = true
+			}
 		}
 		for i := 0; i < int(n.ChildCount()); i++ {
 			walk(n.Child(i))
@@ -874,6 +880,47 @@ func collectTypeIdentifiers(root *slog.Node, content []byte) map[string]bool {
 	}
 	walk(root)
 	return types
+}
+
+func looksLikeTypeIdentifier(name string) bool {
+	if name == "" {
+		return false
+	}
+	b := name[0]
+	return b >= 'A' && b <= 'Z'
+}
+
+func isTypeIdentifierFallbackNode(node *slog.Node) bool {
+	if node == nil {
+		return false
+	}
+	parent := node.Parent()
+	if parent == nil {
+		return false
+	}
+
+	// Type parameters like "T" are not imports.
+	for n := node; n != nil; n = n.Parent() {
+		switch n.Type() {
+		case "type_parameters", "type_parameter":
+			return false
+		}
+	}
+
+	switch parent.Type() {
+	case "class_declaration", "interface_declaration", "enum_declaration", "record_declaration",
+		"method_declaration", "constructor_declaration", "variable_declarator",
+		"package_declaration", "import_declaration":
+		return false
+	case "field_access", "method_invocation":
+		// Allow if it's the 'object' part (static qualifier), e.g., MyType.staticMethod()
+		return parent.ChildByFieldName("object") == node
+	case "scoped_identifier", "scoped_type_identifier":
+		// If it's already qualified, we don't need to add an import for the simple name.
+		return false
+	default:
+		return true
+	}
 }
 
 // collectIdentifiers walks the AST and returns a set of all identifier texts

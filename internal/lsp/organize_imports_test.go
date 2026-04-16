@@ -1062,6 +1062,119 @@ public class LRangeHandler implements RequestHandler {
 	}
 }
 
+func TestOrganizeImports_FallbackFindsTypeIdentifiersWithoutSemanticDBOccurrences(t *testing.T) {
+	source := `package org.winry.handler;
+
+import com.sun.net.httpserver.Request;
+
+public class BLPopHandler implements RequestHandler {
+
+    @Override
+    public String handleRequest(Request request) {
+        throw new UnsupportedOperationException(
+            "BLPopHandler is not implemented yet"
+        );
+    }
+}
+`
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src", "main", "java", "org", "winry", "handler")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("mkdir src dir: %v", err)
+	}
+	javaPath := filepath.Join(srcDir, "BLPopHandler.java")
+	if err := os.WriteFile(javaPath, []byte(source), 0644); err != nil {
+		t.Fatalf("write java source: %v", err)
+	}
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := index.NewIndex(logger, tmpDir)
+	setOrganizeIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"requesthandler": {
+			{Name: "RequestHandler", Symbol: "org/winry/RequestHandler#", Kind: sdb.SymbolInformation_INTERFACE, URI: "src/main/java/org/winry/RequestHandler.java"},
+		},
+		"request": {
+			{Name: "Request", Symbol: "org/winry/model/Request#", Kind: sdb.SymbolInformation_UNKNOWN_KIND, URI: "src/main/java/org/winry/model/Request.java"},
+			{Name: "Request", Symbol: "com/sun/net/httpserver/Request#", Kind: sdb.SymbolInformation_CLASS},
+		},
+		"string": {
+			{Name: "String", Symbol: "java/lang/String#", Kind: sdb.SymbolInformation_CLASS},
+			{Name: "String", Symbol: "com/sun/org/apache/xpath/internal/operations/String#", Kind: sdb.SymbolInformation_CLASS},
+		},
+		"unsupportedoperationexception": {
+			{Name: "UnsupportedOperationException", Symbol: "java/lang/UnsupportedOperationException#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+	setOrganizeIndexField(t, idx, "definitions", map[string][]*index.Symbol{
+		"org/winry/RequestHandler#": {
+			{Name: "RequestHandler", Symbol: "org/winry/RequestHandler#", Kind: sdb.SymbolInformation_INTERFACE, URI: "src/main/java/org/winry/RequestHandler.java"},
+		},
+		"org/winry/model/Request#": {
+			{Name: "Request", Symbol: "org/winry/model/Request#", Kind: sdb.SymbolInformation_UNKNOWN_KIND, URI: "src/main/java/org/winry/model/Request.java"},
+		},
+		"com/sun/net/httpserver/Request#": {
+			{Name: "Request", Symbol: "com/sun/net/httpserver/Request#", Kind: sdb.SymbolInformation_CLASS},
+		},
+	})
+
+	fileURI := uri.FromPath(javaPath)
+	edit := organizeImports(fileURI, idx, "")
+
+	if edit == nil {
+		t.Fatal("expected non-nil edit for fallback type identifier resolution")
+	}
+	text := edit.Changes[fileURI][0].NewText
+	if !containsStr(text, "import org.winry.RequestHandler;") {
+		t.Fatalf("should add RequestHandler import from fallback type identifiers, got:\n%s", text)
+	}
+	if !containsStr(text, "import org.winry.model.Request;") {
+		t.Fatalf("should replace conflicting Request import with workspace Request, got:\n%s", text)
+	}
+	if containsStr(text, "import com.sun.net.httpserver.Request;") {
+		t.Fatalf("should remove conflicting httpserver Request import, got:\n%s", text)
+	}
+}
+
+func TestOrganizeImports_StaticCallFallback(t *testing.T) {
+	source := `package org.winry.handler;
+
+public class StaticCallTest {
+    public void run() {
+        MyType.staticMethod();
+    }
+}
+`
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src", "main", "java", "org", "winry", "handler")
+	os.MkdirAll(srcDir, 0755)
+	javaPath := filepath.Join(srcDir, "StaticCallTest.java")
+	os.WriteFile(javaPath, []byte(source), 0644)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := index.NewIndex(logger, tmpDir)
+	setOrganizeIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"mytype": {
+			{Name: "MyType", Symbol: "org/winry/util/MyType#", Kind: sdb.SymbolInformation_CLASS, URI: "src/main/java/org/winry/util/MyType.java"},
+		},
+	})
+	setOrganizeIndexField(t, idx, "definitions", map[string][]*index.Symbol{
+		"org/winry/util/MyType#": {
+			{Name: "MyType", Symbol: "org/winry/util/MyType#", Kind: sdb.SymbolInformation_CLASS, URI: "src/main/java/org/winry/util/MyType.java"},
+		},
+	})
+
+	fileURI := uri.FromPath(javaPath)
+	edit := organizeImports(fileURI, idx, "")
+
+	if edit == nil {
+		t.Fatal("expected non-nil edit for static call fallback")
+	}
+	text := edit.Changes[fileURI][0].NewText
+	if !containsStr(text, "import org.winry.util.MyType;") {
+		t.Fatalf("should add MyType import from static call qualifier, got:\n%s", text)
+	}
+}
+
 func TestComputeImportEdit(t *testing.T) {
 	source := []byte(`package com.example;
 

@@ -462,7 +462,7 @@ func (idx *Index) removeDocument(uri string) {
 	for _, id := range idx.fileSymbols[uri] {
 		s := idx.symbol(id)
 		name := strings.ToLower(s.Name)
-		if IsTypeKind(s.Kind) {
+		if IsTypeSymbol(*s) {
 			if syms, ok := idx.typeBySimpleName[name]; ok {
 				filtered := syms[:0]
 				for _, sid := range syms {
@@ -563,7 +563,7 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 
 		// Build simple-name indexes for completion.
 		name := strings.ToLower(displayName)
-		if IsTypeKind(kind) {
+		if IsTypeSymbolString(symStr) || IsTypeKind(kind) {
 			idx.typeBySimpleName[name] = append(idx.typeBySimpleName[name], sid)
 		} else {
 			idx.memberBySimpleName[name] = append(idx.memberBySimpleName[name], sid)
