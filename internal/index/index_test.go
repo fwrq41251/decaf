@@ -525,6 +525,12 @@ func TestIncrementalIndex(t *testing.T) {
 	if len(idx.AllSymbols()) != 1 {
 		t.Fatalf("expected 1 symbol after first load, got %d", len(idx.AllSymbols()))
 	}
+	if got := len(idx.symbols); got != 1 {
+		t.Fatalf("expected 1 stored symbol after first load, got %d", got)
+	}
+	if got := len(idx.occurrences); got != 1 {
+		t.Fatalf("expected 1 stored occurrence after first load, got %d", got)
+	}
 
 	// --- Second load: no changes → should be a no-op via watcher ---
 	if err := idx.Load(); err != nil {
@@ -555,6 +561,12 @@ func TestIncrementalIndex(t *testing.T) {
 	}
 	if len(idx.AllSymbols()) != 2 {
 		t.Fatalf("expected 2 symbols after adding Bar, got %d", len(idx.AllSymbols()))
+	}
+	if got := len(idx.symbols); got != 2 {
+		t.Fatalf("expected 2 stored symbols after adding Bar, got %d", got)
+	}
+	if got := len(idx.occurrences); got != 2 {
+		t.Fatalf("expected 2 stored occurrences after adding Bar, got %d", got)
 	}
 
 	// --- Fourth load: modify Foo (watcher picks up write event) ---
@@ -590,6 +602,12 @@ func TestIncrementalIndex(t *testing.T) {
 	if !names["FooRenamed"] || !names["Bar"] {
 		t.Fatalf("expected FooRenamed and Bar, got %v", names)
 	}
+	if got := len(idx.symbols); got != 2 {
+		t.Fatalf("expected 2 stored symbols after modifying Foo, got %d", got)
+	}
+	if got := len(idx.occurrences); got != 2 {
+		t.Fatalf("expected 2 stored occurrences after modifying Foo, got %d", got)
+	}
 
 	// --- Fifth load: delete Bar (watcher picks up remove event) ---
 	os.Remove(filepath.Join(sdbDir, "Bar.java.semanticdb"))
@@ -603,6 +621,32 @@ func TestIncrementalIndex(t *testing.T) {
 	}
 	if idx.AllSymbols()[0].Name != "FooRenamed" {
 		t.Fatalf("expected FooRenamed, got %s", idx.AllSymbols()[0].Name)
+	}
+	if got := len(idx.symbols); got != 1 {
+		t.Fatalf("expected 1 stored symbol after deleting Bar, got %d", got)
+	}
+	if got := len(idx.occurrences); got != 1 {
+		t.Fatalf("expected 1 stored occurrence after deleting Bar, got %d", got)
+	}
+}
+
+func TestArenaNeedsCompaction(t *testing.T) {
+	tests := []struct {
+		total int
+		live  int
+		want  bool
+	}{
+		{total: 0, live: 0, want: false},
+		{total: 2, live: 2, want: false},
+		{total: 3, live: 2, want: true},
+		{total: 4, live: 3, want: false},
+		{total: 10, live: 6, want: true},
+	}
+
+	for _, tt := range tests {
+		if got := arenaNeedsCompaction(tt.total, tt.live); got != tt.want {
+			t.Fatalf("arenaNeedsCompaction(%d, %d) = %v, want %v", tt.total, tt.live, got, tt.want)
+		}
 	}
 }
 

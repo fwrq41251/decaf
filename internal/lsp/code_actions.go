@@ -40,8 +40,8 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 
 	// Organize imports.
 	if wantOrganize {
-		overlay, _ := h.docs.Get(p.TextDocument.URI)
-		edit := organizeImports(p.TextDocument.URI, h.idx, overlay)
+		overlay, hasOverlay := h.docs.Get(p.TextDocument.URI)
+		edit := organizeImportsWithOverlay(p.TextDocument.URI, h.idx, overlay, hasOverlay)
 		if edit != nil {
 			actions = append(actions, CodeAction{
 				Title: "Organize Imports",
@@ -53,7 +53,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 
 	// Quick fix: add missing import / implement methods.
 	if wantQuickFix {
-		overlay, _ := h.docs.Get(p.TextDocument.URI)
+		overlay, hasOverlay := h.docs.Get(p.TextDocument.URI)
 		seenImportFixes := make(map[string]struct{})
 		for _, diag := range p.Context.Diagnostics {
 			// Add missing import.
@@ -71,7 +71,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 					if _, ok := seenImportFixes[fqn]; ok {
 						continue
 					}
-					edit := addImportEdit(p.TextDocument.URI, overlay, fqn)
+					edit := addImportEditWithOverlay(p.TextDocument.URI, overlay, hasOverlay, fqn)
 					if edit == nil {
 						continue
 					}
@@ -86,7 +86,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 			}
 
 			// Implement abstract methods.
-			if edit := implementMethodsEdit(p.TextDocument.URI, h.idx, overlay, diag); edit != nil {
+			if edit := implementMethodsEditWithOverlay(p.TextDocument.URI, h.idx, overlay, hasOverlay, diag); edit != nil {
 				actions = append(actions, CodeAction{
 					Title:       "Implement abstract methods",
 					Kind:        CodeActionQuickFix,
@@ -99,14 +99,14 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 
 	// Source actions: generate constructor, override method.
 	if wantSource {
-		overlay, _ := h.docs.Get(p.TextDocument.URI)
+		overlay, hasOverlay := h.docs.Get(p.TextDocument.URI)
 		cursorLine := p.Range.Start.Line
 
 		if action := initializeJavaTypeAction(p.TextDocument.URI, overlay); action != nil {
 			actions = append(actions, *action)
 		}
 
-		if edit := implementMethodsSourceEditWithContext(ctx, p.TextDocument.URI, h.idx, overlay, cursorLine); edit != nil {
+		if edit := implementMethodsSourceEditWithContext(ctx, p.TextDocument.URI, h.idx, overlay, hasOverlay, cursorLine); edit != nil {
 			actions = append(actions, CodeAction{
 				Title: "Implement abstract methods",
 				Kind:  "source",
@@ -114,7 +114,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 			})
 		}
 
-		if edit := generateConstructorEditWithContext(ctx, p.TextDocument.URI, h.idx, overlay, cursorLine); edit != nil {
+		if edit := generateConstructorEditWithContext(ctx, p.TextDocument.URI, h.idx, overlay, hasOverlay, cursorLine); edit != nil {
 			actions = append(actions, CodeAction{
 				Title: "Generate constructor",
 				Kind:  "source",
@@ -126,7 +126,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 			actions = append(actions, *action)
 		}
 
-		candidates := collectFieldCandidatesWithContext(ctx, p.TextDocument.URI, h.idx, overlay, cursorLine)
+		candidates := collectFieldCandidatesWithContext(ctx, p.TextDocument.URI, h.idx, overlay, hasOverlay, cursorLine)
 
 		if action := getterAction(p.TextDocument.URI, cursorLine, candidates); action != nil {
 			actions = append(actions, *action)

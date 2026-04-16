@@ -38,11 +38,11 @@ func findClassContext(root *slog.Node, content []byte, line int) (string, *slog.
 // generateConstructorEdit computes a WorkspaceEdit that inserts a constructor
 // for the class at cursorLine, taking all non-static fields as parameters.
 func generateConstructorEdit(fileURI string, idx *index.Index, overlay string, cursorLine int) *WorkspaceEdit {
-	return generateConstructorEditWithContext(context.Background(), fileURI, idx, overlay, cursorLine)
+	return generateConstructorEditWithContext(context.Background(), fileURI, idx, overlay, overlay != "", cursorLine)
 }
 
-func generateConstructorEditWithContext(ctx context.Context, fileURI string, idx *index.Index, overlay string, cursorLine int) *WorkspaceEdit {
-	content := readContent(fileURI, overlay)
+func generateConstructorEditWithContext(ctx context.Context, fileURI string, idx *index.Index, overlay string, hasOverlay bool, cursorLine int) *WorkspaceEdit {
+	content := readContent(fileURI, overlay, hasOverlay)
 	if content == nil {
 		return nil
 	}

@@ -42,8 +42,8 @@ func (h *Handler) executeGenerateAccessor(ctx context.Context, args []json.RawMe
 		return nil, fmt.Errorf("invalid cursorLine argument: %w", err)
 	}
 
-	overlay, _ := h.docs.Get(fileURI)
-	allCandidates := collectFieldCandidates(fileURI, h.idx, overlay, cursorLine)
+	overlay, hasOverlay := h.docs.Get(fileURI)
+	allCandidates := collectFieldCandidatesWithContext(ctx, fileURI, h.idx, overlay, hasOverlay, cursorLine)
 	var candidates []fieldWithType
 	for _, c := range allCandidates {
 		if (kind == "getter" && !c.hasGetter) || (kind == "setter" && !c.hasSetter) {
@@ -82,7 +82,7 @@ func (h *Handler) executeGenerateAccessor(ctx context.Context, args []json.RawMe
 
 		newText := generate(c)
 
-		content := readContent(fileURI, overlay)
+		content := readContent(fileURI, overlay, hasOverlay)
 		if content == nil {
 			return nil, nil
 		}
@@ -121,14 +121,14 @@ func (h *Handler) executeOverrideMethod(ctx context.Context, args []json.RawMess
 		return nil, fmt.Errorf("invalid cursorLine argument: %w", err)
 	}
 
-	overlay, _ := h.docs.Get(fileURI)
-	methods, _ := collectOverridableMethods(fileURI, h.idx, overlay, cursorLine)
+	overlay, hasOverlay := h.docs.Get(fileURI)
+	methods, _ := collectOverridableMethodsWithOverlay(fileURI, h.idx, overlay, hasOverlay, cursorLine)
 	if len(methods) == 0 {
 		return nil, nil
 	}
 
 	// Find class insertion point early.
-	content := readContent(fileURI, overlay)
+	content := readContent(fileURI, overlay, hasOverlay)
 	tree, _ := getTree(content)
 	insertLine := findClassInsertionPoint(tree.RootNode(), content, cursorLine)
 	if insertLine < 0 {

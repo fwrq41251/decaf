@@ -3,6 +3,7 @@ package bsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -38,6 +39,7 @@ type Client struct {
 	transport     *jsonrpc.Transport
 	conn          net.Conn // underlying socket connection
 	cmd           *exec.Cmd
+	ready         atomic.Bool
 	nextID        atomic.Int64
 	pending       map[int64]chan *jsonrpc.Response
 	pendingMu     sync.Mutex
@@ -51,6 +53,8 @@ type Client struct {
 	socketDir      string // temp directory containing the unix socket
 	exitErr        chan error
 	}
+
+var ErrNotConnected = errors.New("bsp client not connected")
 
 
 // NewClient creates a new BSP client.
@@ -69,6 +73,7 @@ func NewClient(logger *log.Logger, onDiagnostics DiagnosticsHandler, onDisconnec
 
 // Start launches the Bloop BSP server and performs the initialize handshake.
 func (c *Client) Start(ctx context.Context, rootURI string) error {
+	c.ready.Store(false)
 	sourceRoot := uri.ToPath(rootURI)
 
 	bloopExe, err := exec.LookPath("bloop")
@@ -167,13 +172,21 @@ func (c *Client) Start(ctx context.Context, rootURI string) error {
 		return fmt.Errorf("workspace/buildTargets failed: %w", err)
 	}
 	c.targets = targetsResult.Targets
+	c.ready.Store(true)
 	c.logger.Printf("found %d build targets", len(c.targets))
 	cleanup = false
 	return nil
 }
 
+func (c *Client) IsReady() bool {
+	return c.ready.Load()
+}
+
 // Compile triggers compilation of all known build targets.
 func (c *Client) Compile(ctx context.Context) error {
+	if !c.IsReady() {
+		return ErrNotConnected
+	}
 	if len(c.targets) == 0 {
 		c.logger.Println("no build targets to compile")
 		return nil
@@ -191,6 +204,9 @@ func (c *Client) Compile(ctx context.Context) error {
 
 // CompileTargets triggers compilation of specific build targets.
 func (c *Client) CompileTargets(ctx context.Context, targets []BuildTargetIdentifier) error {
+	if !c.IsReady() {
+		return ErrNotConnected
+	}
 	if len(targets) == 0 {
 		return nil
 	}
@@ -207,6 +223,9 @@ func (c *Client) CompileTargets(ctx context.Context, targets []BuildTargetIdenti
 
 // InverseSources returns the build targets that contain the given source file.
 func (c *Client) InverseSources(ctx context.Context, fileURI string) ([]BuildTargetIdentifier, error) {
+	if !c.IsReady() {
+		return nil, ErrNotConnected
+	}
 	var result InverseSourcesResult
 	params := InverseSourcesParams{TextDocument: TextDocumentIdentifier{URI: fileURI}}
 	if err := c.call(ctx, "buildTarget/inverseSources", params, &result); err != nil {
@@ -217,6 +236,9 @@ func (c *Client) InverseSources(ctx context.Context, fileURI string) ([]BuildTar
 
 // DependencySources returns the source JARs for all known build targets.
 func (c *Client) DependencySources(ctx context.Context) ([]DependencySourcesItem, error) {
+	if !c.IsReady() {
+		return nil, ErrNotConnected
+	}
 	if len(c.targets) == 0 {
 		return nil, nil
 	}
@@ -235,6 +257,9 @@ func (c *Client) DependencySources(ctx context.Context) ([]DependencySourcesItem
 
 // JvmRunEnvironment returns the JVM runtime environment (including javaHome) for all known build targets.
 func (c *Client) JvmRunEnvironment(ctx context.Context) ([]JvmEnvironmentItem, error) {
+	if !c.IsReady() {
+		return nil, ErrNotConnected
+	}
 	if len(c.targets) == 0 {
 		return nil, nil
 	}
@@ -253,6 +278,7 @@ func (c *Client) JvmRunEnvironment(ctx context.Context) ([]JvmEnvironmentItem, e
 
 // Shutdown sends build/shutdown and build/exit to Bloop, then closes the connection.
 func (c *Client) Shutdown(ctx context.Context) error {
+	c.ready.Store(false)
 	if c.socketDir != "" {
 		defer os.RemoveAll(c.socketDir)
 	}
@@ -305,6 +331,9 @@ func (c *Client) clearPending() {
 
 // call sends a JSON-RPC request and waits for the response.
 func (c *Client) call(ctx context.Context, method string, params any, result any) error {
+	if c.transport == nil {
+		return ErrNotConnected
+	}
 	id := c.nextID.Add(1)
 
 	paramsJSON, err := json.Marshal(params)
@@ -374,6 +403,7 @@ func (c *Client) readLoop() {
 	for {
 		body, err := c.transport.ReadRaw()
 		if err != nil {
+			c.ready.Store(false)
 			c.logger.Printf("bsp read error: %v", err)
 			if c.onDisconnect != nil {
 				c.onDisconnect()

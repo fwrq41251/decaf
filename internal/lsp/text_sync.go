@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -124,6 +125,11 @@ func (h *Handler) runCompileCycle() {
 		return
 	}
 
+	if !h.bspClient.IsReady() {
+		h.logger.Printf("skipping compile cycle for %d file(s): BSP client not ready", len(changedURIs))
+		return
+	}
+
 	prog := h.beginProgress(ctx, "decaf", "compiling…")
 
 	compiled := false
@@ -169,6 +175,10 @@ func (h *Handler) resolveTargets(ctx context.Context, uris []string) []bsp.Build
 	for _, u := range uris {
 		ts, err := h.bspClient.InverseSources(ctx, u)
 		if err != nil {
+			if errors.Is(err, bsp.ErrNotConnected) {
+				h.logger.Printf("inverseSources skipped for %s: BSP client not ready", u)
+				return nil
+			}
 			h.logger.Printf("inverseSources failed for %s: %v", u, err)
 			return nil // fall back to full compile
 		}
@@ -181,4 +191,3 @@ func (h *Handler) resolveTargets(ctx context.Context, uris []string) []bsp.Build
 	}
 	return targets
 }
-

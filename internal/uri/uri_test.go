@@ -12,6 +12,7 @@ func TestFromPath(t *testing.T) {
 	}{
 		{"/home/user/project", "file:///home/user/project"},
 		{"/tmp/a/b.java", "file:///tmp/a/b.java"},
+		{"/tmp/My Project/你好 #100%.java", "file:///tmp/My%20Project/%E4%BD%A0%E5%A5%BD%20%23100%25.java"},
 	}
 	for _, tt := range tests {
 		got := FromPath(tt.path)
@@ -28,6 +29,7 @@ func TestToPath(t *testing.T) {
 	}{
 		{"file:///home/user/project", "/home/user/project"},
 		{"file:///tmp/a/b.java", "/tmp/a/b.java"},
+		{"file:///tmp/My%20Project/%E4%BD%A0%E5%A5%BD%20%23100%25.java", "/tmp/My Project/你好 #100%.java"},
 	}
 	if runtime.GOOS == "windows" {
 		tests = []struct {
@@ -49,6 +51,7 @@ func TestRoundTrip(t *testing.T) {
 	paths := []string{
 		"/home/user/project/src/Main.java",
 		"/tmp/workspace",
+		"/tmp/My Project/你好 #100%.java",
 	}
 	for _, p := range paths {
 		got := ToPath(FromPath(p))
@@ -65,6 +68,7 @@ func TestRel(t *testing.T) {
 		{"/home/user/project", "/home/user/project/src/Main.java", "src/Main.java"},
 		{"file:///home/user/project", "file:///home/user/project/src/Main.java", "src/Main.java"},
 		{"file:///home/user/project", "/home/user/project/src/Main.java", "src/Main.java"},
+		{"file:///tmp/My%20Project", "file:///tmp/My%20Project/%E4%BD%A0%E5%A5%BD%20%23100%25.java", "你好 #100%.java"},
 	}
 	for _, tt := range tests {
 		got := Rel(tt.base, tt.target)
@@ -80,6 +84,7 @@ func TestJoin(t *testing.T) {
 	}{
 		{"/home/user/project", "src/Main.java", "file:///home/user/project/src/Main.java"},
 		{"file:///home/user/project", "src/Main.java", "file:///home/user/project/src/Main.java"},
+		{"file:///tmp/My%20Project", "你好 #100%.java", "file:///tmp/My%20Project/%E4%BD%A0%E5%A5%BD%20%23100%25.java"},
 	}
 	for _, tt := range tests {
 		got := Join(tt.base, tt.rel)

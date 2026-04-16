@@ -5,6 +5,8 @@
 package uri
 
 import (
+	"net/url"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -18,7 +20,7 @@ func FromPath(absPath string) string {
 		// Windows: C:/foo → /C:/foo
 		p = "/" + p
 	}
-	return "file://" + p
+	return (&url.URL{Scheme: "file", Path: p}).String()
 }
 
 // ToPath converts a file:// URI to an absolute filesystem path using the
@@ -26,9 +28,22 @@ func FromPath(absPath string) string {
 //   file:///home/user/project  →  /home/user/project
 //   file:///C:/Users/project   →  C:\Users\project  (on Windows)
 func ToPath(uri string) string {
-	p := strings.TrimPrefix(uri, "file://")
-	// On Windows the URI looks like file:///C:/..., which after trimming
-	// gives /C:/... — strip the leading slash before the drive letter.
+	if !IsURI(uri) {
+		return filepath.FromSlash(uri)
+	}
+
+	u, err := url.Parse(uri)
+	if err != nil {
+		return filepath.FromSlash(strings.TrimPrefix(uri, "file://"))
+	}
+
+	p := u.Path
+	if u.Host != "" {
+		p = "//" + u.Host + p
+	}
+
+	// On Windows the URI looks like file:///C:/..., which leaves /C:/...
+	// in u.Path — strip the leading slash before the drive letter.
 	if len(p) >= 3 && p[0] == '/' && p[2] == ':' {
 		p = p[1:]
 	}
@@ -53,7 +68,7 @@ func Rel(base, target string) string {
 // returns a file:// URI.
 func Join(base string, rel string) string {
 	basePath := ToPath(base)
-	return FromPath(filepath.Join(basePath, filepath.FromSlash(rel)))
+	return FromPath(filepath.Join(basePath, filepath.FromSlash(path.Clean(rel))))
 }
 
 // IsURI reports whether s looks like a file:// URI.

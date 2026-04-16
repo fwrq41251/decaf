@@ -66,11 +66,11 @@ type fieldWithType struct {
 
 // collectFieldCandidates returns non-static fields within the current class context.
 func collectFieldCandidates(fileURI string, idx *index.Index, overlay string, cursorLine int) []fieldWithType {
-	return collectFieldCandidatesWithContext(context.Background(), fileURI, idx, overlay, cursorLine)
+	return collectFieldCandidatesWithContext(context.Background(), fileURI, idx, overlay, overlay != "", cursorLine)
 }
 
-func collectFieldCandidatesWithContext(ctx context.Context, fileURI string, idx *index.Index, overlay string, cursorLine int) []fieldWithType {
-	content := readContent(fileURI, overlay)
+func collectFieldCandidatesWithContext(ctx context.Context, fileURI string, idx *index.Index, overlay string, hasOverlay bool, cursorLine int) []fieldWithType {
+	content := readContent(fileURI, overlay, hasOverlay)
 	if content == nil {
 		return nil
 	}

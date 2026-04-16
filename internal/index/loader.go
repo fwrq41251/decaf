@@ -117,6 +117,9 @@ func (idx *Index) loadFull() error {
 		}
 
 		if len(toIndex) > 0 || len(deleted) > 0 {
+			if idx.shouldCompactStorage() {
+				idx.compactStorage()
+			}
 			idx.clearExternalCache()
 		}
 		idx.logStats()
@@ -257,6 +260,9 @@ func (idx *Index) loadFromWatcher() error {
 	}
 
 	if len(dirty) > 0 || len(removed) > 0 {
+		if idx.shouldCompactStorage() {
+			idx.compactStorage()
+		}
 		idx.clearExternalCache()
 	}
 	idx.logStats()
@@ -504,6 +510,219 @@ func (idx *Index) removeDocument(uri string) {
 		}
 	}
 	delete(idx.internPool, uri)
+}
+
+// shouldCompactStorage reports whether tombstones in the symbol/occurrence
+// arenas have grown large enough to justify rebuilding them. Must be called
+// with idx.mu held.
+func (idx *Index) shouldCompactStorage() bool {
+	liveSymbols := 0
+	for _, ids := range idx.fileSymbols {
+		liveSymbols += len(ids)
+	}
+	liveOccurrences := 0
+	for _, ids := range idx.fileOccurrences {
+		liveOccurrences += len(ids)
+	}
+
+	return arenaNeedsCompaction(len(idx.symbols), liveSymbols) ||
+		arenaNeedsCompaction(len(idx.occurrences), liveOccurrences)
+}
+
+func arenaNeedsCompaction(total, live int) bool {
+	if total == 0 || live >= total {
+		return false
+	}
+	dead := total - live
+	return dead > 0 && total*2 >= live*3
+}
+
+// compactStorage rebuilds the live symbol/occurrence/string arenas so removed
+// documents do not leave unreachable entries behind forever. Must be called
+// with idx.mu held.
+func (idx *Index) compactStorage() {
+	if len(idx.symbols) == 0 && len(idx.occurrences) == 0 {
+		return
+	}
+
+	oldSymbols := idx.symbols
+	oldOccurrences := idx.occurrences
+	oldStrings := idx.strings
+
+	newInternPool := make(map[string]string, len(idx.internPool))
+	intern := func(s string) string {
+		if s == "" {
+			return ""
+		}
+		if interned, ok := newInternPool[s]; ok {
+			return interned
+		}
+		newInternPool[s] = s
+		return s
+	}
+
+	newStringIDs := make(map[string]StringID, len(idx.stringIDs))
+	newStrings := make([]string, 0, len(oldStrings))
+	stringID := func(s string) StringID {
+		s = intern(s)
+		if id, ok := newStringIDs[s]; ok {
+			return id
+		}
+		newStrings = append(newStrings, s)
+		id := StringID(len(newStrings))
+		newStringIDs[s] = id
+		return id
+	}
+
+	newSymbols := make([]Symbol, 0, len(oldSymbols))
+	symbolRemap := make(map[SymbolID]SymbolID, len(oldSymbols))
+	remapSymbolID := func(oldID SymbolID) SymbolID {
+		if newID, ok := symbolRemap[oldID]; ok {
+			return newID
+		}
+		s := oldSymbols[int(oldID)]
+		s.Symbol = intern(s.Symbol)
+		s.URI = intern(s.URI)
+		newSymbols = append(newSymbols, s)
+		newID := SymbolID(len(newSymbols) - 1)
+		symbolRemap[oldID] = newID
+		stringID(s.Symbol)
+		stringID(s.URI)
+		return newID
+	}
+
+	newOccurrences := make([]storedOccurrence, 0, len(oldOccurrences))
+	occRemap := make(map[OccurrenceID]OccurrenceID, len(oldOccurrences))
+	lookupOldString := func(id StringID) string {
+		if id == 0 || int(id) > len(oldStrings) {
+			return ""
+		}
+		return oldStrings[int(id)-1]
+	}
+	remapOccurrenceID := func(oldID OccurrenceID) OccurrenceID {
+		if newID, ok := occRemap[oldID]; ok {
+			return newID
+		}
+		occ := oldOccurrences[int(oldID)-1]
+		newOccurrences = append(newOccurrences, storedOccurrence{
+			SymbolID: stringID(lookupOldString(occ.SymbolID)),
+			Role:     occ.Role,
+			URIID:    stringID(lookupOldString(occ.URIID)),
+			Range:    occ.Range,
+		})
+		newID := OccurrenceID(len(newOccurrences))
+		occRemap[oldID] = newID
+		return newID
+	}
+
+	remapSymbolSlice := func(ids []SymbolID) []SymbolID {
+		if len(ids) == 0 {
+			return nil
+		}
+		out := make([]SymbolID, len(ids))
+		for i, id := range ids {
+			out[i] = remapSymbolID(id)
+		}
+		return out
+	}
+
+	remapOccurrenceSlice := func(ids []OccurrenceID) []OccurrenceID {
+		if len(ids) == 0 {
+			return nil
+		}
+		out := make([]OccurrenceID, len(ids))
+		for i, id := range ids {
+			out[i] = remapOccurrenceID(id)
+		}
+		return out
+	}
+
+	for sym, ids := range idx.definitions {
+		idx.definitions[intern(sym)] = remapSymbolSlice(ids)
+		if canon := intern(sym); canon != sym {
+			delete(idx.definitions, sym)
+		}
+	}
+	for uri, ids := range idx.fileSymbols {
+		idx.fileSymbols[intern(uri)] = remapSymbolSlice(ids)
+		if canon := intern(uri); canon != uri {
+			delete(idx.fileSymbols, uri)
+		}
+	}
+	for name, ids := range idx.typeBySimpleName {
+		idx.typeBySimpleName[name] = remapSymbolSlice(ids)
+	}
+	for name, ids := range idx.memberBySimpleName {
+		idx.memberBySimpleName[name] = remapSymbolSlice(ids)
+	}
+	for owner, ids := range idx.ownerMembers {
+		idx.ownerMembers[intern(owner)] = remapSymbolSlice(ids)
+		if canon := intern(owner); canon != owner {
+			delete(idx.ownerMembers, owner)
+		}
+	}
+	for sym, ids := range idx.references {
+		idx.references[intern(sym)] = remapOccurrenceSlice(ids)
+		if canon := intern(sym); canon != sym {
+			delete(idx.references, sym)
+		}
+	}
+	for uri, ids := range idx.fileOccurrences {
+		idx.fileOccurrences[intern(uri)] = remapOccurrenceSlice(ids)
+		if canon := intern(uri); canon != uri {
+			delete(idx.fileOccurrences, uri)
+		}
+	}
+	for uri, syms := range idx.uriRefSymbols {
+		for i, sym := range syms {
+			syms[i] = intern(sym)
+		}
+		idx.uriRefSymbols[intern(uri)] = syms
+		if canon := intern(uri); canon != uri {
+			delete(idx.uriRefSymbols, uri)
+		}
+	}
+	for child, parents := range idx.childToParents {
+		for i, parent := range parents {
+			parents[i] = intern(parent)
+		}
+		idx.childToParents[intern(child)] = parents
+		if canon := intern(child); canon != child {
+			delete(idx.childToParents, child)
+		}
+	}
+	for parent, children := range idx.implementors {
+		for i, child := range children {
+			children[i] = intern(child)
+		}
+		idx.implementors[intern(parent)] = children
+		if canon := intern(parent); canon != parent {
+			delete(idx.implementors, parent)
+		}
+	}
+	for path, uris := range idx.sdbToURIs {
+		for i, uri := range uris {
+			uris[i] = intern(uri)
+		}
+		idx.sdbToURIs[path] = uris
+	}
+	for sym, typeSym := range idx.symbolType {
+		delete(idx.symbolType, sym)
+		idx.symbolType[intern(sym)] = intern(typeSym)
+	}
+	for sym, params := range idx.classTypeParams {
+		delete(idx.classTypeParams, sym)
+		for i, param := range params {
+			params[i] = intern(param)
+		}
+		idx.classTypeParams[intern(sym)] = params
+	}
+
+	idx.symbols = newSymbols
+	idx.occurrences = newOccurrences
+	idx.strings = newStrings
+	idx.stringIDs = newStringIDs
+	idx.internPool = newInternPool
 }
 
 func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {

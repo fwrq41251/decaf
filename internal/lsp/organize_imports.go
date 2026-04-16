@@ -21,7 +21,11 @@ type importBlock struct {
 // adds missing ones, and sorts the remainder.
 // If overlay is non-empty it is used as the file content instead of reading from disk.
 func organizeImports(fileURI string, idx *index.Index, overlay string) *WorkspaceEdit {
-	content := readContent(fileURI, overlay)
+	return organizeImportsWithOverlay(fileURI, idx, overlay, overlay != "")
+}
+
+func organizeImportsWithOverlay(fileURI string, idx *index.Index, overlay string, hasOverlay bool) *WorkspaceEdit {
+	content := readContent(fileURI, overlay, hasOverlay)
 	if content == nil {
 		return nil
 	}
@@ -729,7 +733,11 @@ func importSortKey(imp string) string {
 // addImportEdit computes a WorkspaceEdit that adds a single import statement
 // for the given fully-qualified name at the correct sorted position.
 func addImportEdit(fileURI string, overlay string, fqn string) *WorkspaceEdit {
-	content := readContent(fileURI, overlay)
+	return addImportEditWithOverlay(fileURI, overlay, overlay != "", fqn)
+}
+
+func addImportEditWithOverlay(fileURI string, overlay string, hasOverlay bool, fqn string) *WorkspaceEdit {
+	content := readContent(fileURI, overlay, hasOverlay)
 	if content == nil {
 		return nil
 	}

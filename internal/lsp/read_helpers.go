@@ -7,8 +7,8 @@ import (
 )
 
 // readContent returns file content from overlay or disk.
-func readContent(fileURI string, overlay string) []byte {
-	if overlay != "" {
+func readContent(fileURI string, overlay string, hasOverlay bool) []byte {
+	if hasOverlay {
 		return []byte(overlay)
 	}
 	content, err := os.ReadFile(uri.ToPath(fileURI))

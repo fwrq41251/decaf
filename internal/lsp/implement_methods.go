@@ -43,12 +43,16 @@ func extractUnimplementedInfo(msg string) (className, methodName, parentName str
 // implementMethodsEdit computes a WorkspaceEdit that inserts method stubs
 // for all unimplemented abstract methods in the class identified by diag.
 func implementMethodsEdit(fileURI string, idx *index.Index, overlay string, diag Diagnostic) *WorkspaceEdit {
+	return implementMethodsEditWithOverlay(fileURI, idx, overlay, overlay != "", diag)
+}
+
+func implementMethodsEditWithOverlay(fileURI string, idx *index.Index, overlay string, hasOverlay bool, diag Diagnostic) *WorkspaceEdit {
 	className, _, _ := extractUnimplementedInfo(diag.Message)
 	if className == "" {
 		return nil
 	}
 
-	content := readContent(fileURI, overlay)
+	content := readContent(fileURI, overlay, hasOverlay)
 	if content == nil {
 		return nil
 	}
@@ -68,11 +72,11 @@ func implementMethodsEdit(fileURI string, idx *index.Index, overlay string, diag
 }
 
 func implementMethodsSourceEdit(fileURI string, idx *index.Index, overlay string, cursorLine int) *WorkspaceEdit {
-	return implementMethodsSourceEditWithContext(context.Background(), fileURI, idx, overlay, cursorLine)
+	return implementMethodsSourceEditWithContext(context.Background(), fileURI, idx, overlay, overlay != "", cursorLine)
 }
 
-func implementMethodsSourceEditWithContext(ctx context.Context, fileURI string, idx *index.Index, overlay string, cursorLine int) *WorkspaceEdit {
-	content := readContent(fileURI, overlay)
+func implementMethodsSourceEditWithContext(ctx context.Context, fileURI string, idx *index.Index, overlay string, hasOverlay bool, cursorLine int) *WorkspaceEdit {
+	content := readContent(fileURI, overlay, hasOverlay)
 	if content == nil {
 		return nil
 	}
@@ -398,7 +402,11 @@ func overrideMethodAction(fileURI string, idx *index.Index, overlay string, curs
 // hasOverridableMethods checks whether there are any overridable methods for the
 // class at the given cursor line.
 func hasOverridableMethods(fileURI string, idx *index.Index, overlay string, cursorLine int) bool {
-	content := readContent(fileURI, overlay)
+	return hasOverridableMethodsWithOverlay(fileURI, idx, overlay, overlay != "", cursorLine)
+}
+
+func hasOverridableMethodsWithOverlay(fileURI string, idx *index.Index, overlay string, hasOverlay bool, cursorLine int) bool {
+	content := readContent(fileURI, overlay, hasOverlay)
 	if content == nil {
 		return false
 	}
@@ -453,7 +461,11 @@ type overridableMethod struct {
 }
 
 func collectOverridableMethods(fileURI string, idx *index.Index, overlay string, cursorLine int) (methods []overridableMethod, insertLine int) {
-	content := readContent(fileURI, overlay)
+	return collectOverridableMethodsWithOverlay(fileURI, idx, overlay, overlay != "", cursorLine)
+}
+
+func collectOverridableMethodsWithOverlay(fileURI string, idx *index.Index, overlay string, hasOverlay bool, cursorLine int) (methods []overridableMethod, insertLine int) {
+	content := readContent(fileURI, overlay, hasOverlay)
 	if content == nil {
 		return nil, -1
 	}

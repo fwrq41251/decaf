@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"strings"
 	"testing"
 
 	"github.com/fwrq41251/decaf/internal/index"
@@ -111,6 +112,26 @@ func TestInitializeJavaTypeTemplateWithoutPackage(t *testing.T) {
 	want := "public record Foo() {\n}\n"
 	if got != want {
 		t.Fatalf("template mismatch:\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+func TestInitializeJavaTypeTemplateForMultiModuleProject(t *testing.T) {
+	rootURI := "file:///workspace"
+	fileURI := "file:///workspace/module-a/src/main/java/com/example/Foo.java"
+
+	got := initializeJavaTypeTemplate(rootURI, fileURI, "class")
+	want := "package com.example;\n\npublic class Foo {\n}\n"
+	if got != want {
+		t.Fatalf("template mismatch:\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+func TestTrimJavaSourceRootPrefixFindsNearestSourceRoot(t *testing.T) {
+	segments := []string{"workspace", "module-a", "src", "main", "java", "com", "example"}
+	got := trimJavaSourceRootPrefix(segments)
+	want := []string{"com", "example"}
+	if strings.Join(got, "/") != strings.Join(want, "/") {
+		t.Fatalf("trimJavaSourceRootPrefix() = %v, want %v", got, want)
 	}
 }
 
