@@ -112,7 +112,7 @@ func formatType(t *sdb.Type) string {
 
 	switch v := t.SealedValue.(type) {
 	case *sdb.Type_TypeRef:
-		name := simplifySymbol(v.TypeRef.Symbol)
+		name := SimpleTypeName(v.TypeRef.Symbol)
 		if len(v.TypeRef.TypeArguments) > 0 {
 			var args []string
 			for _, arg := range v.TypeRef.TypeArguments {
@@ -122,17 +122,25 @@ func formatType(t *sdb.Type) string {
 		}
 		return name
 	case *sdb.Type_SingleType:
-		return simplifySymbol(v.SingleType.Symbol)
+		return SimpleTypeName(v.SingleType.Symbol)
 	default:
 		return "?"
 	}
 }
 
-func simplifySymbol(sym string) string {
+// SimpleTypeName extracts the simple name from a SemanticDB symbol.
+// Handles type parameters ([T]), trailing #/. suffixes, and package/class separators.
+func SimpleTypeName(sym string) string {
+	// Type parameters: "java/util/List#[E]" → "E"
+	if start := strings.LastIndexByte(sym, '['); start >= 0 {
+		if end := strings.LastIndexByte(sym, ']'); end > start+1 {
+			return sym[start+1 : end]
+		}
+	}
 	sym = strings.TrimSuffix(sym, "#")
 	sym = strings.TrimSuffix(sym, ".")
-	if idx := strings.LastIndex(sym, "/"); idx >= 0 {
-		sym = sym[idx+1:]
+	if idx := strings.LastIndexAny(sym, "/."); idx >= 0 {
+		return sym[idx+1:]
 	}
 	return sym
 }

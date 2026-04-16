@@ -135,7 +135,7 @@ func hoverTypeParamsDisplay(sym *index.Symbol, idx *index.Index) string {
 
 	display := make([]string, 0, len(params))
 	for _, param := range params {
-		name := hoverTypeSymDisplay(param)
+		name := index.SimpleTypeName(param)
 		if name == "" {
 			continue
 		}
@@ -189,7 +189,7 @@ func hoverTypeExprDisplay(te *index.TypeExpr) string {
 	if te == nil {
 		return ""
 	}
-	base := hoverTypeSymDisplay(te.Sym)
+	base := index.SimpleTypeName(te.Sym)
 	if len(te.Args) == 0 {
 		return base
 	}
@@ -204,20 +204,6 @@ func hoverTypeExprDisplay(te *index.TypeExpr) string {
 	}
 	sb.WriteByte('>')
 	return sb.String()
-}
-
-func hoverTypeSymDisplay(sym string) string {
-	if start := strings.LastIndexByte(sym, '['); start >= 0 {
-		if end := strings.LastIndexByte(sym, ']'); end > start+1 {
-			return sym[start+1 : end]
-		}
-	}
-	sym = strings.TrimSuffix(sym, "#")
-	sym = strings.TrimSuffix(sym, ".")
-	if idx := strings.LastIndexAny(sym, "/."); idx >= 0 {
-		return sym[idx+1:]
-	}
-	return sym
 }
 
 func ownerSymbol(sym string) string {

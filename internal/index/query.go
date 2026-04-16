@@ -82,7 +82,15 @@ func (idx *Index) References(uri string, line, character int) []Occurrence {
 	}
 
 	refs := idx.references[sym]
-	return deduplicateOccurrences(idx.copyOccurrences(refs))
+	occs := idx.copyOccurrences(refs)
+
+	// Local symbols (local0, local1, …) are only unique within a single file.
+	// Filter to the originating file to avoid false matches from other files.
+	if isLocalSymbol(sym) {
+		occs = filterOccurrencesByURI(occs, relURI)
+	}
+
+	return deduplicateOccurrences(occs)
 }
 
 // Hover returns the symbol information at the given position (for hover).
@@ -456,11 +464,15 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 	}
 
 	var result []Occurrence
+	localScope := isLocalSymbol(classSym)
 
 	// Collect class definition and reference occurrences.
 	for _, id := range idx.definitions[classSym] {
 		d := idx.symbol(id)
 		if !d.Range.IsEmpty() {
+			if localScope && d.URI != relURI {
+				continue
+			}
 			result = append(result, Occurrence{
 				Symbol: d.Symbol,
 				Role:   sdb.SymbolOccurrence_DEFINITION,
@@ -470,7 +482,11 @@ func (idx *Index) RenameOccurrences(uri string, line, character int) (string, []
 		}
 	}
 	for _, occID := range idx.references[classSym] {
-		result = append(result, idx.occurrenceByID(occID))
+		occ := idx.occurrenceByID(occID)
+		if localScope && occ.URI != relURI {
+			continue
+		}
+		result = append(result, occ)
 	}
 
 	// Also include constructor occurrences (definitions and references).
@@ -915,6 +931,23 @@ func (idx *Index) occurrence(id OccurrenceID) storedOccurrence {
 
 func (idx *Index) occurrenceByID(id OccurrenceID) Occurrence {
 	return idx.occurrenceFromStored(idx.occurrence(id))
+}
+
+// isLocalSymbol returns true for SemanticDB local symbols (local0, local1, …)
+// which are only unique within a single compilation unit (file).
+func isLocalSymbol(sym string) bool {
+	return strings.HasPrefix(sym, "local") && !strings.ContainsAny(sym, "/#.")
+}
+
+// filterOccurrencesByURI keeps only occurrences whose URI matches the given uri.
+func filterOccurrencesByURI(occs []Occurrence, uri string) []Occurrence {
+	var filtered []Occurrence
+	for _, o := range occs {
+		if o.URI == uri {
+			filtered = append(filtered, o)
+		}
+	}
+	return filtered
 }
 
 func deduplicateSymbols(symbols []Symbol) []Symbol {

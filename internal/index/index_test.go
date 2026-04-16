@@ -743,6 +743,100 @@ func TestCompletionSymbols_PrefixMatchesBeatFuzzyMatchesBeforeCap(t *testing.T) 
 	}
 }
 
+func TestLocalSymbol_ScopedToFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+
+	// Two files each with a local variable using the same SemanticDB symbol "local0".
+	fooDocs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Schema: sdb.Schema_SEMANTICDB4, Uri: "src/Foo.java", Language: sdb.Language_JAVA,
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "local0", DisplayName: "count", Kind: sdb.SymbolInformation_LOCAL},
+			},
+			Occurrences: []*sdb.SymbolOccurrence{
+				{Symbol: "local0", Role: sdb.SymbolOccurrence_DEFINITION,
+					Range: &sdb.Range{StartLine: 5, StartCharacter: 8, EndLine: 5, EndCharacter: 13}},
+				{Symbol: "local0", Role: sdb.SymbolOccurrence_REFERENCE,
+					Range: &sdb.Range{StartLine: 6, StartCharacter: 8, EndLine: 6, EndCharacter: 13}},
+			},
+		}},
+	}
+	barDocs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Schema: sdb.Schema_SEMANTICDB4, Uri: "src/Bar.java", Language: sdb.Language_JAVA,
+			Symbols: []*sdb.SymbolInformation{
+				{Symbol: "local0", DisplayName: "count", Kind: sdb.SymbolInformation_LOCAL},
+			},
+			Occurrences: []*sdb.SymbolOccurrence{
+				{Symbol: "local0", Role: sdb.SymbolOccurrence_DEFINITION,
+					Range: &sdb.Range{StartLine: 10, StartCharacter: 8, EndLine: 10, EndCharacter: 13}},
+				{Symbol: "local0", Role: sdb.SymbolOccurrence_REFERENCE,
+					Range: &sdb.Range{StartLine: 11, StartCharacter: 8, EndLine: 11, EndCharacter: 13}},
+			},
+		}},
+	}
+
+	writeSDB(t, filepath.Join(sdbDir, "Foo.java.semanticdb"), fooDocs)
+	writeSDB(t, filepath.Join(sdbDir, "Bar.java.semanticdb"), barDocs)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	if err := idx.Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	fooURI := "file://" + tmpDir + "/src/Foo.java"
+
+	// References from Foo.java should only return Foo.java occurrences.
+	refs := idx.References(fooURI, 5, 9)
+	for _, r := range refs {
+		if r.URI != "src/Foo.java" {
+			t.Fatalf("References returned occurrence from %s, want only src/Foo.java", r.URI)
+		}
+	}
+
+	// RenameOccurrences from Foo.java should only return Foo.java occurrences.
+	_, renameOccs := idx.RenameOccurrences(fooURI, 5, 9)
+	if len(renameOccs) == 0 {
+		t.Fatal("expected rename occurrences for local0 in Foo.java")
+	}
+	for _, o := range renameOccs {
+		if o.URI != "src/Foo.java" {
+			t.Fatalf("RenameOccurrences returned occurrence from %s, want only src/Foo.java", o.URI)
+		}
+	}
+}
+
+func TestSimpleTypeName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		// Class symbols
+		{"java/util/List#", "List"},
+		{"com/example/Foo#", "Foo"},
+		// Type parameters
+		{"java/util/List#[E]", "E"},
+		// Primitive types (passthrough)
+		{"int", "int"},
+		{"boolean", "boolean"},
+		{"void", "void"},
+		// Already-simple names
+		{"String", "String"},
+		// Inner classes
+		{"com/example/Outer.Inner#", "Inner"},
+		// Empty
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := SimpleTypeName(tt.input)
+		if got != tt.want {
+			t.Errorf("SimpleTypeName(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestCompletionMatchScore_Order(t *testing.T) {
 	tests := []struct {
 		name  string

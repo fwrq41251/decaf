@@ -554,7 +554,7 @@ func (idx *Index) indexDocument(uri string, doc *sdb.TextDocument) {
 		// instead of method-style with parameters.
 		if isEnumConstant {
 			if typeSym := extractTypeSym(sym.Signature); typeSym != "" {
-				typeName := simplifySymbol(typeSym)
+				typeName := SimpleTypeName(typeSym)
 				s.Signature = &SignatureInfo{Label: fmt.Sprintf("%s: %s", displayName, typeName)}
 			}
 		}

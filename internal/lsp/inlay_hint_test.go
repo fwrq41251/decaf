@@ -531,25 +531,6 @@ func TestFormatTypeExprSimple(t *testing.T) {
 	}
 }
 
-func TestSimpleNameFromSym(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"java/util/List#", "List"},
-		{"int", "int"},
-		{"String", "String"},
-		{"com/example/Foo#", "Foo"},
-		{"boolean", "boolean"},
-	}
-	for _, tt := range tests {
-		got := simpleNameFromSym(tt.input)
-		if got != tt.want {
-			t.Errorf("simpleNameFromSym(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
 // Line is a test helper to extract the line from a hint's position.
 func (h InlayHint) Line() int {
 	return h.Position.Line

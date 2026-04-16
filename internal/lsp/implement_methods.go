@@ -315,38 +315,28 @@ func formatMethodStubType(te *index.TypeExpr) string {
 }
 
 func simpleMethodStubTypeName(sym string) string {
+	// Map Scala primitive types to Java equivalents.
 	switch sym {
-	case "scala/Int#", "int":
+	case "scala/Int#":
 		return "int"
-	case "scala/Long#", "long":
+	case "scala/Long#":
 		return "long"
-	case "scala/Short#", "short":
+	case "scala/Short#":
 		return "short"
-	case "scala/Byte#", "byte":
+	case "scala/Byte#":
 		return "byte"
-	case "scala/Float#", "float":
+	case "scala/Float#":
 		return "float"
-	case "scala/Double#", "double":
+	case "scala/Double#":
 		return "double"
-	case "scala/Boolean#", "boolean":
+	case "scala/Boolean#":
 		return "boolean"
-	case "scala/Char#", "char":
+	case "scala/Char#":
 		return "char"
-	case "scala/Unit#", "void":
+	case "scala/Unit#":
 		return "void"
 	}
-
-	if start := strings.LastIndexByte(sym, '['); start >= 0 {
-		if end := strings.LastIndexByte(sym, ']'); end > start+1 {
-			return sym[start+1 : end]
-		}
-	}
-	sym = strings.TrimSuffix(sym, "#")
-	sym = strings.TrimSuffix(sym, ".")
-	if idx := strings.LastIndexAny(sym, "/."); idx >= 0 {
-		return sym[idx+1:]
-	}
-	return sym
+	return index.SimpleTypeName(sym)
 }
 
 // findClassInsertionPoint locates the line of the closing brace of the class

@@ -215,7 +215,11 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 			h.reindex()
 			h.idx.LogStatsSnapshot("after compile + reindex")
 		} else {
-			h.logger.Println("Existing index found, skipping initial full compilation.")
+			h.logger.Println("Existing index found, running compile for diagnostics…")
+			prog.report("compiling for diagnostics…", intPtr(70))
+			if err := h.bspClient.Compile(ctx); err != nil {
+				h.logCompileError("diagnostics compile", err)
+			}
 		}
 
 		prog.end("ready")

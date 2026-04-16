@@ -390,7 +390,7 @@ func formatTypeExprSimple(te *index.TypeExpr) string {
 	if te == nil {
 		return ""
 	}
-	name := simpleNameFromSym(te.Sym)
+	name := index.SimpleTypeName(te.Sym)
 	if len(te.Args) == 0 {
 		return name
 	}
@@ -407,17 +407,4 @@ func formatTypeExprSimple(te *index.TypeExpr) string {
 	return sb.String()
 }
 
-// simpleNameFromSym extracts a simple type name from a SemanticDB symbol or plain name.
-// e.g. "java/util/List#" → "List", "int" → "int", "String" → "String"
-func simpleNameFromSym(sym string) string {
-	// Handle primitive types and already-simple names.
-	if !strings.Contains(sym, "/") && !strings.Contains(sym, "#") {
-		return sym
-	}
-	// Strip trailing "#"
-	s := strings.TrimSuffix(sym, "#")
-	if idx := strings.LastIndex(s, "/"); idx >= 0 {
-		return s[idx+1:]
-	}
-	return s
-}
+
