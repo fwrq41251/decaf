@@ -41,6 +41,7 @@ type Handler struct {
 	bgMu             sync.Mutex
 	backgroundCtx    context.Context
 	backgroundCancel context.CancelFunc
+	bgWg             sync.WaitGroup
 
 	// diagnosticsMu protects diagnostics map.
 	diagnosticsMu sync.Mutex
@@ -96,6 +97,7 @@ func (h *Handler) Close(ctx context.Context) {
 		h.backgroundCancel()
 	}
 	h.bgMu.Unlock()
+	h.bgWg.Wait()
 	if h.idx != nil {
 		h.idx.Close()
 	}

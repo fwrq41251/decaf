@@ -91,6 +91,12 @@ func (c *Client) Start(ctx context.Context, rootURI string) error {
 	cleanup := true
 	defer func() {
 		if cleanup {
+			if c.conn != nil {
+				c.conn.Close()
+			}
+			if c.cmd != nil && c.cmd.Process != nil {
+				c.cmd.Process.Kill()
+			}
 			os.RemoveAll(socketDir)
 			c.socketDir = ""
 		}
@@ -321,9 +327,8 @@ func (c *Client) clearPending() {
 	defer c.pendingMu.Unlock()
 	for id, ch := range c.pending {
 		select {
-		case <-ch:
+		case ch <- nil: // signal connection closed
 		default:
-			close(ch)
 		}
 		delete(c.pending, id)
 	}
@@ -437,11 +442,9 @@ func (c *Client) readLoop() {
 			ch, ok := c.pending[id]
 			if ok {
 				delete(c.pending, id)
-			}
-			c.pendingMu.Unlock()
-			if ok {
 				ch <- &resp
 			}
+			c.pendingMu.Unlock()
 		} else if probe.Method != "" {
 			// This is a notification.
 			c.handleNotification(probe.Method, body)

@@ -10,6 +10,25 @@ import (
 	slog "github.com/smacker/go-tree-sitter"
 )
 
+// methodSignatureKey returns a dedup key that distinguishes overloaded methods
+// by combining the method name with its parameter type symbols.
+func methodSignatureKey(m index.Symbol) string {
+	if m.Signature == nil || len(m.Signature.Params) == 0 {
+		return m.Name + "()"
+	}
+	var b strings.Builder
+	b.WriteString(m.Name)
+	b.WriteByte('(')
+	for i, p := range m.Signature.Params {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(p.TypeSym)
+	}
+	b.WriteByte(')')
+	return b.String()
+}
+
 // extractUnimplementedInfo parses a javac diagnostic message of the form:
 //
 //	"ClassName is not abstract and does not override abstract method methodName(...) in ParentName"
@@ -119,7 +138,7 @@ func missingAbstractMethodStubs(classSym string, idx *index.Index) []string {
 	// Collect methods already implemented in the class itself.
 	for _, m := range idx.DirectMembersOfType(classSym) {
 		if m.Kind == sdb.SymbolInformation_METHOD && !m.IsStatic && !m.IsAbstract {
-			implemented[m.Name] = true
+			implemented[methodSignatureKey(m)] = true
 		}
 	}
 
@@ -142,15 +161,15 @@ func missingAbstractMethodStubs(classSym string, idx *index.Index) []string {
 		// First pass: collect all concrete implementations in this type.
 		for _, m := range members {
 			if m.Kind == sdb.SymbolInformation_METHOD && !m.IsStatic && !m.IsAbstract {
-				implemented[m.Name] = true
+				implemented[methodSignatureKey(m)] = true
 			}
 		}
 
 		// Second pass: collect abstract methods.
 		for _, m := range members {
 			if m.Kind == sdb.SymbolInformation_METHOD && !m.IsStatic && m.IsAbstract {
-				if !seenAbstract[m.Name] {
-					seenAbstract[m.Name] = true
+				if !seenAbstract[methodSignatureKey(m)] {
+					seenAbstract[methodSignatureKey(m)] = true
 					abstractMethods = append(abstractMethods, abstractMethod{m, owner})
 				}
 			}
@@ -168,7 +187,7 @@ func missingAbstractMethodStubs(classSym string, idx *index.Index) []string {
 
 	var stubs []string
 	for _, am := range abstractMethods {
-		if !implemented[am.sym.Name] {
+		if !implemented[methodSignatureKey(am.sym)] {
 			stubs = append(stubs, generateMethodStubForOwner(am.sym, am.owner, idx))
 		}
 	}
@@ -430,7 +449,7 @@ func hasOverridableMethodsWithOverlay(fileURI string, idx *index.Index, overlay 
 	ownMethods := make(map[string]bool)
 	for _, m := range idx.DirectMembersOfType(classSym.Symbol) {
 		if m.Kind == sdb.SymbolInformation_METHOD {
-			ownMethods[m.Name] = true
+			ownMethods[methodSignatureKey(m)] = true
 		}
 	}
 
@@ -445,7 +464,7 @@ func hasOverridableMethodsWithOverlay(fileURI string, idx *index.Index, overlay 
 			if m.IsAbstract || m.IsStatic {
 				continue
 			}
-			if !ownMethods[m.Name] {
+			if !ownMethods[methodSignatureKey(m)] {
 				return true
 			}
 		}
@@ -489,7 +508,7 @@ func collectOverridableMethodsWithOverlay(fileURI string, idx *index.Index, over
 	ownMethods := make(map[string]bool)
 	for _, m := range idx.DirectMembersOfType(classSym.Symbol) {
 		if m.Kind == sdb.SymbolInformation_METHOD {
-			ownMethods[m.Name] = true
+			ownMethods[methodSignatureKey(m)] = true
 		}
 	}
 
@@ -513,13 +532,13 @@ func collectOverridableMethodsWithOverlay(fileURI string, idx *index.Index, over
 			if m.IsAbstract || m.IsStatic {
 				continue
 			}
-			if ownMethods[m.Name] {
+			if ownMethods[methodSignatureKey(m)] {
 				continue
 			}
-			if seen[m.Name] {
+			if seen[methodSignatureKey(m)] {
 				continue
 			}
-			seen[m.Name] = true
+			seen[methodSignatureKey(m)] = true
 			methods = append(methods, overridableMethod{method: m, parentType: parentType})
 		}
 	}

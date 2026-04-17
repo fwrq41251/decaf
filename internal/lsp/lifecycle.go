@@ -97,7 +97,9 @@ func (h *Handler) handleInitialized(ctx context.Context, _ json.RawMessage) (any
 	}
 
 	// Full setup + compile in background if needed.
+	h.bgWg.Add(1)
 	go func() {
+		defer h.bgWg.Done()
 		if needsFullBuild {
 			defer h.closeIndexReady()
 		}
@@ -236,6 +238,7 @@ func (h *Handler) handleShutdown(ctx context.Context, _ json.RawMessage) (any, e
 		h.backgroundCancel()
 	}
 	h.bgMu.Unlock()
+	h.bgWg.Wait()
 	if h.idx != nil {
 		h.idx.Close()
 	}
