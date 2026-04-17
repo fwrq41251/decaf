@@ -12,7 +12,7 @@ import (
 
 func TestExternalSymbolResolution(t *testing.T) {
 	tmpDir := t.TempDir()
-	
+
 	// 1. Create a dummy JAR file with some Java source.
 	jarPath := filepath.Join(tmpDir, "lib.jar")
 	createDummyJar(t, jarPath, "com/example/Lib.java", `package com.example;
@@ -84,7 +84,7 @@ func createDummyJar(t *testing.T, path string, fileName string, content string) 
 
 func TestJDKSourceResolution(t *testing.T) {
 	tmpDir := t.TempDir()
-	
+
 	// Mock JDK source directory.
 	jdkDir := filepath.Join(tmpDir, "jdk-src")
 	relPath := "java/lang/String.java"
@@ -104,7 +104,7 @@ func TestJDKSourceResolution(t *testing.T) {
 	if s.Symbol != sym {
 		t.Errorf("got %q, want %q", s.Symbol, sym)
 	}
-	
+
 	// Verify it used the directory directly (no extraction needed).
 	cachedPath, ok := idx.externalCache.Load(relPath)
 	if !ok {
@@ -129,7 +129,7 @@ public class Concurrent {}
 	const count = 20
 	done := make(chan bool)
 	sym := "com/example/Concurrent#"
-	
+
 	for i := 0; i < count; i++ {
 		go func() {
 			s := idx.resolveExternalSymbol(sym)
@@ -152,5 +152,69 @@ public class Concurrent {}
 	}
 	if _, err := os.Stat(cachedPath.(string)); err != nil {
 		t.Errorf("extracted file does not exist: %v", err)
+	}
+}
+
+func TestExternalCacheSurvivesWorkspaceReload(t *testing.T) {
+	tmpDir := t.TempDir()
+	jarPath := filepath.Join(tmpDir, "lib.jar")
+	createDummyJar(t, jarPath, "com/example/Lib.java", `package com.example;
+public class Lib {
+    public void hello() {}
+}
+`)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	defer idx.Close()
+	idx.AddDependencySource(jarPath)
+
+	sym := "com/example/Lib#hello()."
+	if idx.resolveExternalSymbol(sym) == nil {
+		t.Fatal("failed to resolve external symbol")
+	}
+
+	relPath := "com/example/Lib.java"
+	if _, ok := idx.externalCache.Load(relPath); !ok {
+		t.Fatal("expected external cache entry before reload")
+	}
+
+	writeSDB(t, filepath.Join(tmpDir, "META-INF", "semanticdb", "Main.java.semanticdb"),
+		classDocs("src/Main.java", "com/example/Main#", "Main"))
+	if err := idx.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if _, ok := idx.externalCache.Load(relPath); !ok {
+		t.Fatal("expected external cache entry to survive workspace reload")
+	}
+}
+
+func TestExternalMissCacheClearedOnDependencySourceChange(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+
+	sym := "com/example/Later#"
+	if got := idx.resolveExternalSymbol(sym); got != nil {
+		t.Fatalf("expected initial lookup miss, got %+v", got)
+	}
+
+	relPath := "com/example/Later.java"
+	if _, ok := idx.externalMisses.Load(relPath); !ok {
+		t.Fatal("expected miss cache entry after failed lookup")
+	}
+
+	jarPath := filepath.Join(tmpDir, "later.jar")
+	createDummyJar(t, jarPath, relPath, `package com.example;
+public class Later {}
+`)
+	idx.AddDependencySource(jarPath)
+
+	if _, ok := idx.externalMisses.Load(relPath); ok {
+		t.Fatal("expected AddDependencySource to clear miss cache")
+	}
+	if got := idx.resolveExternalSymbol(sym); got == nil {
+		t.Fatal("expected lookup to succeed after dependency source update")
 	}
 }

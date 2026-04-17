@@ -84,6 +84,12 @@ type Index struct {
 	depSourcesSet     map[string]struct{}
 	// cache for external symbol resolutions (relPath -> extractedPath)
 	externalCache sync.Map
+	// relPath -> miss marker for external source lookup
+	externalMisses sync.Map
+	// archive path -> indexed source entries for fast external lookup
+	archiveIndexes sync.Map
+	// file path + symbol -> cached declaration range
+	symbolLocations sync.Map
 
 	// set of classpath JARs already indexed by the class indexer
 	indexedJARs map[string]struct{}
@@ -99,6 +105,10 @@ type Index struct {
 	skeletonIndexedClasses map[string]struct{}
 	// set of class symbols whose members have been indexed
 	fullyIndexedClasses map[string]struct{}
+
+	// roots used for semanticdb scanning and watcher registration.
+	scanRoots  []string
+	watchRoots []string
 }
 
 type externalTypeInfo struct {
@@ -180,6 +190,9 @@ func (idx *Index) AddDependencySource(path string) {
 
 func (idx *Index) clearExternalCache() {
 	idx.externalCache.Clear()
+	idx.externalMisses.Clear()
+	idx.archiveIndexes.Clear()
+	idx.symbolLocations.Clear()
 }
 
 // SetJdkSourceRoot sets the path to the JDK source files.

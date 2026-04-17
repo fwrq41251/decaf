@@ -8,9 +8,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/fwrq41251/decaf/internal/uri"
 )
+
+type archiveIndex struct {
+	once    sync.Once
+	entries []string
+	exact   map[string]string
+	err     error
+}
+
+type cachedSymbolLocation struct {
+	found bool
+	rng   Range
+}
 
 func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 	// Clean the symbol: strip trailing SemanticDB markers.
@@ -41,6 +54,9 @@ func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 		if cachedPath, ok := idx.externalCache.Load(relPath); ok {
 			return idx.createExternalSymbol(sym, cachedPath.(string))
 		}
+		if _, ok := idx.externalMisses.Load(relPath); ok {
+			continue
+		}
 
 		// Search in JDK.
 		if jdkRoot != "" {
@@ -55,6 +71,8 @@ func (idx *Index) resolveExternalSymbol(sym string) *Symbol {
 				return s
 			}
 		}
+
+		idx.externalMisses.Store(relPath, struct{}{})
 	}
 
 	return nil
@@ -84,45 +102,22 @@ func (idx *Index) tryResolveFromContainer(container, relPath, originalSym string
 func (idx *Index) createExternalSymbol(sym, path string) *Symbol {
 	fileURI := uri.FromPath(path)
 
-	line, col := FindSymbolLocation(path, sym)
-
 	s := &Symbol{
 		Symbol: sym,
 		URI:    fileURI,
 	}
 
-	if line != -1 {
-		s.Range = Range{
-			StartLine:      int32(line),
-			StartCharacter: int32(col),
-			EndLine:        int32(line),
-			EndCharacter:   int32(col + len(ExtractShortName(sym))),
-		}
+	location := idx.cachedSymbolLocation(path, sym)
+	if location.found {
+		s.Range = location.rng
 	}
 
 	return s
 }
 
 func (idx *Index) findAndExtractFromJar(jarPath, relPath string) string {
-	// 1. Check if the JAR contains the file.
-	r, err := zip.OpenReader(jarPath)
-	if err != nil {
-		idx.logger.Printf("Failed to open JAR %s: %v", jarPath, err)
-		return ""
-	}
-	defer r.Close()
-
-	var targetFile *zip.File
-	for _, f := range r.File {
-		// Use filepath.ToSlash for consistency in ZIP names
-		zipName := filepath.ToSlash(f.Name)
-		if strings.HasSuffix(zipName, relPath) {
-			targetFile = f
-			break
-		}
-	}
-
-	if targetFile == nil {
+	targetEntry, ok := idx.lookupArchiveEntry(jarPath, relPath)
+	if !ok {
 		return ""
 	}
 
@@ -132,32 +127,45 @@ func (idx *Index) findAndExtractFromJar(jarPath, relPath string) string {
 	sanitizedJar := hex.EncodeToString(h[:])
 
 	destDir := filepath.Join(os.TempDir(), "decaf", "lib-src", sanitizedJar)
-	destPath := filepath.Join(destDir, targetFile.Name)
+	destPath := filepath.Join(destDir, targetEntry)
 
 	if _, err := os.Stat(destPath); err == nil {
 		return destPath
 	}
 
-	os.MkdirAll(filepath.Dir(destPath), 0755)
-	rc, err := targetFile.Open()
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return ""
+	}
+
+	r, err := zip.OpenReader(jarPath)
+	if err != nil {
+		idx.logger.Printf("Failed to open JAR %s: %v", jarPath, err)
+		return ""
+	}
+	defer r.Close()
+
+	rc, err := r.Open(targetEntry)
 	if err != nil {
 		return ""
 	}
 	defer rc.Close()
 
 	// Atomic extraction: write to a temporary file and then rename.
-	tmpPath := destPath + ".tmp"
-	out, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	tmpFile, err := os.CreateTemp(filepath.Dir(destPath), filepath.Base(destPath)+".tmp-*")
 	if err != nil {
 		return ""
 	}
+	tmpPath := tmpFile.Name()
 
-	if _, err := io.Copy(out, rc); err != nil {
-		out.Close()
+	if _, err := io.Copy(tmpFile, rc); err != nil {
+		tmpFile.Close()
 		os.Remove(tmpPath)
 		return ""
 	}
-	out.Close()
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return ""
+	}
 
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		os.Remove(tmpPath)
@@ -169,4 +177,70 @@ func (idx *Index) findAndExtractFromJar(jarPath, relPath string) string {
 	}
 
 	return destPath
+}
+
+func (idx *Index) cachedSymbolLocation(path, sym string) cachedSymbolLocation {
+	key := path + "\x00" + sym
+	if cached, ok := idx.symbolLocations.Load(key); ok {
+		return cached.(cachedSymbolLocation)
+	}
+
+	line, col := FindSymbolLocation(path, sym)
+	if line == -1 {
+		location := cachedSymbolLocation{}
+		idx.symbolLocations.Store(key, location)
+		return location
+	}
+
+	location := cachedSymbolLocation{
+		found: true,
+		rng: Range{
+			StartLine:      int32(line),
+			StartCharacter: int32(col),
+			EndLine:        int32(line),
+			EndCharacter:   int32(col + len(ExtractShortName(sym))),
+		},
+	}
+	idx.symbolLocations.Store(key, location)
+	return location
+}
+
+func (idx *Index) lookupArchiveEntry(container, relPath string) (string, bool) {
+	archive := idx.getArchiveIndex(container)
+	if archive == nil || archive.err != nil {
+		return "", false
+	}
+	if entry, ok := archive.exact[relPath]; ok {
+		return entry, true
+	}
+	for _, entry := range archive.entries {
+		if strings.HasSuffix(entry, relPath) {
+			return entry, true
+		}
+	}
+	return "", false
+}
+
+func (idx *Index) getArchiveIndex(container string) *archiveIndex {
+	value, _ := idx.archiveIndexes.LoadOrStore(container, &archiveIndex{})
+	archive := value.(*archiveIndex)
+	archive.once.Do(func() {
+		r, err := zip.OpenReader(container)
+		if err != nil {
+			archive.err = err
+			return
+		}
+		defer r.Close()
+
+		archive.exact = make(map[string]string, len(r.File))
+		for _, file := range r.File {
+			name := filepath.ToSlash(file.Name)
+			if !strings.HasSuffix(name, ".java") {
+				continue
+			}
+			archive.entries = append(archive.entries, name)
+			archive.exact[name] = file.Name
+		}
+	})
+	return archive
 }

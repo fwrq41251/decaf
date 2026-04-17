@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -17,6 +19,7 @@ import (
 // hover, and type resolution for third-party dependencies that have no
 // .semanticdb files.
 func (idx *Index) IndexClasspathJARs(jars []string) {
+	jars = normalizeClasspathEntries(jars)
 	if len(jars) == 0 {
 		return
 	}
@@ -45,6 +48,30 @@ func (idx *Index) IndexClasspathJARs(jars []string) {
 	}
 	idx.mu.Unlock()
 	idx.logger.Printf("classindex: indexed %d classes from %d JARs", merged, len(toIndex))
+}
+
+func normalizeClasspathEntries(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		clean := filepath.Clean(path)
+		if _, err := os.Stat(clean); err != nil {
+			continue
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
 }
 
 // classSymbols holds all the symbols extracted from a single .class file,

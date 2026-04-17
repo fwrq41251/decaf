@@ -841,3 +841,22 @@ func TestIndexClasspathJARs_GenericSignatures(t *testing.T) {
 		t.Errorf("DeclTypeOf(size) = %v, want nil (primitive return has no declType)", sizeDeclType)
 	}
 }
+
+func TestNormalizeClasspathEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	jarPath := filepath.Join(tmpDir, "lib.jar")
+	if err := os.WriteFile(jarPath, []byte("not-a-real-jar"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := normalizeClasspathEntries([]string{
+		"",
+		jarPath,
+		filepath.Join(tmpDir, ".", "lib.jar"),
+		filepath.Join(tmpDir, "missing.jar"),
+	})
+
+	if len(got) != 1 || got[0] != jarPath {
+		t.Fatalf("normalizeClasspathEntries() = %v, want [%s]", got, jarPath)
+	}
+}

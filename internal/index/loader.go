@@ -24,14 +24,17 @@ type parsedFile struct {
 // On the first call it does a full directory walk and starts a file watcher.
 // Subsequent calls process only files reported as changed by the watcher.
 func (idx *Index) Load() error {
+	scanRoots, watchRoots := idx.discoverScanAndWatchRoots()
+
 	idx.mu.RLock()
 	hasWatcher := idx.watcher != nil
+	rootsMatch := sameRoots(idx.scanRoots, scanRoots) && sameRoots(idx.watchRoots, watchRoots)
 	idx.mu.RUnlock()
 
-	if hasWatcher {
+	if hasWatcher && rootsMatch {
 		return idx.loadFromWatcher()
 	}
-	return idx.loadFull()
+	return idx.loadFull(scanRoots, watchRoots)
 }
 
 // loadFull walks the entire workspace, indexes all .semanticdb files,
@@ -39,24 +42,9 @@ func (idx *Index) Load() error {
 //
 // File I/O and protobuf unmarshaling run lock-free; only the final index
 // mutation step acquires the write lock to minimize blocking of LSP queries.
-func (idx *Index) loadFull() error {
+func (idx *Index) loadFull(scanRoots, watchRoots []string) error {
 	// Phase 1: Walk the directory tree (lock-free, sourceRoot is immutable).
-	current := make(map[string]os.FileInfo)
-	err := filepath.Walk(idx.sourceRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			if isSkippedDir(info.Name(), path) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(path, ".semanticdb") {
-			current[path] = info
-		}
-		return nil
-	})
+	current, err := idx.collectCurrentSemanticDBFiles(scanRoots)
 	if err != nil {
 		return fmt.Errorf("walking source root: %w", err)
 	}
@@ -84,7 +72,6 @@ func (idx *Index) loadFull() error {
 
 	// Phase 4: Acquire write lock for serial index mutation.
 	idx.mu.Lock()
-	defer idx.mu.Unlock()
 	if len(toIndex) == 0 && len(deleted) == 0 {
 		idx.logger.Printf("index up-to-date (%d files, no changes)", len(current))
 	} else {
@@ -92,7 +79,7 @@ func (idx *Index) loadFull() error {
 			len(toIndex), len(deleted), len(current))
 
 		for _, path := range deleted {
-			if idx.sourceFilesExist(path) {
+			if idx.shouldKeepMissingFile(path, scanRoots) {
 				idx.logger.Printf("keeping stale index for %s (source files still exist)", path)
 			} else {
 				idx.removeFile(path)
@@ -120,21 +107,67 @@ func (idx *Index) loadFull() error {
 			if idx.shouldCompactStorage() {
 				idx.compactStorage()
 			}
-			idx.clearExternalCache()
 		}
 		idx.logStats()
 	}
+
+	idx.scanRoots = append(idx.scanRoots[:0], scanRoots...)
+	oldWatcher := idx.watcher
+	idx.watcher = nil
+	idx.watchRoots = nil
+	idx.mu.Unlock()
 
 	// Start watcher for subsequent incremental loads.
 	w, err := newWatcher(idx)
 	if err != nil {
 		idx.logger.Printf("warning: failed to start file watcher: %v (falling back to full scan)", err)
 	} else {
-		w.watchDirs(idx.sourceRoot)
+		w.watchRoots(watchRoots)
+		idx.mu.Lock()
 		idx.watcher = w
-		idx.logger.Printf("file watcher started for %s", idx.sourceRoot)
+		idx.watchRoots = append(idx.watchRoots[:0], watchRoots...)
+		idx.mu.Unlock()
+		idx.logger.Printf("file watcher started for %d root(s)", len(watchRoots))
+	}
+	if oldWatcher != nil {
+		_ = oldWatcher.close()
 	}
 	return nil
+}
+
+func (idx *Index) collectCurrentSemanticDBFiles(roots []string) (map[string]os.FileInfo, error) {
+	current := make(map[string]os.FileInfo)
+	for _, root := range roots {
+		info, err := os.Stat(root)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		if !info.IsDir() {
+			continue
+		}
+		err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				if isSkippedDir(info.Name(), path) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if strings.HasSuffix(path, ".semanticdb") {
+				current[path] = info
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return current, nil
 }
 
 // parseFilesConcurrently reads and unmarshals .semanticdb files in parallel.
@@ -263,7 +296,6 @@ func (idx *Index) loadFromWatcher() error {
 		if idx.shouldCompactStorage() {
 			idx.compactStorage()
 		}
-		idx.clearExternalCache()
 	}
 	idx.logStats()
 	return nil
@@ -341,6 +373,8 @@ func (idx *Index) Close() {
 		_ = idx.watcher.close()
 		idx.watcher = nil
 	}
+	idx.scanRoots = nil
+	idx.watchRoots = nil
 }
 
 // sourceFilesExist checks if any source files associated with a .semanticdb
@@ -356,6 +390,18 @@ func (idx *Index) sourceFilesExist(sdbPath string) bool {
 		}
 	}
 	return false
+}
+
+// shouldKeepMissingFile reports whether a missing .semanticdb file should keep
+// its stale index entries temporarily. If the file is outside the currently
+// configured scan roots, the index must be dropped immediately because this is
+// a root switch, not a transient compile failure.
+// Must be called with idx.mu held.
+func (idx *Index) shouldKeepMissingFile(sdbPath string, scanRoots []string) bool {
+	if !pathWithinAnyRoot(sdbPath, scanRoots) {
+		return false
+	}
+	return idx.sourceFilesExist(sdbPath)
 }
 
 // removeFile removes all index data associated with a .semanticdb file.
