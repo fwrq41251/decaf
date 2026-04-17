@@ -149,6 +149,7 @@ func TestDefinition(t *testing.T) {
 	os.MkdirAll(sdbDir, 0755)
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "Main.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	idx.Load()
 
 	// 2. External symbol setup (mock JAR)
@@ -236,6 +237,7 @@ func TestPrepareRename(t *testing.T) {
 	os.MkdirAll(sdbDir, 0755)
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "Main.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	idx.Load()
 
 	// 1. Prepare rename on the reference (line 10).
@@ -324,6 +326,7 @@ func TestHandleBSPTaskFinish_DoesNotReindexOnCompileReport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sdbDir, "Main.java.semanticdb"), data, 0644); err != nil {
 		t.Fatalf("write semanticdb: %v", err)
 	}
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 
 	h.handleBSPTaskFinish(bsp.TaskFinishParams{
 		TaskID:   bsp.TaskID{ID: "compile-1"},
@@ -380,6 +383,7 @@ func TestRenameTopLevelClass(t *testing.T) {
 	os.MkdirAll(sdbDir, 0755)
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "Foo.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	idx.Load()
 
 	renameParams := RenameParams{
@@ -498,6 +502,7 @@ func TestRenameFromConstructorRenamesClassAndFile(t *testing.T) {
 	os.MkdirAll(sdbDir, 0755)
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "Foo.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	idx.Load()
 
 	// Rename from constructor position (line 4, character 12 — inside the constructor name).
@@ -588,6 +593,7 @@ func TestRenameInnerClassNoFileRename(t *testing.T) {
 	os.MkdirAll(sdbDir, 0755)
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "Outer.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	idx.Load()
 
 	renameParams := RenameParams{
@@ -667,6 +673,7 @@ func TestSignatureHelp_UncompiledCode(t *testing.T) {
 	os.MkdirAll(sdbDir, 0755)
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "Foo.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	idx.Load()
 
 	// Open a file with uncompiled code that calls foo.bar(|).
@@ -737,6 +744,7 @@ func TestCompletion_AllowsMultipleTypesWithSameSimpleName(t *testing.T) {
 	os.MkdirAll(sdbDir, 0755)
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "Types.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	idx.Load()
 
 	fileURI := "file://" + tmpDir + "/src/Caller.java"
@@ -808,6 +816,7 @@ func TestCompletion_PrefersJDKTypeOverThirdPartyForSameSimpleName(t *testing.T) 
 	os.MkdirAll(sdbDir, 0755)
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "Types.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	idx.Load()
 
 	fileURI := "file://" + tmpDir + "/src/Caller.java"
@@ -871,6 +880,7 @@ func TestCompletion_PrefersExplicitImportForSameSimpleName(t *testing.T) {
 	os.MkdirAll(sdbDir, 0755)
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "Types.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	idx.Load()
 
 	fileURI := "file://" + tmpDir + "/src/Caller.java"
@@ -959,6 +969,7 @@ func TestCompletion_ShowsOverloadedMethodsSeparately(t *testing.T) {
 	os.MkdirAll(sdbDir, 0755)
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "Foo.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	idx.Load()
 
 	fileURI := "file://" + tmpDir + "/src/Caller.java"

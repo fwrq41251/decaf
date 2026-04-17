@@ -34,6 +34,7 @@ func loadSDB(t *testing.T, tmpDir string, idx *index.Index, docs *sdb.TextDocume
 	t.Helper()
 	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
 	os.MkdirAll(sdbDir, 0755)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "test.semanticdb"), data, 0644)
 	idx.Load()

@@ -72,6 +72,7 @@ func TestIndexLoadAndQuery(t *testing.T) {
 	if err := os.WriteFile(sdbFile, data, 0644); err != nil {
 		t.Fatal(err)
 	}
+	writeSourcePlaceholders(t, tmpDir, docs)
 
 	// Create and load index.
 	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
@@ -122,6 +123,7 @@ func TestIndexLoadAndQuery(t *testing.T) {
 
 func writeSDB(t *testing.T, path string, docs *sdb.TextDocuments) {
 	t.Helper()
+	writeSourcePlaceholders(t, filepath.Dir(filepath.Dir(filepath.Dir(path))), docs)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -131,6 +133,27 @@ func writeSDB(t *testing.T, path string, docs *sdb.TextDocuments) {
 	}
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func writeSourcePlaceholders(t *testing.T, sourceRoot string, docs *sdb.TextDocuments) {
+	t.Helper()
+	seen := make(map[string]struct{})
+	for _, doc := range docs.Documents {
+		if doc == nil || doc.Uri == "" {
+			continue
+		}
+		srcPath := filepath.Join(sourceRoot, filepath.FromSlash(doc.Uri))
+		if _, ok := seen[srcPath]; ok {
+			continue
+		}
+		seen[srcPath] = struct{}{}
+		if err := os.MkdirAll(filepath.Dir(srcPath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(srcPath, []byte("class Placeholder {}\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -610,6 +633,9 @@ func TestIncrementalIndex(t *testing.T) {
 	}
 
 	// --- Fifth load: delete Bar (watcher picks up remove event) ---
+	if err := os.Remove(filepath.Join(tmpDir, "src", "Bar.java")); err != nil {
+		t.Fatalf("removing Bar source: %v", err)
+	}
 	os.Remove(filepath.Join(sdbDir, "Bar.java.semanticdb"))
 	time.Sleep(100 * time.Millisecond)
 
@@ -627,6 +653,48 @@ func TestIncrementalIndex(t *testing.T) {
 	}
 	if got := len(idx.occurrences); got != 1 {
 		t.Fatalf("expected 1 stored occurrence after deleting Bar, got %d", got)
+	}
+}
+
+func TestLoad_SkipsStaleSemanticDBWithoutSourceFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := NewIndex(logger, tmpDir)
+	defer idx.Close()
+
+	fooDocs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Schema: sdb.Schema_SEMANTICDB4, Uri: "src/Foo.java", Language: sdb.Language_JAVA,
+			Symbols: []*sdb.SymbolInformation{{
+				Symbol: "com/example/Foo#", DisplayName: "Foo", Kind: sdb.SymbolInformation_CLASS,
+			}},
+			Occurrences: []*sdb.SymbolOccurrence{{
+				Symbol: "com/example/Foo#", Role: sdb.SymbolOccurrence_DEFINITION,
+				Range: &sdb.Range{StartLine: 1, StartCharacter: 13, EndLine: 1, EndCharacter: 16},
+			}},
+		}},
+	}
+	sdbPath := filepath.Join(sdbDir, "Foo.java.semanticdb")
+	writeSDB(t, sdbPath, fooDocs)
+
+	if err := idx.Load(); err != nil {
+		t.Fatalf("first Load failed: %v", err)
+	}
+	if got := len(idx.AllSymbols()); got != 1 {
+		t.Fatalf("expected 1 symbol after initial load, got %d", got)
+	}
+
+	srcPath := filepath.Join(tmpDir, "src", "Foo.java")
+	if err := os.Remove(srcPath); err != nil {
+		t.Fatalf("removing source file: %v", err)
+	}
+
+	if err := idx.Load(); err != nil {
+		t.Fatalf("second Load failed: %v", err)
+	}
+	if got := len(idx.AllSymbols()); got != 0 {
+		t.Fatalf("expected stale semanticdb to be ignored after source removal, got %d symbols", got)
 	}
 }
 

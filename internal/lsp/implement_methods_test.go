@@ -110,6 +110,7 @@ public class MyService implements Handler {
 	}
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "MyService.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 
 	// Set up the Handler interface with an abstract method in a separate document.
 	handlerDocs := &sdb.TextDocuments{
@@ -170,6 +171,7 @@ public class MyService implements Handler {
 	}
 	handlerData, _ := proto.Marshal(handlerDocs)
 	os.WriteFile(filepath.Join(sdbDir, "Handler.java.semanticdb"), handlerData, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, handlerDocs)
 
 	idx.Load()
 
@@ -306,6 +308,7 @@ public class MyService implements Handler {
 	}
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "MyService.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 
 	idx.Load()
 	fileURI := uri.FromPath(javaPath)
@@ -520,6 +523,7 @@ public class MyList extends AbstractList {
 	}
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "MyList.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 
 	idx.Load()
 	fileURI := uri.FromPath(javaPath)
@@ -626,6 +630,7 @@ public class MyService implements Handler {
 	}
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "MyService.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 
 	idx.Load()
 	fileURI := uri.FromPath(javaPath)
@@ -748,6 +753,7 @@ func TestImplementMethods_DeepInheritance(t *testing.T) {
 	}
 	data, _ := proto.Marshal(docs)
 	os.WriteFile(filepath.Join(sdbDir, "Deep.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 
 	idx.Load()
 

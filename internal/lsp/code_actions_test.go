@@ -44,6 +44,7 @@ func TestCodeAction_AddImportForNestedTypeInSamePackage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sdbDir, "Types.java.semanticdb"), data, 0644); err != nil {
 		t.Fatalf("write semanticdb: %v", err)
 	}
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	idx.Load()
 
 	fileURI := "file://" + tmpDir + "/src/Use.java"
@@ -118,6 +119,7 @@ func TestCodeAction_DoesNotAddImportForTopLevelTypeInSamePackage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sdbDir, "Helper.java.semanticdb"), data, 0644); err != nil {
 		t.Fatalf("write semanticdb: %v", err)
 	}
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	idx.Load()
 
 	fileURI := "file://" + tmpDir + "/src/Use.java"
@@ -180,6 +182,7 @@ func TestCodeAction_DeduplicatesImportFixesWithSameFQN(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sdbDir, "Request.java.semanticdb"), data, 0644); err != nil {
 		t.Fatalf("write semanticdb: %v", err)
 	}
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 	idx.Load()
 
 	fileURI := "file://" + tmpDir + "/src/Use.java"

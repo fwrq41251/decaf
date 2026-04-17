@@ -37,9 +37,11 @@ func TestLoadPrefersBloopSemanticDBRoots(t *testing.T) {
 	writeBloopConfig(t, tmpDir, "root.json", tmpDir, classesDir)
 
 	realDocs := classDocs("src/Real.java", "com/example/Real#", "Real")
+	writeJavaSource(t, filepath.Join(tmpDir, "src", "Real.java"), "class Real {}")
 	writeSDB(t, filepath.Join(classesDir, "META-INF", "semanticdb", "Real.java.semanticdb"), realDocs)
 
 	ignoredDocs := classDocs("src/Ignored.java", "com/example/Ignored#", "Ignored")
+	writeJavaSource(t, filepath.Join(tmpDir, "src", "Ignored.java"), "class Ignored {}")
 	writeSDB(t, filepath.Join(tmpDir, "META-INF", "semanticdb", "Ignored.java.semanticdb"), ignoredDocs)
 
 	idx := NewIndex(log.New(&bytes.Buffer{}, "[test] ", 0), tmpDir)
@@ -73,6 +75,7 @@ func TestLoadReconfiguresWatcherRootsWhenBloopAppears(t *testing.T) {
 	classesDir := filepath.Join(tmpDir, "target", "root", "classes")
 	writeBloopConfig(t, tmpDir, "root.json", tmpDir, classesDir)
 	barDocs := classDocs("src/Bar.java", "com/example/Bar#", "Bar")
+	writeJavaSource(t, filepath.Join(tmpDir, "src", "Bar.java"), "class Bar {}")
 	writeSDB(t, filepath.Join(classesDir, "META-INF", "semanticdb", "Bar.java.semanticdb"), barDocs)
 
 	if err := idx.Load(); err != nil {
@@ -118,6 +121,7 @@ func TestWatcherIgnoresSemanticDBOutsideConfiguredRoots(t *testing.T) {
 	writeBloopConfig(t, tmpDir, "root.json", tmpDir, classesDir)
 
 	realDocs := classDocs("src/Real.java", "com/example/Real#", "Real")
+	writeJavaSource(t, filepath.Join(tmpDir, "src", "Real.java"), "class Real {}")
 	writeSDB(t, filepath.Join(classesDir, "META-INF", "semanticdb", "Real.java.semanticdb"), realDocs)
 
 	idx := NewIndex(log.New(&bytes.Buffer{}, "[test] ", 0), tmpDir)
@@ -127,6 +131,7 @@ func TestWatcherIgnoresSemanticDBOutsideConfiguredRoots(t *testing.T) {
 	}
 
 	ignoredDocs := classDocs("src/Ignored.java", "com/example/Ignored#", "Ignored")
+	writeJavaSource(t, filepath.Join(tmpDir, "src", "Ignored.java"), "class Ignored {}")
 	writeSDB(t, filepath.Join(tmpDir, "META-INF", "semanticdb", "Ignored.java.semanticdb"), ignoredDocs)
 	time.Sleep(100 * time.Millisecond)
 

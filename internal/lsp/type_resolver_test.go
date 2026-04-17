@@ -32,6 +32,7 @@ func setupResolverIndex(t *testing.T, syms []*sdb.SymbolInformation) *index.Inde
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(sdbDir, "Test.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
 
 	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
 	idx := index.NewIndex(logger, tmpDir)

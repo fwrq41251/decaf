@@ -54,7 +54,7 @@ func (idx *Index) loadFull(scanRoots, watchRoots []string) error {
 	var toIndex []string
 	for path, info := range current {
 		prev, ok := idx.modTimes[path]
-		if !ok || info.ModTime().After(prev) {
+		if !ok || info.ModTime().After(prev) || idx.hasMissingIndexedSourcesLocked(path) {
 			toIndex = append(toIndex, path)
 		}
 	}
@@ -200,6 +200,22 @@ func (idx *Index) parseFilesConcurrently(paths []string) []parsedFile {
 				parseErrors.Store(path, fmt.Errorf("unmarshaling: %w", err))
 				return nil
 			}
+
+			// Filter stale documents: skip entries where the source file no longer exists.
+			filtered := docs.Documents[:0]
+			for _, doc := range docs.Documents {
+				if doc.Uri == "" {
+					continue
+				}
+				srcPath := filepath.Join(idx.sourceRoot, filepath.FromSlash(doc.Uri))
+				if _, err := os.Stat(srcPath); err != nil {
+					idx.logger.Printf("skipping stale document %s (source not found)", doc.Uri)
+					continue
+				}
+				filtered = append(filtered, doc)
+			}
+			docs.Documents = filtered
+
 			results[i] = parsedFile{path: path, docs: &docs}
 			return nil
 		})
@@ -231,6 +247,17 @@ func (idx *Index) loadFromWatcher() error {
 	idx.mu.RUnlock()
 
 	dirty, removed := w.drain()
+
+	idx.mu.RLock()
+	for path := range idx.modTimes {
+		if idx.hasMissingIndexedSourcesLocked(path) {
+			dirty = append(dirty, path)
+		}
+	}
+	idx.mu.RUnlock()
+
+	dirty = uniquePaths(dirty)
+	removed = uniquePaths(removed)
 
 	if len(dirty) == 0 && len(removed) == 0 {
 		idx.logger.Printf("index up-to-date (no watcher events)")
@@ -392,6 +419,20 @@ func (idx *Index) sourceFilesExist(sdbPath string) bool {
 	return false
 }
 
+// hasMissingIndexedSourcesLocked reports whether any currently indexed document
+// for a .semanticdb file points at a source file that no longer exists.
+// Must be called with idx.mu held.
+func (idx *Index) hasMissingIndexedSourcesLocked(sdbPath string) bool {
+	uris := idx.sdbToURIs[sdbPath]
+	for _, u := range uris {
+		srcPath := filepath.Join(idx.sourceRoot, filepath.FromSlash(u))
+		if _, err := os.Stat(srcPath); err != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // shouldKeepMissingFile reports whether a missing .semanticdb file should keep
 // its stale index entries temporarily. If the file is outside the currently
 // configured scan roots, the index must be dropped immediately because this is
@@ -412,6 +453,22 @@ func (idx *Index) removeFile(path string) {
 	}
 	delete(idx.sdbToURIs, path)
 	delete(idx.modTimes, path)
+}
+
+func uniquePaths(paths []string) []string {
+	if len(paths) < 2 {
+		return paths
+	}
+	seen := make(map[string]struct{}, len(paths))
+	out := paths[:0]
+	for _, path := range paths {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		out = append(out, path)
+	}
+	return out
 }
 
 // removeDocument removes all index entries for a given document URI.
