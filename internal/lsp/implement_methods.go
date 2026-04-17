@@ -82,7 +82,12 @@ func implementMethodsEditWithOverlay(fileURI string, idx *index.Index, overlay s
 	}
 	root := tree.RootNode()
 
-	insertLine := findClassInsertionPoint(root, content, diag.Range.Start.Line)
+	classNode := findTypeDeclarationByName(root, content, className)
+	if classNode == nil {
+		return nil
+	}
+
+	insertLine := findTypeInsertionPoint(classNode)
 	if insertLine < 0 {
 		return nil
 	}
@@ -106,12 +111,12 @@ func implementMethodsSourceEditWithContext(ctx context.Context, fileURI string, 
 	}
 	root := tree.RootNode()
 
-	className, _ := findClassContext(root, content, cursorLine)
-	if className == "" {
+	className, classNode := findClassContext(root, content, cursorLine)
+	if className == "" || classNode == nil {
 		return nil
 	}
 
-	insertLine := findClassInsertionPoint(root, content, cursorLine)
+	insertLine := findTypeInsertionPoint(classNode)
 	if insertLine < 0 {
 		return nil
 	}
@@ -289,9 +294,12 @@ func methodStubParams(sym index.Symbol, ownerType *index.TypeExpr, idx *index.In
 		if len(sym.Signature.Params) > 0 {
 			var params []string
 			for i, p := range sym.Signature.Params {
-				typeName := p.Type
-				if typeName == "" && p.TypeSym != "" {
+				typeName := ""
+				if p.TypeSym != "" {
 					typeName = formatMethodStubType(&index.TypeExpr{Sym: p.TypeSym})
+				}
+				if typeName == "" {
+					typeName = p.Type
 				}
 				if typeName == "" {
 					typeName = "Object"
@@ -362,25 +370,10 @@ func simpleMethodStubTypeName(sym string) string {
 	return index.SimpleTypeName(sym)
 }
 
-// findClassInsertionPoint locates the line of the closing brace of the class
-// body that contains diagLine, using tree-sitter AST.
-func findClassInsertionPoint(root *slog.Node, content []byte, diagLine int) int {
-	node := nodeAtPosition(root, diagLine, 0)
-	if node == nil {
+func findTypeInsertionPoint(classNode *slog.Node) int {
+	if classNode == nil {
 		return -1
 	}
-
-	// Walk up to find the enclosing class/interface/enum declaration.
-	classNode := findAncestor(node, "class_declaration", "interface_declaration", "enum_declaration")
-	if classNode == nil {
-		// The node itself might be the declaration.
-		if t := node.Type(); t == "class_declaration" || t == "interface_declaration" || t == "enum_declaration" {
-			classNode = node
-		} else {
-			return -1
-		}
-	}
-
 	body := findChildByType(classNode, "class_body")
 	if body == nil {
 		body = findChildByType(classNode, "interface_body")
@@ -394,6 +387,59 @@ func findClassInsertionPoint(root *slog.Node, content []byte, diagLine int) int 
 
 	// The closing brace is the last line of the body.
 	return int(body.EndPoint().Row)
+}
+
+// findClassInsertionPoint locates the line of the closing brace of the class
+// body that contains diagLine, using tree-sitter AST.
+func findClassInsertionPoint(root *slog.Node, content []byte, diagLine int) int {
+	node := nodeAtPosition(root, diagLine, 0)
+	if node == nil {
+		return -1
+	}
+
+	classNode := findAncestor(node, "class_declaration", "interface_declaration", "enum_declaration")
+	if classNode == nil {
+		if t := node.Type(); t == "class_declaration" || t == "interface_declaration" || t == "enum_declaration" {
+			classNode = node
+		} else {
+			return -1
+		}
+	}
+
+	return findTypeInsertionPoint(classNode)
+}
+
+func findTypeDeclarationByName(root *slog.Node, content []byte, typeName string) *slog.Node {
+	if root == nil || typeName == "" {
+		return nil
+	}
+
+	typeDecls := []string{"class_declaration", "interface_declaration", "enum_declaration"}
+	var visit func(*slog.Node) *slog.Node
+	visit = func(node *slog.Node) *slog.Node {
+		if node == nil {
+			return nil
+		}
+		for _, declType := range typeDecls {
+			if node.Type() == declType {
+				for i := 0; i < int(node.NamedChildCount()); i++ {
+					child := node.NamedChild(i)
+					if child.Type() == "identifier" && child.Content(content) == typeName {
+						return node
+					}
+				}
+				break
+			}
+		}
+		for i := 0; i < int(node.ChildCount()); i++ {
+			if found := visit(node.Child(i)); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+
+	return visit(root)
 }
 
 // overrideMethodAction returns a single "Override method..." CodeAction with a command
@@ -512,7 +558,7 @@ func collectOverridableMethodsWithOverlay(fileURI string, idx *index.Index, over
 		}
 	}
 
-	insertLine = findClassInsertionPoint(root, content, cursorLine)
+	insertLine = findTypeInsertionPoint(classNode)
 	if insertLine < 0 {
 		return nil, -1
 	}

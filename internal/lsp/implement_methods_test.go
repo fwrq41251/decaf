@@ -210,6 +210,110 @@ public class MyService implements Handler {
 	}
 }
 
+func TestImplementMethodsEdit_UsesClassNameForInsertionPoint(t *testing.T) {
+	javaSource := `package com.example;
+
+public class MyService implements Handler {
+}
+
+class Helper {
+}
+`
+
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src", "main", "java", "com", "example")
+	os.MkdirAll(srcDir, 0755)
+
+	javaPath := filepath.Join(srcDir, "MyService.java")
+	os.WriteFile(javaPath, []byte(javaSource), 0644)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := index.NewIndex(logger, tmpDir)
+
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{
+			{
+				Uri: "src/main/java/com/example/MyService.java",
+				Symbols: []*sdb.SymbolInformation{
+					{
+						Symbol:      "com/example/MyService#",
+						DisplayName: "MyService",
+						Kind:        sdb.SymbolInformation_CLASS,
+						Signature: &sdb.Signature{
+							SealedValue: &sdb.Signature_ClassSignature{
+								ClassSignature: &sdb.ClassSignature{
+									Parents: []*sdb.Type{
+										{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "java/lang/Object#"}}},
+										{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "com/example/Handler#"}}},
+									},
+								},
+							},
+						},
+					},
+					{
+						Symbol:      "com/example/Helper#",
+						DisplayName: "Helper",
+						Kind:        sdb.SymbolInformation_CLASS,
+					},
+				},
+			},
+			{
+				Uri: "src/main/java/com/example/Handler.java",
+				Symbols: []*sdb.SymbolInformation{
+					{
+						Symbol:      "com/example/Handler#",
+						DisplayName: "Handler",
+						Kind:        sdb.SymbolInformation_INTERFACE,
+					},
+					{
+						Symbol:      "com/example/Handler#handle().",
+						DisplayName: "handle",
+						Kind:        sdb.SymbolInformation_METHOD,
+						Properties:  int32(sdb.SymbolInformation_ABSTRACT),
+						Signature: &sdb.Signature{
+							SealedValue: &sdb.Signature_MethodSignature{
+								MethodSignature: &sdb.MethodSignature{
+									ReturnType: nil,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "MyService.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
+
+	idx.Load()
+	fileURI := uri.FromPath(javaPath)
+
+	diag := Diagnostic{
+		Range: Range{
+			Start: Position{Line: 5, Character: 0},
+			End:   Position{Line: 5, Character: 0},
+		},
+		Message: "MyService is not abstract and does not override abstract method handle() in Handler",
+	}
+
+	edit := implementMethodsEdit(fileURI, idx, javaSource, diag)
+	if edit == nil {
+		t.Fatal("implementMethodsEdit returned nil")
+	}
+
+	edits := edit.Changes[fileURI]
+	if len(edits) != 1 {
+		t.Fatalf("expected 1 edit, got %d", len(edits))
+	}
+	if edits[0].Range.Start.Line != 3 {
+		t.Fatalf("expected insertion before MyService closing brace at line 3, got %d", edits[0].Range.Start.Line)
+	}
+}
+
 func TestImplementMethodsSourceEdit(t *testing.T) {
 	javaSource := `package com.example;
 
@@ -327,6 +431,86 @@ public class MyService implements Handler {
 	}
 }
 
+func TestImplementMethodsSourceEdit_ReturnsNilOutsideClass(t *testing.T) {
+	javaSource := `package com.example;
+
+public class MyService implements Handler {
+}
+
+`
+
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src", "main", "java", "com", "example")
+	os.MkdirAll(srcDir, 0755)
+
+	javaPath := filepath.Join(srcDir, "MyService.java")
+	os.WriteFile(javaPath, []byte(javaSource), 0644)
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	idx := index.NewIndex(logger, tmpDir)
+
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	os.MkdirAll(sdbDir, 0755)
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{
+			{
+				Uri: "src/main/java/com/example/MyService.java",
+				Symbols: []*sdb.SymbolInformation{
+					{
+						Symbol:      "com/example/MyService#",
+						DisplayName: "MyService",
+						Kind:        sdb.SymbolInformation_CLASS,
+						Signature: &sdb.Signature{
+							SealedValue: &sdb.Signature_ClassSignature{
+								ClassSignature: &sdb.ClassSignature{
+									Parents: []*sdb.Type{
+										{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "java/lang/Object#"}}},
+										{SealedValue: &sdb.Type_TypeRef{TypeRef: &sdb.TypeRef{Symbol: "com/example/Handler#"}}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				Uri: "src/main/java/com/example/Handler.java",
+				Symbols: []*sdb.SymbolInformation{
+					{
+						Symbol:      "com/example/Handler#",
+						DisplayName: "Handler",
+						Kind:        sdb.SymbolInformation_INTERFACE,
+					},
+					{
+						Symbol:      "com/example/Handler#handle().",
+						DisplayName: "handle",
+						Kind:        sdb.SymbolInformation_METHOD,
+						Properties:  int32(sdb.SymbolInformation_ABSTRACT),
+						Signature: &sdb.Signature{
+							SealedValue: &sdb.Signature_MethodSignature{
+								MethodSignature: &sdb.MethodSignature{
+									ReturnType: nil,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	data, _ := proto.Marshal(docs)
+	os.WriteFile(filepath.Join(sdbDir, "MyService.java.semanticdb"), data, 0644)
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
+
+	idx.Load()
+	fileURI := uri.FromPath(javaPath)
+
+	if edit := implementMethodsSourceEdit(fileURI, idx, javaSource, 5); edit != nil {
+		t.Fatalf("expected no edit when cursor is outside class, got %+v", edit)
+	}
+}
+
 func TestGenerateMethodStub(t *testing.T) {
 	sym := index.Symbol{
 		Name: "process",
@@ -350,6 +534,26 @@ func TestGenerateMethodStub(t *testing.T) {
 	}
 	if !strings.Contains(stub, "throw new UnsupportedOperationException") {
 		t.Errorf("missing throw: %s", stub)
+	}
+}
+
+func TestGenerateMethodStub_PrefersTypeSymCasingForParams(t *testing.T) {
+	sym := index.Symbol{
+		Name:   "handle",
+		Kind:   sdb.SymbolInformation_METHOD,
+		Symbol: "com/example/Handler#handle().",
+		Signature: &index.SignatureInfo{
+			Label:     "void handle(string request)",
+			HasParams: true,
+			Params: []index.ParamInfo{
+				{Name: "request", Type: "string", TypeSym: "java/lang/String#"},
+			},
+		},
+	}
+
+	stub := generateMethodStub(sym)
+	if !strings.Contains(stub, "public void handle(String request)") {
+		t.Fatalf("expected String casing from TypeSym, got: %s", stub)
 	}
 }
 
