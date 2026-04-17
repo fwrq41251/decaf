@@ -1175,6 +1175,55 @@ public class StaticCallTest {
 	}
 }
 
+func TestOrganizeImports_StaticCallFallbackWithStaleMemberOccurrence(t *testing.T) {
+	source := `package org.winry.handler;
+
+public class StaticCallTest {
+    public String run() {
+        return ResultHelper.toError("ERR");
+    }
+}
+`
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src", "main", "java", "org", "winry", "handler")
+	os.MkdirAll(srcDir, 0755)
+	javaPath := filepath.Join(srcDir, "StaticCallTest.java")
+	os.WriteFile(javaPath, []byte(source), 0644)
+
+	// Simulate a stale-but-plausible SemanticDB occurrence: the file still has a
+	// resolved static method reference, but not an explicit type symbol use.
+	occs := []*sdb.SymbolOccurrence{{
+		Symbol: "org/winry/ResultHelper#toError().",
+		Role:   sdb.SymbolOccurrence_REFERENCE,
+		Range:  &sdb.Range{StartLine: 3, StartCharacter: 15, EndLine: 3, EndCharacter: 33},
+	}}
+	syms := []*sdb.SymbolInformation{
+		{Symbol: "org/winry/handler/StaticCallTest#", DisplayName: "StaticCallTest", Kind: sdb.SymbolInformation_CLASS},
+	}
+	fileURI, idx := setupTestIndex(t, source, occs, syms)
+	defer idx.Close()
+	setOrganizeIndexField(t, idx, "typeBySimpleName", map[string][]*index.Symbol{
+		"resulthelper": {
+			{Name: "ResultHelper", Symbol: "org/winry/ResultHelper#", Kind: sdb.SymbolInformation_CLASS, URI: "src/main/java/org/winry/ResultHelper.java"},
+		},
+	})
+	setOrganizeIndexField(t, idx, "definitions", map[string][]*index.Symbol{
+		"org/winry/ResultHelper#": {
+			{Name: "ResultHelper", Symbol: "org/winry/ResultHelper#", Kind: sdb.SymbolInformation_CLASS, URI: "src/main/java/org/winry/ResultHelper.java"},
+		},
+	})
+
+	edit := organizeImports(fileURI, idx, "")
+
+	if edit == nil {
+		t.Fatal("expected non-nil edit for static call qualifier with stale member occurrence")
+	}
+	text := edit.Changes[fileURI][0].NewText
+	if !containsStr(text, "import org.winry.ResultHelper;") {
+		t.Fatalf("should add ResultHelper import even when only a stale member occurrence exists, got:\n%s", text)
+	}
+}
+
 func TestComputeImportEdit(t *testing.T) {
 	source := []byte(`package com.example;
 

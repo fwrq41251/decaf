@@ -49,9 +49,13 @@ func organizeImportsWithOverlay(fileURI string, idx *index.Index, overlay string
 
 	// Determine which simple names are actually used in the file.
 	usedSimpleNames := make(map[string]bool)
+	resolvedTypeNames := make(map[string]bool)
 	for sym := range usedSymbols {
 		if name := simpleNameFromSymbol(sym); name != "" {
 			usedSimpleNames[name] = true
+		}
+		if fqn := fqnFromSymbol(sym); fqn != "" {
+			resolvedTypeNames[simpleNameFromImport(fqn)] = true
 		}
 	}
 	preferredPkgs := collectPreferredImportPackages(block, usedSymbols)
@@ -64,7 +68,7 @@ func organizeImportsWithOverlay(fileURI string, idx *index.Index, overlay string
 	for {
 		progress := false
 		for name := range typeNames {
-			if usedSimpleNames[name] {
+			if resolvedTypeNames[name] {
 				continue
 			}
 			sym := resolveTypeNameForImport(name, idx, filePackage, preferredPkgs)
@@ -73,6 +77,7 @@ func organizeImportsWithOverlay(fileURI string, idx *index.Index, overlay string
 			}
 			usedSymbols[sym] = true
 			usedSimpleNames[name] = true
+			resolvedTypeNames[name] = true
 			if pkg := packageFromFQN(fqnFromSymbol(sym)); pkg != "" {
 				preferredPkgs[pkg] = true
 			}
