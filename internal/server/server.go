@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log"
 	"os"
 
@@ -44,10 +46,13 @@ func (s *Server) Run(ctx context.Context) error {
 	}()
 
 	err := dispatcher.Run(ctx)
-	if err != nil && ctx.Err() != nil {
-		// Cancelled by exit — normal shutdown.
-		s.logger.Println("decaf LSP server stopped")
-		return nil
+	if err != nil {
+		if errors.Is(err, io.EOF) || ctx.Err() != nil {
+			// Normal shutdown via stdin close or context cancellation (handler exit).
+			s.logger.Println("decaf LSP server stopped")
+			return nil
+		}
+		return err
 	}
-	return err
+	return nil
 }
