@@ -22,7 +22,7 @@ type Handler struct {
 	exitCh      chan struct{}
 	exitOnce    sync.Once
 	rootURI     string
-	bspClient   *bsp.Client
+	bspClient   buildClient
 	transport   *jsonrpc.Transport
 	dispatcher  *jsonrpc.Dispatcher
 	idx         *index.Index
@@ -172,7 +172,7 @@ func (h *Handler) index() *index.Index {
 	return h.idx
 }
 
-func (h *Handler) buildClient() *bsp.Client {
+func (h *Handler) buildClient() buildClient {
 	return h.bspClient
 }
 
@@ -182,6 +182,10 @@ func (h *Handler) setIndexForTest(idx *index.Index) {
 
 func (h *Handler) markIndexReadyForTest() {
 	h.closeIndexReady()
+}
+
+func (h *Handler) setBuildClientForTest(client buildClient) {
+	h.bspClient = client
 }
 
 // getFileContent returns the content of a file, preferring the in-memory overlay

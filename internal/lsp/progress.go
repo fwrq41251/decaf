@@ -19,6 +19,9 @@ type progress struct {
 // beginProgress creates a progress token with the client and sends the begin notification.
 // Returns a progress handle that can be used to report/end, or nil if creation failed.
 func (h *Handler) beginProgress(ctx context.Context, title, message string) *progress {
+	if h.dispatcher == nil {
+		return nil
+	}
 	token := fmt.Sprintf("decaf-%d", progressSeq.Add(1))
 
 	// Ask the client to create the progress token and wait for acknowledgement.

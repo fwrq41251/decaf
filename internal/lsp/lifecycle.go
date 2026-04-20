@@ -72,6 +72,10 @@ func (h *Handler) handleExit(_ context.Context, _ json.RawMessage) (any, error) 
 }
 
 func (h *Handler) registerFileWatchers(ctx context.Context) {
+	if h.dispatcher == nil {
+		h.logger.Println("skipping file watcher registration: dispatcher not available")
+		return
+	}
 	registration := map[string]any{
 		"registrations": []map[string]any{
 			{
