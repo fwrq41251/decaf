@@ -60,7 +60,7 @@ func completionTypeMatchPrefix(h *Handler, expectedType, candidateType *index.Ty
 	if sameTypeExpr(candidateType, expectedType) {
 		return "0"
 	}
-	if h.idx.IsAssignableTo(candidateType.Sym, expectedType.Sym) {
+	if h.index().IsAssignableTo(candidateType.Sym, expectedType.Sym) {
 		return "1"
 	}
 	return "2"

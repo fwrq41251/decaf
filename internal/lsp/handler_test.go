@@ -109,7 +109,7 @@ func TestDefinition(t *testing.T) {
 	// Mock Index with one workspace definition and one external symbol.
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady) // signal index is ready for test
+	h.markIndexReadyForTest() // signal index is ready for test
 
 	// 1. Workspace symbol
 	docs := &sdb.TextDocuments{
@@ -162,7 +162,7 @@ func TestDefinition(t *testing.T) {
 	f.Close()
 	idx.AddDependencySource(jarPath)
 
-	h.idx = idx
+	h.setIndexForTest(idx)
 
 	// Test case: Workspace definition
 	params := TextDocumentPositionParams{
@@ -210,8 +210,8 @@ func TestPrepareRename(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady) // signal index is ready for test
-	h.idx = idx
+	h.markIndexReadyForTest() // signal index is ready for test
+	h.setIndexForTest(idx)
 
 	// Define a class and a reference to it in different locations.
 	docs := &sdb.TextDocuments{
@@ -294,7 +294,7 @@ func TestHandleBSPTaskFinish_DoesNotReindexOnCompileReport(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	h.idx = idx
+	h.setIndexForTest(idx)
 
 	if idx.HasFiles() {
 		t.Fatal("expected empty index before test")
@@ -352,8 +352,8 @@ func TestRenameTopLevelClass(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 
 	// Foo.java defines Foo with a constructor; Bar.java references Foo and calls new Foo().
 	docs := &sdb.TextDocuments{
@@ -474,8 +474,8 @@ func TestRenameFromConstructorRenamesClassAndFile(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 
 	docs := &sdb.TextDocuments{
 		Documents: []*sdb.TextDocument{
@@ -572,8 +572,8 @@ func TestRenameInnerClassNoFileRename(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 
 	// Inner class: Outer#Inner# has two '#' — should NOT trigger file rename.
 	docs := &sdb.TextDocuments{
@@ -623,8 +623,8 @@ func TestSignatureHelp_UncompiledCode(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 	h.rootURI = "file://" + tmpDir
 
 	// Index a class Foo with an overloaded method "bar":
@@ -727,8 +727,8 @@ func TestCompletion_AllowsMultipleTypesWithSameSimpleName(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 	h.rootURI = "file://" + tmpDir
 
 	docs := &sdb.TextDocuments{
@@ -799,8 +799,8 @@ func TestCompletion_PrefersJDKTypeOverThirdPartyForSameSimpleName(t *testing.T) 
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 	h.rootURI = "file://" + tmpDir
 
 	docs := &sdb.TextDocuments{
@@ -863,8 +863,8 @@ func TestCompletion_PrefersExplicitImportForSameSimpleName(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 	h.rootURI = "file://" + tmpDir
 
 	docs := &sdb.TextDocuments{
@@ -928,8 +928,8 @@ func TestCompletion_ShowsOverloadedMethodsSeparately(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 	h.rootURI = "file://" + tmpDir
 
 	docs := &sdb.TextDocuments{
@@ -1025,8 +1025,8 @@ func TestCompletion_ShowsLocalOverloadedMethodsSeparately(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 	h.rootURI = "file://" + tmpDir
 
 	fileURI := "file://" + tmpDir + "/src/Caller.java"

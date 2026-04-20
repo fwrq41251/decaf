@@ -23,8 +23,8 @@ func TestCodeAction_AddImportForNestedTypeInSamePackage(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 	h.rootURI = "file://" + tmpDir
 
 	docs := &sdb.TextDocuments{
@@ -99,8 +99,8 @@ func TestCodeAction_DoesNotAddImportForTopLevelTypeInSamePackage(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 	h.rootURI = "file://" + tmpDir
 
 	docs := &sdb.TextDocuments{
@@ -161,8 +161,8 @@ func TestCodeAction_DeduplicatesImportFixesWithSameFQN(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 	h.rootURI = "file://" + tmpDir
 
 	docs := &sdb.TextDocuments{

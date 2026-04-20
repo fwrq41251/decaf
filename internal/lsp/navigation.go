@@ -18,7 +18,7 @@ func (h *Handler) handleDefinition(ctx context.Context, params json.RawMessage) 
 		return []LSPLocation{}, nil
 	}
 
-	defs := h.idx.Definition(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	defs := h.index().Definition(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	locations := make([]LSPLocation, 0, len(defs))
 	for _, d := range defs {
 		if d.Range.IsEmpty() {
@@ -48,11 +48,11 @@ func (h *Handler) handleReferences(ctx context.Context, params json.RawMessage) 
 		return []LSPLocation{}, nil
 	}
 
-	refs := h.idx.References(p.TextDocument.URI, p.Position.Line, p.Position.Character)
-	
+	refs := h.index().References(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+
 	// If includeDeclaration is true, add the definition to the results.
 	if p.Context.IncludeDeclaration {
-		defs := h.idx.Definition(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+		defs := h.index().Definition(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 		for _, d := range defs {
 			if d.Range.IsEmpty() {
 				continue
@@ -64,8 +64,8 @@ func (h *Handler) handleReferences(ctx context.Context, params json.RawMessage) 
 			})
 		}
 		// Re-deduplicate since definition might already be in references or multiple files.
-		// Note: We'd need to expose deduplicateOccurrences if we wanted to call it here, 
-		// but the loop below already converts to LSPLocation, so we can just let the client 
+		// Note: We'd need to expose deduplicateOccurrences if we wanted to call it here,
+		// but the loop below already converts to LSPLocation, so we can just let the client
 		// handle it or deduplicate the final locations array.
 	}
 
@@ -105,12 +105,12 @@ func (h *Handler) handleHover(ctx context.Context, params json.RawMessage) (any,
 		return nil, nil
 	}
 
-	sym := h.idx.Hover(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	sym := h.index().Hover(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	if sym == nil {
 		return nil, nil
 	}
 
-	content := formatHover(sym, h.idx)
+	content := formatHover(sym, h.index())
 	result := HoverResult{
 		Contents: MarkupContent{
 			Kind:  "markdown",
@@ -133,7 +133,7 @@ func (h *Handler) handleDocumentSymbol(ctx context.Context, params json.RawMessa
 		return []DocumentSymbol{}, nil
 	}
 
-	symbols := h.idx.FileSymbols(p.TextDocument.URI)
+	symbols := h.index().FileSymbols(p.TextDocument.URI)
 	result := buildDocumentSymbols(symbols)
 	return result, nil
 }
@@ -148,7 +148,7 @@ func (h *Handler) handleDocumentHighlight(ctx context.Context, params json.RawMe
 		return []DocumentHighlight{}, nil
 	}
 
-	occs := h.idx.FileOccurrencesOf(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	occs := h.index().FileOccurrencesOf(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	highlights := make([]DocumentHighlight, 0, len(occs))
 	for _, occ := range occs {
 		if occ.Range.IsEmpty() {
@@ -173,7 +173,7 @@ func (h *Handler) handleImplementation(ctx context.Context, params json.RawMessa
 		return []LSPLocation{}, nil
 	}
 
-	impls := h.idx.Implementations(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	impls := h.index().Implementations(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	locations := make([]LSPLocation, 0, len(impls))
 	for _, d := range impls {
 		if d.Range.IsEmpty() {
@@ -198,7 +198,7 @@ func (h *Handler) handleWorkspaceSymbol(ctx context.Context, params json.RawMess
 		return []SymbolInformation{}, nil
 	}
 
-	symbols := h.idx.SearchSymbols(p.Query)
+	symbols := h.index().SearchSymbols(p.Query)
 	result := make([]SymbolInformation, 0, len(symbols))
 	for _, s := range symbols {
 		if s.Range.IsEmpty() {

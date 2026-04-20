@@ -24,8 +24,8 @@ func newTestHandler(t *testing.T) (*Handler, *index.Index, string) {
 	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
 	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
 	idx := index.NewIndex(logger, tmpDir)
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 	h.rootURI = "file://" + tmpDir
 	return h, idx, tmpDir
 }

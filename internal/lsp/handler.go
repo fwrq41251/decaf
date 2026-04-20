@@ -7,7 +7,6 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/fwrq41251/decaf/internal/bsp"
 	"github.com/fwrq41251/decaf/internal/index"
@@ -27,21 +26,10 @@ type Handler struct {
 	transport   *jsonrpc.Transport
 	dispatcher  *jsonrpc.Dispatcher
 	idx         *index.Index
+	workspace   *workspaceService
 
 	// docs stores in-memory overlay of open document contents.
 	docs *docStore
-
-	// debounceMu protects debounceTimer and pendingURIs.
-	debounceMu    sync.Mutex
-	debounceTimer *time.Timer
-	pendingURIs   []string
-	// compileMu ensures only one compilation/reindex cycle runs at a time.
-	compileMu sync.Mutex
-	// bgMu protects backgroundCtx and backgroundCancel.
-	bgMu             sync.Mutex
-	backgroundCtx    context.Context
-	backgroundCancel context.CancelFunc
-	bgWg             sync.WaitGroup
 
 	// diagnosticsMu protects diagnostics map.
 	diagnosticsMu sync.Mutex
@@ -72,6 +60,7 @@ func NewHandler(logger *log.Logger, transport *jsonrpc.Transport) *Handler {
 		indexReady:  make(chan struct{}),
 		activeTasks: make(map[string]*progress),
 	}
+	h.workspace = newWorkspaceService(h)
 	h.bspClient = bsp.NewClient(logger, h.handleBSPDiagnostics, func() {
 		if !h.shutdown.Load() {
 			h.showMessage(MessageTypeError, "decaf: Bloop build server disconnected. Please restart your editor.")
@@ -92,18 +81,7 @@ func (h *Handler) Close(ctx context.Context) {
 		return
 	}
 	h.shutdown.Store(true)
-	h.bgMu.Lock()
-	if h.backgroundCancel != nil {
-		h.backgroundCancel()
-	}
-	h.bgMu.Unlock()
-	h.bgWg.Wait()
-	if h.idx != nil {
-		h.idx.Close()
-	}
-	if err := h.bspClient.Shutdown(ctx); err != nil {
-		h.logger.Printf("bloop shutdown error during cleanup: %v", err)
-	}
+	h.workspace.close(ctx)
 }
 
 // RegisterAll registers all LSP handlers on the dispatcher.
@@ -187,12 +165,23 @@ func (h *Handler) waitIndexReady(ctx context.Context) bool {
 }
 
 func (h *Handler) reindex() {
-	if h.idx == nil {
-		return
-	}
-	if err := h.idx.Load(); err != nil {
-		h.logger.Printf("reindex failed: %v", err)
-	}
+	h.workspace.reindex()
+}
+
+func (h *Handler) index() *index.Index {
+	return h.idx
+}
+
+func (h *Handler) buildClient() *bsp.Client {
+	return h.bspClient
+}
+
+func (h *Handler) setIndexForTest(idx *index.Index) {
+	h.idx = idx
+}
+
+func (h *Handler) markIndexReadyForTest() {
+	h.closeIndexReady()
 }
 
 // getFileContent returns the content of a file, preferring the in-memory overlay
@@ -318,9 +307,7 @@ func (h *Handler) handleBSPTaskStart(params bsp.TaskStartParams) {
 		title = "bloop task"
 	}
 
-	h.bgMu.Lock()
-	ctx := h.backgroundCtx
-	h.bgMu.Unlock()
+	ctx := h.workspace.backgroundContext()
 	if ctx == nil {
 		return
 	}

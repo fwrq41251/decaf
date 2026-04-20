@@ -43,7 +43,7 @@ func (h *Handler) executeGenerateAccessor(ctx context.Context, args []json.RawMe
 	}
 
 	overlay, hasOverlay := h.docs.Get(fileURI)
-	allCandidates := collectFieldCandidatesWithContext(ctx, fileURI, h.idx, overlay, hasOverlay, cursorLine)
+	allCandidates := collectFieldCandidatesWithContext(ctx, fileURI, h.index(), overlay, hasOverlay, cursorLine)
 	var candidates []fieldWithType
 	for _, c := range allCandidates {
 		if (kind == "getter" && !c.hasGetter) || (kind == "setter" && !c.hasSetter) {
@@ -122,7 +122,7 @@ func (h *Handler) executeOverrideMethod(ctx context.Context, args []json.RawMess
 	}
 
 	overlay, hasOverlay := h.docs.Get(fileURI)
-	methods, _ := collectOverridableMethodsWithOverlay(fileURI, h.idx, overlay, hasOverlay, cursorLine)
+	methods, _ := collectOverridableMethodsWithOverlay(fileURI, h.index(), overlay, hasOverlay, cursorLine)
 	if len(methods) == 0 {
 		return nil, nil
 	}
@@ -158,7 +158,7 @@ func (h *Handler) executeOverrideMethod(ctx context.Context, args []json.RawMess
 	// Find the selected method and apply the edit.
 	for _, m := range methods {
 		if m.method.Name == selected.Title {
-			edit := insertTextAtLine(fileURI, insertLine, generateMethodStubForOwner(m.method, m.parentType, h.idx))
+			edit := insertTextAtLine(fileURI, insertLine, generateMethodStubForOwner(m.method, m.parentType, h.index()))
 
 			// Apply the edit via workspace/applyEdit.
 			return nil, h.dispatcher.Call(ctx, "workspace/applyEdit", ApplyWorkspaceEditParams{

@@ -16,19 +16,19 @@ func TestRunCompileCycleSkipsWhenBSPNotReady(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h.bgMu.Lock()
-	h.backgroundCtx = ctx
-	h.bgMu.Unlock()
+	h.workspace.bgMu.Lock()
+	h.workspace.backgroundCtx = ctx
+	h.workspace.bgMu.Unlock()
 
-	h.debounceMu.Lock()
-	h.pendingURIs = []string{"file:///tmp/Test.java"}
-	h.debounceMu.Unlock()
+	h.workspace.debounceMu.Lock()
+	h.workspace.pendingURIs = []string{"file:///tmp/Test.java"}
+	h.workspace.debounceMu.Unlock()
 
-	h.runCompileCycle()
+	h.workspace.runCompileCycle()
 
-	h.debounceMu.Lock()
-	defer h.debounceMu.Unlock()
-	if len(h.pendingURIs) != 0 {
-		t.Fatalf("pendingURIs = %v, want empty after skipped compile cycle", h.pendingURIs)
+	h.workspace.debounceMu.Lock()
+	defer h.workspace.debounceMu.Unlock()
+	if len(h.workspace.pendingURIs) != 0 {
+		t.Fatalf("pendingURIs = %v, want empty after skipped compile cycle", h.workspace.pendingURIs)
 	}
 }

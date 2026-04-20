@@ -771,8 +771,8 @@ public class MyService implements Handler {
 	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 	h.rootURI = "file://" + tmpDir
 
 	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")

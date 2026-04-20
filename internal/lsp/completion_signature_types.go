@@ -72,7 +72,7 @@ func (h *Handler) methodParamCount(sym index.Symbol, knownTypes int) (int, bool)
 }
 
 func (h *Handler) methodParamTypes(sym index.Symbol, resolver *typeResolver) []*index.TypeExpr {
-	if pts := h.idx.DeclParamTypesOf(sym.Symbol); len(pts) > 0 {
+	if pts := h.index().DeclParamTypesOf(sym.Symbol); len(pts) > 0 {
 		return pts
 	}
 	if sym.Signature == nil {

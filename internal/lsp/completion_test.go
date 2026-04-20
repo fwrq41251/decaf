@@ -1099,7 +1099,7 @@ func TestResolveStaticMemberType_Structured(t *testing.T) {
 		},
 	})
 
-	resolver := &typeResolver{idx: h.idx}
+	resolver := &typeResolver{idx: h.index()}
 	te := h.resolveStaticMemberType("org/assertj/core/api/Assertions#", "assertThat", resolver)
 
 	if te == nil {

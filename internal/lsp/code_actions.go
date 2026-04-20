@@ -41,7 +41,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 	// Organize imports.
 	if wantOrganize {
 		overlay, hasOverlay := h.docs.Get(p.TextDocument.URI)
-		edit := organizeImportsWithOverlay(p.TextDocument.URI, h.idx, overlay, hasOverlay)
+		edit := organizeImportsWithOverlay(p.TextDocument.URI, h.index(), overlay, hasOverlay)
 		if edit != nil {
 			actions = append(actions, CodeAction{
 				Title: "Organize Imports",
@@ -59,7 +59,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 			// Add missing import.
 			name := extractMissingSymbolName(diag.Message)
 			if name != "" {
-				candidates := h.idx.SearchSymbols(name)
+				candidates := h.index().SearchSymbols(name)
 				for _, sym := range candidates {
 					if sym.Name != name {
 						continue
@@ -86,7 +86,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 			}
 
 			// Implement abstract methods.
-			if edit := implementMethodsEditWithOverlay(p.TextDocument.URI, h.idx, overlay, hasOverlay, diag); edit != nil {
+			if edit := implementMethodsEditWithOverlay(p.TextDocument.URI, h.index(), overlay, hasOverlay, diag); edit != nil {
 				actions = append(actions, CodeAction{
 					Title:       "Implement abstract methods",
 					Kind:        CodeActionQuickFix,
@@ -106,7 +106,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 			actions = append(actions, *action)
 		}
 
-		if edit := implementMethodsSourceEditWithContext(ctx, p.TextDocument.URI, h.idx, overlay, hasOverlay, cursorLine); edit != nil {
+		if edit := implementMethodsSourceEditWithContext(ctx, p.TextDocument.URI, h.index(), overlay, hasOverlay, cursorLine); edit != nil {
 			actions = append(actions, CodeAction{
 				Title: "Implement abstract methods",
 				Kind:  "source",
@@ -114,7 +114,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 			})
 		}
 
-		if edit := generateConstructorEditWithContext(ctx, p.TextDocument.URI, h.idx, overlay, hasOverlay, cursorLine); edit != nil {
+		if edit := generateConstructorEditWithContext(ctx, p.TextDocument.URI, h.index(), overlay, hasOverlay, cursorLine); edit != nil {
 			actions = append(actions, CodeAction{
 				Title: "Generate constructor",
 				Kind:  "source",
@@ -122,11 +122,11 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 			})
 		}
 
-		if action := overrideMethodAction(p.TextDocument.URI, h.idx, overlay, cursorLine); action != nil {
+		if action := overrideMethodAction(p.TextDocument.URI, h.index(), overlay, cursorLine); action != nil {
 			actions = append(actions, *action)
 		}
 
-		candidates := collectFieldCandidatesWithContext(ctx, p.TextDocument.URI, h.idx, overlay, hasOverlay, cursorLine)
+		candidates := collectFieldCandidatesWithContext(ctx, p.TextDocument.URI, h.index(), overlay, hasOverlay, cursorLine)
 
 		if action := getterAction(p.TextDocument.URI, cursorLine, candidates); action != nil {
 			actions = append(actions, *action)
@@ -153,7 +153,7 @@ func (h *Handler) handleRename(ctx context.Context, params json.RawMessage) (any
 		return nil, nil
 	}
 
-	sym, occs := h.idx.RenameOccurrences(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	sym, occs := h.index().RenameOccurrences(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	if len(occs) == 0 {
 		return nil, nil
 	}
@@ -222,7 +222,7 @@ func (h *Handler) handlePrepareRename(ctx context.Context, params json.RawMessag
 		return nil, nil
 	}
 
-	occ := h.idx.OccurrenceAt(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	occ := h.index().OccurrenceAt(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	if occ == nil || occ.Range.IsEmpty() {
 		return nil, nil
 	}

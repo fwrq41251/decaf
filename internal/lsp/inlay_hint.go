@@ -107,7 +107,7 @@ func (h *Handler) collectVarTypeHint(node *slog.Node, content []byte, hints *[]I
 	// Build a completion context at the var declaration to resolve the type.
 	line := int(node.StartPoint().Row)
 	cctx := parseCompletionCtx(h.logger, content, line, int(node.EndPoint().Column))
-	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
+	resolver := &typeResolver{idx: h.index(), imports: cctx.Imports, pkg: cctx.Package}
 
 	// Try to infer the type from the initializer.
 	typeExpr, vi := inferTypeFromDeclarator(node, content, cctx)
@@ -158,7 +158,7 @@ func (h *Handler) collectParameterNameHints(node *slog.Node, content []byte, p I
 	line := int(node.StartPoint().Row)
 	col := int(nameNode.StartPoint().Column)
 	cctx := parseCompletionCtx(h.logger, content, line, col)
-	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
+	resolver := &typeResolver{idx: h.index(), imports: cctx.Imports, pkg: cctx.Package}
 
 	var ownerType *index.TypeExpr
 	objNode := node.ChildByFieldName("object")
@@ -218,7 +218,7 @@ func (h *Handler) collectConstructorParameterNameHints(node *slog.Node, content 
 	line := int(node.StartPoint().Row)
 	col := int(node.StartPoint().Column)
 	cctx := parseCompletionCtx(h.logger, content, line, col)
-	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
+	resolver := &typeResolver{idx: h.index(), imports: cctx.Imports, pkg: cctx.Package}
 
 	typeSym := resolver.resolve(te.Sym)
 	if typeSym == "" {
@@ -269,7 +269,7 @@ func (h *Handler) addParameterHints(argList *slog.Node, content []byte, paramNam
 
 // findMethodByArgCount finds a method/constructor by name and argument count.
 func (h *Handler) findMethodByArgCount(typeSym, methodName string, argCount int) *index.Symbol {
-	members := h.idx.MembersOfType(typeSym)
+	members := h.index().MembersOfType(typeSym)
 	var bestMatch *index.Symbol
 	for i := range members {
 		m := &members[i]
@@ -406,5 +406,3 @@ func formatTypeExprSimple(te *index.TypeExpr) string {
 	sb.WriteByte('>')
 	return sb.String()
 }
-
-

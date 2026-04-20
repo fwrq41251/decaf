@@ -15,7 +15,7 @@ func (h *Handler) resolveInferredLambdaParamType(paramIndex int, cctx *Completio
 	if te := lambdaParamTypeFromTargetType(targetType, paramIndex); te != nil {
 		return te
 	}
-	return samParamTypeFromTargetType(targetType, paramIndex, h.idx, resolver)
+	return samParamTypeFromTargetType(targetType, paramIndex, h.index(), resolver)
 }
 
 func (h *Handler) resolveCurrentArgumentTypeExpr(cctx *CompletionCtx, resolver *typeResolver) *index.TypeExpr {
@@ -54,8 +54,8 @@ func (h *Handler) resolveCurrentArgumentTypeExpr(cctx *CompletionCtx, resolver *
 		return nil
 	}
 	if ownerType != nil {
-		te = substituteTypeParams(te, ownerType, h.idx)
-		te = substituteNamedTypeParams(te, ownerType, h.idx)
+		te = substituteTypeParams(te, ownerType, h.index())
+		te = substituteNamedTypeParams(te, ownerType, h.index())
 	}
 	return te
 }
@@ -201,18 +201,18 @@ func (h *Handler) resolveUnqualifiedVarInitializerMethodCall(vi *VarInitializer,
 	if best == nil {
 		return ownerType, nil
 	}
-	if te := h.idx.DeclTypeOf(best.Symbol); te != nil {
+	if te := h.index().DeclTypeOf(best.Symbol); te != nil {
 		if ownerType != nil {
-			te = substituteTypeParams(te, ownerType, h.idx)
-			te = substituteNamedTypeParams(te, ownerType, h.idx)
+			te = substituteTypeParams(te, ownerType, h.index())
+			te = substituteNamedTypeParams(te, ownerType, h.index())
 		}
 		return ownerType, te
 	}
-	if sym := h.idx.TypeOfSymbol(best.Symbol); sym != "" {
+	if sym := h.index().TypeOfSymbol(best.Symbol); sym != "" {
 		te := &index.TypeExpr{Sym: sym}
 		if ownerType != nil {
-			te = substituteTypeParams(te, ownerType, h.idx)
-			te = substituteNamedTypeParams(te, ownerType, h.idx)
+			te = substituteTypeParams(te, ownerType, h.index())
+			te = substituteNamedTypeParams(te, ownerType, h.index())
 		}
 		return ownerType, te
 	}

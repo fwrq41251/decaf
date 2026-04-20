@@ -108,8 +108,8 @@ func (h *Handler) inferTypeParamsFromArgs(te, ownerType *index.TypeExpr, vi *Var
 		if resolved == nil {
 			resolved = actual
 		}
-		formal = substituteTypeParams(formal, ownerType, h.idx)
-		formal = substituteNamedTypeParams(formal, ownerType, h.idx)
+		formal = substituteTypeParams(formal, ownerType, h.index())
+		formal = substituteNamedTypeParams(formal, ownerType, h.index())
 		collectTypeParamBindings(formal, resolved, bindings)
 	}
 	if len(bindings) == 0 {

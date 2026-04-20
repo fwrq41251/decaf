@@ -44,7 +44,7 @@ func (h *Handler) handleIncomingCalls(ctx context.Context, params json.RawMessag
 	}
 
 	// 1. Get all references (could be thousands across many files).
-	refs := h.idx.SymbolReferences(sym)
+	refs := h.index().SymbolReferences(sym)
 
 	// 2. Group references by their source file URI to minimize index access.
 	refsByFile := make(map[string][]index.Occurrence)
@@ -68,7 +68,7 @@ func (h *Handler) handleIncomingCalls(ctx context.Context, params json.RawMessag
 	// 3. Process each file once.
 	for uri, fileRefs := range refsByFile {
 		fileURI := h.toFileURI(uri)
-		symbols := h.idx.FileSymbols(fileURI)
+		symbols := h.index().FileSymbols(fileURI)
 
 		// Filter and sort potential callables for this file once.
 		var callables []*index.Symbol
@@ -161,7 +161,7 @@ func (h *Handler) handleOutgoingCalls(ctx context.Context, params json.RawMessag
 	// Get all occurrences in the file where this method is defined,
 	// and find references to other methods within this method's range.
 	fileURI := p.Item.URI
-	occs := h.idx.AllFileOccurrences(fileURI)
+	occs := h.index().AllFileOccurrences(fileURI)
 
 	// Collect method/constructor references within the item's range.
 	type calleeInfo struct {
@@ -177,7 +177,7 @@ func (h *Handler) handleOutgoingCalls(ctx context.Context, params json.RawMessag
 		if !rangeContains(p.Item.Range, sdbRangeToLSP(occ.Range)) {
 			continue
 		}
-		def := h.idx.SymbolDefinition(occ.Symbol)
+		def := h.index().SymbolDefinition(occ.Symbol)
 		if def == nil || !isCallableKind(def.Kind) {
 			continue
 		}
@@ -205,11 +205,11 @@ func (h *Handler) handleOutgoingCalls(ctx context.Context, params json.RawMessag
 
 // callHierarchyItemAt builds a CallHierarchyItem for the symbol at the given position.
 func (h *Handler) callHierarchyItemAt(fileURI string, line, character int) *CallHierarchyItem {
-	occ := h.idx.OccurrenceAt(fileURI, line, character)
+	occ := h.index().OccurrenceAt(fileURI, line, character)
 	if occ == nil {
 		return nil
 	}
-	def := h.idx.SymbolDefinition(occ.Symbol)
+	def := h.index().SymbolDefinition(occ.Symbol)
 	if def == nil {
 		return nil
 	}
@@ -222,7 +222,7 @@ func (h *Handler) callHierarchyItemAt(fileURI string, line, character int) *Call
 
 // findEnclosingCallable finds the method/constructor that contains the given position.
 func (h *Handler) findEnclosingCallable(fileURI string, line, character int) *CallHierarchyItem {
-	symbols := h.idx.FileSymbols(fileURI)
+	symbols := h.index().FileSymbols(fileURI)
 
 	var callables []*index.Symbol
 	for i := range symbols {
@@ -277,11 +277,11 @@ func (h *Handler) handlePrepareTypeHierarchy(ctx context.Context, params json.Ra
 		return nil, nil
 	}
 
-	occ := h.idx.OccurrenceAt(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	occ := h.index().OccurrenceAt(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	if occ == nil {
 		return nil, nil
 	}
-	def := h.idx.SymbolDefinition(occ.Symbol)
+	def := h.index().SymbolDefinition(occ.Symbol)
 	if def == nil || !index.IsTypeSymbol(*def) {
 		return nil, nil
 	}
@@ -307,10 +307,10 @@ func (h *Handler) handleSupertypes(ctx context.Context, params json.RawMessage) 
 		return []TypeHierarchyItem{}, nil
 	}
 
-	parents := h.idx.ParentsOf(sym)
+	parents := h.index().ParentsOf(sym)
 	var result []TypeHierarchyItem
 	for _, parentSym := range parents {
-		def := h.idx.SymbolDefinition(parentSym)
+		def := h.index().SymbolDefinition(parentSym)
 		if def == nil {
 			def = &index.Symbol{
 				Name:   index.ExtractShortName(parentSym),
@@ -340,10 +340,10 @@ func (h *Handler) handleSubtypes(ctx context.Context, params json.RawMessage) (a
 		return []TypeHierarchyItem{}, nil
 	}
 
-	children := h.idx.Implementors(sym)
+	children := h.index().Implementors(sym)
 	var result []TypeHierarchyItem
 	for _, childSym := range children {
-		def := h.idx.SymbolDefinition(childSym)
+		def := h.index().SymbolDefinition(childSym)
 		if def == nil {
 			continue
 		}

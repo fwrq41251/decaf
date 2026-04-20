@@ -19,8 +19,8 @@ func TestCodeAction_InitializeJavaTypeForEmptyFile(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 	h.rootURI = "file://" + tmpDir
 
 	fileURI := "file://" + tmpDir + "/src/main/java/com/example/Foo.java"
@@ -64,8 +64,8 @@ func TestCodeAction_InitializeJavaTypeSkippedForNonEmptyFile(t *testing.T) {
 
 	idx := index.NewIndex(logger, tmpDir)
 	defer idx.Close()
-	close(h.indexReady)
-	h.idx = idx
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
 	h.rootURI = "file://" + tmpDir
 
 	fileURI := "file://" + tmpDir + "/src/main/java/com/example/Foo.java"

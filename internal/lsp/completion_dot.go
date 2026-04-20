@@ -8,7 +8,7 @@ import (
 )
 
 func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionItem {
-	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
+	resolver := &typeResolver{idx: h.index(), imports: cctx.Imports, pkg: cctx.Package}
 	expectedType := h.resolveCurrentArgumentTypeExpr(cctx, resolver)
 
 	typeExpr, staticAccess := h.resolveReceiverTypeExpr(cctx, resolver)
@@ -18,7 +18,7 @@ func (h *Handler) completeDot(cctx *CompletionCtx, fileURI string) []CompletionI
 	}
 	h.logger.Printf("completeDot: receiver=%q resolved to type=%s static=%v", cctx.Receiver, typeExpr.Sym, staticAccess)
 
-	members := h.idx.MembersOfType(typeExpr.Sym)
+	members := h.index().MembersOfType(typeExpr.Sym)
 	lowerQuery := strings.ToLower(cctx.Prefix)
 
 	var items []CompletionItem
@@ -65,12 +65,12 @@ func (h *Handler) memberCompletionTypeExpr(owner *index.TypeExpr, sym index.Symb
 	if owner == nil {
 		return nil
 	}
-	te := symbolReturnTypeExpr(sym, h.idx)
+	te := symbolReturnTypeExpr(sym, h.index())
 	if te == nil {
 		return nil
 	}
-	te = substituteTypeParams(te, owner, h.idx)
-	return substituteNamedTypeParams(te, owner, h.idx)
+	te = substituteTypeParams(te, owner, h.index())
+	return substituteNamedTypeParams(te, owner, h.index())
 }
 
 func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
@@ -149,7 +149,7 @@ func (h *Handler) completeDotFallback(cctx *CompletionCtx) []CompletionItem {
 	for _, m := range cctx.ClassMethods {
 		addMethodDecl(m, "1")
 	}
-	for _, m := range h.idx.MembersOfType("java/lang/Object#") {
+	for _, m := range h.index().MembersOfType("java/lang/Object#") {
 		if m.IsStatic {
 			continue
 		}
@@ -174,10 +174,10 @@ func (h *Handler) resolveReceiverTypeExpr(cctx *CompletionCtx, resolver *typeRes
 	if recv == "super" {
 		classSym := resolver.resolve(cctx.EnclosingClass)
 		if classSym != "" {
-			if pts := h.idx.ParentTypesOf(classSym); len(pts) > 0 {
+			if pts := h.index().ParentTypesOf(classSym); len(pts) > 0 {
 				return pts[0], false
 			}
-			if parents := h.idx.ParentsOf(classSym); len(parents) > 0 {
+			if parents := h.index().ParentsOf(classSym); len(parents) > 0 {
 				return &index.TypeExpr{Sym: parents[0]}, false
 			}
 		}
@@ -280,7 +280,7 @@ func (h *Handler) resolveStaticImportType(name string, imports []ImportSpec, res
 }
 
 func (h *Handler) resolveStaticMemberType(classSym, memberName string, resolver *typeResolver) *index.TypeExpr {
-	members := h.idx.MembersOfType(classSym)
+	members := h.index().MembersOfType(classSym)
 	h.logger.Printf("resolveStaticMemberType: classSym=%s memberName=%q totalMembers=%d", classSym, memberName, len(members))
 
 	var firstCandidate *index.TypeExpr
@@ -290,10 +290,10 @@ func (h *Handler) resolveStaticMemberType(classSym, memberName string, resolver 
 		}
 
 		var candidates []*index.TypeExpr
-		if retType := h.idx.DeclTypeOf(m.Symbol); retType != nil && !isTypeParamSymbol(retType.Sym) {
+		if retType := h.index().DeclTypeOf(m.Symbol); retType != nil && !isTypeParamSymbol(retType.Sym) {
 			candidates = append(candidates, retType)
 		}
-		if sym := h.idx.TypeOfSymbol(m.Symbol); sym != "" && !isTypeParamSymbol(sym) {
+		if sym := h.index().TypeOfSymbol(m.Symbol); sym != "" && !isTypeParamSymbol(sym) {
 			candidates = append(candidates, &index.TypeExpr{Sym: sym})
 		}
 		if m.Signature != nil {
@@ -313,7 +313,7 @@ func (h *Handler) resolveStaticMemberType(classSym, memberName string, resolver 
 		}
 
 		for _, te := range candidates {
-			if len(h.idx.MembersOfType(te.Sym)) > 0 {
+			if len(h.index().MembersOfType(te.Sym)) > 0 {
 				h.logger.Printf("resolveStaticMemberType: %s -> %s (has members)", m.Symbol, te.Sym)
 				return te
 			}
@@ -331,16 +331,16 @@ func isTypeParamSymbol(sym string) bool {
 }
 
 func (h *Handler) resolveMemberTypeExpr(owner *index.TypeExpr, memberName string) *index.TypeExpr {
-	members := h.idx.MembersOfType(owner.Sym)
+	members := h.index().MembersOfType(owner.Sym)
 	for _, m := range members {
 		if m.Name != memberName {
 			continue
 		}
-		if retType := h.idx.DeclTypeOf(m.Symbol); retType != nil {
-			return substituteTypeParams(retType, owner, h.idx)
+		if retType := h.index().DeclTypeOf(m.Symbol); retType != nil {
+			return substituteTypeParams(retType, owner, h.index())
 		}
-		if sym := h.idx.TypeOfSymbol(m.Symbol); sym != "" {
-			return substituteTypeParams(&index.TypeExpr{Sym: sym}, owner, h.idx)
+		if sym := h.index().TypeOfSymbol(m.Symbol); sym != "" {
+			return substituteTypeParams(&index.TypeExpr{Sym: sym}, owner, h.index())
 		}
 		return nil
 	}

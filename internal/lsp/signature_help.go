@@ -17,7 +17,7 @@ func (h *Handler) handleSignatureHelp(ctx context.Context, params json.RawMessag
 		return nil, nil
 	}
 
-	syms := h.idx.SymbolSignatures(p.TextDocument.URI, p.Position.Line, p.Position.Character)
+	syms := h.index().SymbolSignatures(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	if len(syms) == 0 {
 		syms = h.resolveSignatureFromAST(p.TextDocument.URI, p.Position.Line, p.Position.Character)
 	}
@@ -101,7 +101,7 @@ func (h *Handler) resolveSignatureFromAST(fileURI string, line, character int) [
 
 found:
 	cctx := parseCompletionCtxWithContext(context.Background(), h.logger, src, line, character)
-	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
+	resolver := &typeResolver{idx: h.index(), imports: cctx.Imports, pkg: cctx.Package}
 
 	if callNode.Type() == "object_creation_expression" {
 		te := extractTypeFromNewExpr(callNode, src)
@@ -145,7 +145,7 @@ found:
 }
 
 func (h *Handler) findMembersByName(typeSym, name string) []index.Symbol {
-	members := h.idx.MembersOfType(typeSym)
+	members := h.index().MembersOfType(typeSym)
 	var result []index.Symbol
 	for _, m := range members {
 		if m.Name == name {

@@ -15,7 +15,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		return nil
 	}
 
-	resolver := &typeResolver{idx: h.idx, imports: cctx.Imports, pkg: cctx.Package}
+	resolver := &typeResolver{idx: h.index(), imports: cctx.Imports, pkg: cctx.Package}
 	expectedType := h.resolveCurrentArgumentTypeExpr(cctx, resolver)
 
 	seen := make(map[string]struct{})
@@ -100,7 +100,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 	}
 
 	addStaticMembers := func(classSym string, targetName string) {
-		for _, m := range h.idx.MembersOfType(classSym) {
+		for _, m := range h.index().MembersOfType(classSym) {
 			if !m.IsStatic || !matchName(m.Name) {
 				continue
 			}
@@ -113,7 +113,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 				continue
 			}
 			seen[key] = struct{}{}
-			retType := symbolReturnTypeExpr(m, h.idx)
+			retType := symbolReturnTypeExpr(m, h.index())
 			sortText := contextPrefix(kind) + completionTypeMatchPrefix(h, expectedType, retType) + matchQuality(m.Name) + "05" + completionNameSortKey(m.Name)
 			if kind == CompletionKindMethod || kind == CompletionKindConstructor {
 				sortText += signatureSortSuffix(m.Signature)
@@ -162,7 +162,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 		return items[:100]
 	}
 
-	for _, s := range h.idx.CompletionSymbols(fileURI, cctx.Prefix) {
+	for _, s := range h.index().CompletionSymbols(fileURI, cctx.Prefix) {
 		if len(items) >= 100 {
 			break
 		}
@@ -190,7 +190,7 @@ func (h *Handler) completeLexical(cctx *CompletionCtx, fileURI string, content [
 			}
 			seen[key] = struct{}{}
 		}
-		sortText := contextPrefix(kind) + completionTypeMatchPrefix(h, expectedType, symbolReturnTypeExpr(s, h.idx)) + matchQuality(s.Name) + scopeOrder
+		sortText := contextPrefix(kind) + completionTypeMatchPrefix(h, expectedType, symbolReturnTypeExpr(s, h.index())) + matchQuality(s.Name) + scopeOrder
 		if isTypeCompletionKind(kind) {
 			sortText += typeCompletionPriority(cctx, s)
 		}

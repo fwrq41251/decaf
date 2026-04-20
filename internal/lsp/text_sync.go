@@ -3,11 +3,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
-	"time"
-
-	"github.com/fwrq41251/decaf/internal/bsp"
 )
 
 func (h *Handler) handleDidOpen(_ context.Context, params json.RawMessage) (any, error) {
@@ -36,7 +32,7 @@ func (h *Handler) handleDidSave(ctx context.Context, params json.RawMessage) (an
 		return nil, err
 	}
 	h.logger.Printf("didSave: %s — triggering compile", p.TextDocument.URI)
-	h.scheduleCompile(p.TextDocument.URI)
+	h.workspace.scheduleCompile(p.TextDocument.URI)
 	return nil, nil
 }
 
@@ -79,115 +75,6 @@ func (h *Handler) handleDidChangeWatchedFiles(_ context.Context, params json.Raw
 		}
 	}
 	h.logger.Printf("watched files changed: %d java file(s)", javaChanged)
-	h.scheduleCompile(uris...)
+	h.workspace.scheduleCompile(uris...)
 	return nil, nil
-}
-
-// scheduleCompile debounces compilation — waits 500ms after the last call
-// before triggering a compile + reindex cycle.
-// If file URIs are provided, only the build targets owning those files are compiled.
-func (h *Handler) scheduleCompile(uris ...string) {
-	h.debounceMu.Lock()
-	defer h.debounceMu.Unlock()
-
-	// Merge URIs across debounced calls.
-	h.pendingURIs = append(h.pendingURIs, uris...)
-
-	if h.debounceTimer != nil {
-		h.debounceTimer.Stop()
-	}
-
-	h.debounceTimer = time.AfterFunc(500*time.Millisecond, h.runCompileCycle)
-}
-
-// runCompileCycle is the debounced callback that compiles changed files and reindexes.
-func (h *Handler) runCompileCycle() {
-	totalStart := time.Now()
-
-	h.compileMu.Lock()
-	defer h.compileMu.Unlock()
-	h.logger.Printf("[timing] acquired compileMu after %v", time.Since(totalStart))
-
-	h.bgMu.Lock()
-	ctx := h.backgroundCtx
-	h.bgMu.Unlock()
-	if ctx == nil {
-		return
-	}
-
-	// Collect and clear pending URIs.
-	h.debounceMu.Lock()
-	changedURIs := h.pendingURIs
-	h.pendingURIs = nil
-	h.debounceMu.Unlock()
-
-	if len(changedURIs) == 0 {
-		return
-	}
-
-	if !h.bspClient.IsReady() {
-		h.logger.Printf("skipping compile cycle for %d file(s): BSP client not ready", len(changedURIs))
-		return
-	}
-
-	prog := h.beginProgress(ctx, "decaf", "compiling…")
-
-	compiled := false
-	if len(changedURIs) > 0 {
-		t0 := time.Now()
-		targets := h.resolveTargets(ctx, changedURIs)
-		h.logger.Printf("[timing] resolveTargets (%d URIs -> %d targets) took %v", len(changedURIs), len(targets), time.Since(t0))
-		if len(targets) > 0 {
-			t1 := time.Now()
-			err := h.bspClient.CompileTargets(ctx, targets)
-			h.logger.Printf("[timing] CompileTargets took %v", time.Since(t1))
-			if err != nil {
-				h.logCompileError("compile on file change", err)
-			}
-			compiled = true
-		}
-	}
-
-	// Fall back to full compile if we couldn't resolve targets.
-	if !compiled {
-		t1 := time.Now()
-		if err := h.bspClient.Compile(ctx); err != nil {
-			h.logCompileError("full compile on file change", err)
-		}
-		h.logger.Printf("[timing] full Compile took %v", time.Since(t1))
-	}
-
-	// Always reindex — even partial compilation produces updated semanticdb.
-	prog.report("indexing…", nil)
-	t2 := time.Now()
-	h.reindex()
-	h.logger.Printf("[timing] reindex took %v", time.Since(t2))
-
-	prog.end("done")
-	h.logger.Printf("[timing] total compile+reindex cycle took %v", time.Since(totalStart))
-}
-
-// resolveTargets uses inverseSources to find build targets for the given file URIs,
-// deduplicating the results.
-func (h *Handler) resolveTargets(ctx context.Context, uris []string) []bsp.BuildTargetIdentifier {
-	seen := make(map[string]struct{})
-	var targets []bsp.BuildTargetIdentifier
-	for _, u := range uris {
-		ts, err := h.bspClient.InverseSources(ctx, u)
-		if err != nil {
-			if errors.Is(err, bsp.ErrNotConnected) {
-				h.logger.Printf("inverseSources skipped for %s: BSP client not ready", u)
-				return nil
-			}
-			h.logger.Printf("inverseSources failed for %s: %v", u, err)
-			return nil // fall back to full compile
-		}
-		for _, t := range ts {
-			if _, ok := seen[t.URI]; !ok {
-				seen[t.URI] = struct{}{}
-				targets = append(targets, t)
-			}
-		}
-	}
-	return targets
 }
