@@ -92,6 +92,81 @@ public class Use {
 	t.Fatalf("expected nested type import action, got %+v", actions)
 }
 
+func TestCodeAction_DoesNotAddImportForPrivateNestedType(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	h := NewHandler(logger, jsonrpc.NewTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+
+	idx := index.NewIndex(logger, tmpDir)
+	defer idx.Close()
+	h.markIndexReadyForTest()
+	h.setIndexForTest(idx)
+	h.rootURI = "file://" + tmpDir
+
+	docs := &sdb.TextDocuments{
+		Documents: []*sdb.TextDocument{{
+			Uri: "src/XAddHandler.java",
+			Symbols: []*sdb.SymbolInformation{
+				{
+					Symbol:      "org/winry/handler/stream/XAddHandler#",
+					DisplayName: "XAddHandler",
+					Kind:        sdb.SymbolInformation_CLASS,
+					Access:      &sdb.Access{SealedValue: &sdb.Access_PublicAccess{PublicAccess: &sdb.PublicAccess{}}},
+				},
+				{
+					Symbol:      "org/winry/handler/stream/XAddHandler#EntryKey#",
+					DisplayName: "EntryKey",
+					Kind:        sdb.SymbolInformation_CLASS,
+					Access:      &sdb.Access{SealedValue: &sdb.Access_PrivateAccess{PrivateAccess: &sdb.PrivateAccess{}}},
+				},
+			},
+		}},
+	}
+	sdbDir := filepath.Join(tmpDir, "META-INF", "semanticdb")
+	if err := os.MkdirAll(sdbDir, 0755); err != nil {
+		t.Fatalf("mkdir semanticdb dir: %v", err)
+	}
+	data, _ := proto.Marshal(docs)
+	if err := os.WriteFile(filepath.Join(sdbDir, "XAddHandler.java.semanticdb"), data, 0644); err != nil {
+		t.Fatalf("write semanticdb: %v", err)
+	}
+	writeSourcePlaceholdersForDocs(t, tmpDir, docs)
+	if err := idx.Load(); err != nil {
+		t.Fatalf("load index: %v", err)
+	}
+
+	fileURI := "file://" + tmpDir + "/src/Use.java"
+	content := `package com.consumer;
+public class Use {
+    EntryKey value;
+}`
+	h.docs.Open(fileURI, content)
+
+	params := CodeActionParams{
+		TextDocument: TextDocumentIdentifier{URI: fileURI},
+		Range:        Range{},
+		Context: CodeActionContext{
+			Only: []string{CodeActionQuickFix},
+			Diagnostics: []Diagnostic{{
+				Message: "cannot find symbol\n  symbol:   class EntryKey",
+			}},
+		},
+	}
+	rawParams, _ := json.Marshal(params)
+
+	got, err := h.handleCodeAction(context.Background(), rawParams)
+	if err != nil {
+		t.Fatalf("handleCodeAction failed: %v", err)
+	}
+
+	actions := got.([]CodeAction)
+	for _, action := range actions {
+		if strings.Contains(action.Title, "EntryKey") {
+			t.Fatalf("should not offer import for private nested type, got %+v", action)
+		}
+	}
+}
+
 func TestCodeAction_DoesNotAddImportForTopLevelTypeInSamePackage(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger := log.New(&bytes.Buffer{}, "[test] ", 0)

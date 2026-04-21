@@ -102,6 +102,9 @@ func organizeImportsWithOverlay(fileURI string, idx *index.Index, overlay string
 	seenImports := make(map[string]bool, len(block.imports))
 	resolvedBySimpleName := make(map[string]map[string]bool)
 	for sym := range usedSymbols {
+		if !isImportVisibleSymbol(idx, sym, filePackage) {
+			continue
+		}
 		fqn := fqnFromSymbol(sym)
 		if fqn == "" {
 			continue
@@ -147,6 +150,9 @@ func organizeImportsWithOverlay(fileURI string, idx *index.Index, overlay string
 	}
 
 	for sym := range usedSymbols {
+		if !isImportVisibleSymbol(idx, sym, filePackage) {
+			continue
+		}
 		fqn := fqnFromSymbol(sym)
 		if fqn == "" {
 			continue
@@ -249,6 +255,18 @@ func organizeImportsWithOverlay(fileURI string, idx *index.Index, overlay string
 		Start: Position{Line: block.startLine, Character: 0},
 		End:   Position{Line: block.endLine, Character: 0},
 	}, newText)
+}
+
+func detectPackageForFile(fileURI string, overlay string, hasOverlay bool) string {
+	content := readContent(fileURI, overlay, hasOverlay)
+	if content == nil {
+		return ""
+	}
+	tree, err := getTree(content)
+	if err != nil {
+		return ""
+	}
+	return detectPackage(tree.RootNode(), content)
 }
 
 func collectOverrideMethodTypeSymbols(root *slog.Node, content []byte, fileURI string, idx *index.Index, usedSymbols map[string]bool) {
@@ -481,6 +499,9 @@ func resolveTypeNameForImport(name string, idx *index.Index, filePackage string,
 		if sym.Name != name || !index.IsTypeSymbol(sym) || seen[sym.Symbol] {
 			continue
 		}
+		if !isImportVisibleType(sym, filePackage) {
+			continue
+		}
 		seen[sym.Symbol] = true
 		filtered = append(filtered, sym)
 	}
@@ -534,6 +555,42 @@ func resolveTypeNameForImport(name string, idx *index.Index, filePackage string,
 		return bestSym
 	}
 	return ""
+}
+
+func isImportVisibleType(sym index.Symbol, filePackage string) bool {
+	if !index.IsTypeSymbol(sym) {
+		return false
+	}
+
+	// External/JDK types don't currently track visibility in the index; treat them
+	// as importable and let source availability decide the rest.
+	if sym.URI == "" {
+		return true
+	}
+
+	typePkg := packageFromSymbol(sym.Symbol)
+	switch sym.Visibility {
+	case index.VisibilityPublic, index.VisibilityUnknown:
+		return true
+	case index.VisibilityProtected:
+		return typePkg != "" && typePkg == filePackage
+	case index.VisibilityPackagePrivate:
+		return true
+	case index.VisibilityPrivate:
+		return false
+	default:
+		return false
+	}
+}
+
+func isImportVisibleSymbol(idx *index.Index, sym string, filePackage string) bool {
+	if sym == "" {
+		return false
+	}
+	if def := idx.SymbolDefinition(sym); def != nil {
+		return isImportVisibleType(*def, filePackage)
+	}
+	return true
 }
 
 func uniqueCandidateMatching(candidates []index.Symbol, match func(index.Symbol) bool) string {
@@ -707,6 +764,21 @@ func fqnFromSymbol(sym string) string {
 		b.WriteString(nested)
 	}
 	return b.String()
+}
+
+func packageFromSymbol(sym string) string {
+	if sym == "" {
+		return ""
+	}
+	parts := strings.Split(sym, "#")
+	if len(parts) == 0 || parts[0] == "" {
+		return ""
+	}
+	classPart := parts[0]
+	if slashIdx := strings.LastIndex(classPart, "/"); slashIdx >= 0 {
+		return strings.ReplaceAll(classPart[:slashIdx], "/", ".")
+	}
+	return ""
 }
 
 // packageFromFQN returns the package from a fully-qualified name.

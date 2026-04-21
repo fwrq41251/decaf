@@ -54,6 +54,7 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 	// Quick fix: add missing import / implement methods.
 	if wantQuickFix {
 		overlay, hasOverlay := h.docs.Get(p.TextDocument.URI)
+		filePackage := detectPackageForFile(p.TextDocument.URI, overlay, hasOverlay)
 		seenImportFixes := make(map[string]struct{})
 		for _, diag := range p.Context.Diagnostics {
 			// Add missing import.
@@ -62,6 +63,9 @@ func (h *Handler) handleCodeAction(ctx context.Context, params json.RawMessage) 
 				candidates := h.index().SearchSymbols(name)
 				for _, sym := range candidates {
 					if sym.Name != name {
+						continue
+					}
+					if !isImportVisibleType(sym, filePackage) {
 						continue
 					}
 					fqn := fqnFromSymbol(sym.Symbol)

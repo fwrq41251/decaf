@@ -122,6 +122,78 @@ public class App {
 	}
 }
 
+func TestOrganizeImports_DoesNotImportPrivateNestedType(t *testing.T) {
+	source := `package com.consumer;
+
+public class App {
+    EntryKey key;
+}
+`
+
+	occs := []*sdb.SymbolOccurrence{
+		{Symbol: "com/consumer/App#", Role: sdb.SymbolOccurrence_DEFINITION,
+			Range: &sdb.Range{StartLine: 2, StartCharacter: 13, EndLine: 2, EndCharacter: 16}},
+	}
+	syms := []*sdb.SymbolInformation{
+		{Symbol: "com/consumer/App#", DisplayName: "App", Kind: sdb.SymbolInformation_CLASS},
+	}
+
+	fileURI, idx := setupTestIndex(t, source, occs, syms)
+
+	types := map[string][]*index.Symbol{
+		"entrykey": {{
+			Name:       "EntryKey",
+			Symbol:     "org/winry/handler/stream/XAddHandler#EntryKey#",
+			Kind:       sdb.SymbolInformation_CLASS,
+			URI:        "src/main/java/org/winry/handler/stream/XAddHandler.java",
+			Visibility: index.VisibilityPrivate,
+		}},
+	}
+	setOrganizeIndexField(t, idx, "typeBySimpleName", types)
+
+	edit := organizeImports(fileURI, idx, "")
+	if edit != nil {
+		edits := edit.Changes[fileURI]
+		if len(edits) > 0 && strings.Contains(edits[0].NewText, "XAddHandler.EntryKey") {
+			t.Fatalf("organizeImports should not import private nested type, got:\n%s", edits[0].NewText)
+		}
+	}
+}
+
+func TestOrganizeImports_DoesNotImportPrivateNestedTypeFromResolvedSymbol(t *testing.T) {
+	source := `package com.consumer;
+
+public class App {
+    EntryKey key;
+}
+`
+
+	occs := []*sdb.SymbolOccurrence{
+		{Symbol: "com/consumer/App#", Role: sdb.SymbolOccurrence_DEFINITION,
+			Range: &sdb.Range{StartLine: 2, StartCharacter: 13, EndLine: 2, EndCharacter: 16}},
+		{Symbol: "org/winry/handler/stream/XAddHandler#EntryKey#", Role: sdb.SymbolOccurrence_REFERENCE,
+			Range: &sdb.Range{StartLine: 3, StartCharacter: 4, EndLine: 3, EndCharacter: 12}},
+	}
+	syms := []*sdb.SymbolInformation{
+		{Symbol: "com/consumer/App#", DisplayName: "App", Kind: sdb.SymbolInformation_CLASS},
+		{
+			Symbol:      "org/winry/handler/stream/XAddHandler#EntryKey#",
+			DisplayName: "EntryKey",
+			Kind:        sdb.SymbolInformation_CLASS,
+			Access:      &sdb.Access{SealedValue: &sdb.Access_PrivateAccess{PrivateAccess: &sdb.PrivateAccess{}}},
+		},
+	}
+
+	fileURI, idx := setupTestIndex(t, source, occs, syms)
+	edit := organizeImports(fileURI, idx, "")
+	if edit != nil {
+		edits := edit.Changes[fileURI]
+		if len(edits) > 0 && strings.Contains(edits[0].NewText, "XAddHandler.EntryKey") {
+			t.Fatalf("organizeImports should not import resolved private nested type, got:\n%s", edits[0].NewText)
+		}
+	}
+}
+
 func TestOrganizeImports_SortImports(t *testing.T) {
 	source := `package com.example;
 
