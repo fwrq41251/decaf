@@ -969,8 +969,9 @@ func deduplicateSymbols(symbols []Symbol) []Symbol {
 		if s.Range.IsEmpty() {
 			continue
 		}
-		if !seen[s.URI] {
-			seen[s.URI] = true
+		key := fmt.Sprintf("%s:%d:%d-%d:%d", s.URI, s.Range.StartLine, s.Range.StartCharacter, s.Range.EndLine, s.Range.EndCharacter)
+		if !seen[key] {
+			seen[key] = true
 			result = append(result, s)
 		}
 	}
