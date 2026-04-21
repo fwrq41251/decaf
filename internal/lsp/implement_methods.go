@@ -209,7 +209,14 @@ func generateMethodStubForOwner(sym index.Symbol, ownerType *index.TypeExpr, idx
 	params := methodStubParams(sym, ownerType, idx)
 	var sb strings.Builder
 	sb.WriteString("\n    @Override\n")
-	sb.WriteString("    public ")
+	switch sym.Visibility {
+	case index.VisibilityProtected:
+		sb.WriteString("    protected ")
+	case index.VisibilityPackagePrivate:
+		sb.WriteString("    ")
+	default:
+		sb.WriteString("    public ")
+	}
 	sb.WriteString(returnType)
 	sb.WriteString(" ")
 	sb.WriteString(sym.Name)

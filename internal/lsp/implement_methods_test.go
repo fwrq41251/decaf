@@ -376,6 +376,7 @@ public class MyService implements Handler {
 						DisplayName: "handle",
 						Kind:        sdb.SymbolInformation_METHOD,
 						Properties:  int32(sdb.SymbolInformation_ABSTRACT),
+						Access:      &sdb.Access{SealedValue: &sdb.Access_PublicAccess{PublicAccess: &sdb.PublicAccess{}}},
 						Signature: &sdb.Signature{
 							SealedValue: &sdb.Signature_MethodSignature{
 								MethodSignature: &sdb.MethodSignature{
@@ -569,6 +570,44 @@ func TestGenerateMethodStub_Void(t *testing.T) {
 	stub := generateMethodStub(sym)
 	if !strings.Contains(stub, "public void run()") {
 		t.Errorf("wrong void signature: %s", stub)
+	}
+}
+
+func TestGenerateMethodStub_ProtectedVisibility(t *testing.T) {
+	sym := index.Symbol{
+		Name:       "doSomething",
+		Kind:       sdb.SymbolInformation_METHOD,
+		Visibility: index.VisibilityProtected,
+		Signature: &index.SignatureInfo{
+			Label: "void doSomething()",
+		},
+	}
+
+	stub := generateMethodStub(sym)
+	if !strings.Contains(stub, "protected void doSomething()") {
+		t.Errorf("expected protected modifier, got: %s", stub)
+	}
+	if strings.Contains(stub, "public") {
+		t.Errorf("should not contain public: %s", stub)
+	}
+}
+
+func TestGenerateMethodStub_PackagePrivateVisibility(t *testing.T) {
+	sym := index.Symbol{
+		Name:       "internalOp",
+		Kind:       sdb.SymbolInformation_METHOD,
+		Visibility: index.VisibilityPackagePrivate,
+		Signature: &index.SignatureInfo{
+			Label: "void internalOp()",
+		},
+	}
+
+	stub := generateMethodStub(sym)
+	if strings.Contains(stub, "public") || strings.Contains(stub, "protected") || strings.Contains(stub, "private") {
+		t.Errorf("should have no access modifier, got: %s", stub)
+	}
+	if !strings.Contains(stub, "    void internalOp()") {
+		t.Errorf("wrong signature: %s", stub)
 	}
 }
 

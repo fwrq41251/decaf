@@ -1,10 +1,18 @@
 package lsp
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/fwrq41251/decaf/internal/index"
 	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
+)
+
+var (
+	reJavadocCode    = regexp.MustCompile(`\{@code\s+([^}]+)\}`)
+	reJavadocLink    = regexp.MustCompile(`\{@link(?:plain)?\s+([^}]+)\}`)
+	reJavadocLiteral = regexp.MustCompile(`\{@literal\s+([^}]+)\}`)
+	reJavadocValue   = regexp.MustCompile(`\{@value\s+([^}]+)\}`)
 )
 
 // formatHover produces a markdown string for hover display.
@@ -295,7 +303,15 @@ func formatJavadoc(doc string) string {
 		out.WriteString(o)
 	}
 
-	return strings.TrimSpace(out.String())
+	return stripJavadocInlineTags(strings.TrimSpace(out.String()))
+}
+
+func stripJavadocInlineTags(s string) string {
+	s = reJavadocCode.ReplaceAllString(s, "`$1`")
+	s = reJavadocLink.ReplaceAllString(s, "`$1`")
+	s = reJavadocValue.ReplaceAllString(s, "`$1`")
+	s = reJavadocLiteral.ReplaceAllString(s, "$1")
+	return s
 }
 
 func symbolKindLabel(kind sdb.SymbolInformation_Kind) string {

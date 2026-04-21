@@ -78,6 +78,15 @@ func TestFormatJavadoc_Deprecated(t *testing.T) {
 	}
 }
 
+func TestFormatJavadoc_InlineTags(t *testing.T) {
+	doc := "Returns {@code null} if not found.\n@param key the {@link Map} key\n@return a {@literal raw <value>}"
+	got := formatJavadoc(doc)
+	expected := "Returns `null` if not found.\n\n**Parameters:**\n- `key` — the `Map` key\n\n**Returns:** a raw <value>"
+	if got != expected {
+		t.Fatalf("formatJavadoc inline tags mismatch.\nGot:\n%s\n\nExpected:\n%s", got, expected)
+	}
+}
+
 func TestFormatJavadoc_DeprecatedNoMessage(t *testing.T) {
 	doc := "@deprecated"
 	got := formatJavadoc(doc)
