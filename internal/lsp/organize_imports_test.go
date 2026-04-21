@@ -1296,6 +1296,57 @@ public class StaticCallTest {
 	}
 }
 
+func TestOrganizeImports_DoesNotAddBogusImportsFromPackageNamesOrExistingImports(t *testing.T) {
+	source := `package org.winry.handler.stream;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import java.util.List;
+import org.junit.jupiter.api.Test;
+import org.winry.model.Request;
+import org.winry.storage.RedisStore;
+
+class XAddHandlerTest {
+
+    @Test
+    void sample() {
+        var handler = new XAddHandler(new RedisStore());
+        assertEquals(
+            "$3\r\n0-1\r\n",
+            handler.handleRequest(
+                new Request(
+                    "XADD",
+                    List.of("raspberry", "0-*", "blueberry", "pear")
+                )
+            )
+        );
+    }
+}
+`
+
+	fileURI, idx := setupTestIndex(t, source, nil, nil)
+	setOrganizeIndexField(t, idx, "memberBySimpleName", map[string][]*index.Symbol{
+		"java": {
+			{Name: "java", Symbol: "jdk/javadoc/internal/doclets/toolkit/taglets/SnippetTaglet$Language#java.", Kind: sdb.SymbolInformation_FIELD, IsStatic: true},
+		},
+		"stream": {
+			{Name: "stream", Symbol: "org/winry/storage/RedisType#stream.", Kind: sdb.SymbolInformation_FIELD, IsStatic: true},
+		},
+	})
+
+	edit := organizeImports(fileURI, idx, "")
+	if edit == nil {
+		return
+	}
+	text := edit.Changes[fileURI][0].NewText
+	if containsStr(text, "SnippetTaglet$Language.java") {
+		t.Fatalf("should not add bogus static import for package identifier, got:\n%s", text)
+	}
+	if containsStr(text, "RedisType.stream") {
+		t.Fatalf("should not add bogus static import for package identifier, got:\n%s", text)
+	}
+}
+
 func TestComputeImportEdit(t *testing.T) {
 	source := []byte(`package com.example;
 

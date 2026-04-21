@@ -7,12 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 // Setup handles automatic project setup: detect build tool, export to Bloop,
 // download semanticdb-javac, and inject it into Bloop config.
 type Setup struct {
-	logger     *log.Logger
+	logger       *log.Logger
 	workspaceDir string // absolute path of the workspace root
 }
 
@@ -56,17 +57,15 @@ func (s *Setup) Run(ctx context.Context) error {
 
 // bloopInstall runs the appropriate bloop export command for the build tool.
 func (s *Setup) bloopInstall(ctx context.Context, buildTool string) error {
-	bloopDir := filepath.Join(s.workspaceDir, ".bloop")
-
-	// Skip if .bloop/ already exists and has config files.
-	if entries, err := os.ReadDir(bloopDir); err == nil {
-		for _, e := range entries {
-			if filepath.Ext(e.Name()) == ".json" {
-				s.logger.Printf(".bloop/ already contains config files, skipping bloopInstall")
-				return nil
-			}
-		}
+	needsInstall, reason, err := s.shouldRunBloopInstall(buildTool)
+	if err != nil {
+		return err
 	}
+	if !needsInstall {
+		s.logger.Printf("skipping bloopInstall: %s", reason)
+		return nil
+	}
+	s.logger.Printf("running bloopInstall: %s", reason)
 
 	switch buildTool {
 	case "maven":
@@ -88,6 +87,98 @@ func (s *Setup) detectBuildTool() string {
 		}
 	}
 	return ""
+}
+
+func (s *Setup) shouldRunBloopInstall(buildTool string) (bool, string, error) {
+	bloopFiles, err := s.bloopConfigFiles()
+	if err != nil {
+		return false, "", fmt.Errorf("reading .bloop directory: %w", err)
+	}
+	if len(bloopFiles) == 0 {
+		return true, ".bloop/ has no config files", nil
+	}
+
+	buildFiles := s.buildFilesForTool(buildTool)
+	if len(buildFiles) == 0 {
+		return true, "no recognized build files found", nil
+	}
+
+	latestBuildModTime := time.Time{}
+	latestBuildFile := ""
+	for _, path := range buildFiles {
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return false, "", fmt.Errorf("stat build file %s: %w", path, err)
+		}
+		if info.ModTime().After(latestBuildModTime) {
+			latestBuildModTime = info.ModTime()
+			latestBuildFile = path
+		}
+	}
+	if latestBuildFile == "" {
+		return true, "no existing build files found", nil
+	}
+
+	oldestBloopModTime := time.Time{}
+	oldestBloopFile := ""
+	for i, path := range bloopFiles {
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return true, fmt.Sprintf("bloop config disappeared: %s", path), nil
+			}
+			return false, "", fmt.Errorf("stat bloop config %s: %w", path, err)
+		}
+		if i == 0 || info.ModTime().Before(oldestBloopModTime) {
+			oldestBloopModTime = info.ModTime()
+			oldestBloopFile = path
+		}
+	}
+
+	if latestBuildModTime.After(oldestBloopModTime) {
+		return true, fmt.Sprintf("%s is newer than %s", filepath.Base(latestBuildFile), filepath.Base(oldestBloopFile)), nil
+	}
+
+	return false, ".bloop/ is up-to-date with build files", nil
+}
+
+func (s *Setup) bloopConfigFiles() ([]string, error) {
+	bloopDir := filepath.Join(s.workspaceDir, ".bloop")
+	entries, err := os.ReadDir(bloopDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var files []string
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".json" {
+			files = append(files, filepath.Join(bloopDir, e.Name()))
+		}
+	}
+	return files, nil
+}
+
+func (s *Setup) buildFilesForTool(buildTool string) []string {
+	switch buildTool {
+	case "maven":
+		return []string{filepath.Join(s.workspaceDir, "pom.xml")}
+	case "gradle":
+		return []string{
+			filepath.Join(s.workspaceDir, "build.gradle"),
+			filepath.Join(s.workspaceDir, "build.gradle.kts"),
+			filepath.Join(s.workspaceDir, "settings.gradle"),
+			filepath.Join(s.workspaceDir, "settings.gradle.kts"),
+			filepath.Join(s.workspaceDir, "gradle.properties"),
+		}
+	default:
+		return nil
+	}
 }
 
 // DiscoverJavaHome returns the path to the JAVA_HOME by checking override, environment, or system PATH.

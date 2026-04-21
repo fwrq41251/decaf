@@ -58,7 +58,17 @@ func organizeImportsWithOverlay(fileURI string, idx *index.Index, overlay string
 			resolvedTypeNames[simpleNameFromImport(fqn)] = true
 		}
 	}
+	for _, imp := range block.imports {
+		simple := simpleNameFromImport(imp)
+		if simple == "" || simple == "*" {
+			continue
+		}
+		if !isKnownImportedType(idx, simple, imp) {
+			resolvedTypeNames[simple] = true
+		}
+	}
 	preferredPkgs := collectPreferredImportPackages(block, usedSymbols)
+	fallbackResolvedSymbols := make(map[string]bool)
 
 	// Supplement SemanticDB data with tree-sitter type identifiers. This keeps
 	// organize-imports working when the file has compile errors or when SemanticDB
@@ -76,6 +86,7 @@ func organizeImportsWithOverlay(fileURI string, idx *index.Index, overlay string
 				continue
 			}
 			usedSymbols[sym] = true
+			fallbackResolvedSymbols[sym] = true
 			usedSimpleNames[name] = true
 			resolvedTypeNames[name] = true
 			if pkg := packageFromFQN(fqnFromSymbol(sym)); pkg != "" {
@@ -136,6 +147,11 @@ func organizeImportsWithOverlay(fileURI string, idx *index.Index, overlay string
 			}
 			continue
 		}
+		if typeNames[simple] && !isKnownImportedType(idx, simple, imp) {
+			kept = append(kept, imp)
+			seenImports[imp] = true
+			continue
+		}
 		if usedSimpleNames[simple] {
 			kept = append(kept, imp)
 			seenImports[imp] = true
@@ -167,7 +183,7 @@ func organizeImportsWithOverlay(fileURI string, idx *index.Index, overlay string
 		}
 		if !importedSet[fqn] {
 			// Only add if the symbol has a known definition.
-			if def := idx.SymbolDefinition(sym); def != nil {
+			if def := idx.SymbolDefinition(sym); def != nil || fallbackResolvedSymbols[sym] {
 				kept = append(kept, fqn)
 				importedSet[fqn] = true
 			}
@@ -591,6 +607,18 @@ func isImportVisibleSymbol(idx *index.Index, sym string, filePackage string) boo
 		return isImportVisibleType(*def, filePackage)
 	}
 	return true
+}
+
+func isKnownImportedType(idx *index.Index, simpleName, importPath string) bool {
+	if idx == nil || simpleName == "" || importPath == "" {
+		return false
+	}
+	for _, sym := range idx.TypeBySimpleName(simpleName) {
+		if fqnFromSymbol(sym.Symbol) == importPath {
+			return true
+		}
+	}
+	return false
 }
 
 func uniqueCandidateMatching(candidates []index.Symbol, match func(index.Symbol) bool) string {
@@ -1183,6 +1211,12 @@ func isStaticFieldIdentifierUse(n *slog.Node) bool {
 	parent := n.Parent()
 	if parent == nil {
 		return false
+	}
+	for cur := n; cur != nil; cur = cur.Parent() {
+		switch cur.Type() {
+		case "import_declaration", "package_declaration", "scoped_identifier", "scoped_type_identifier":
+			return false
+		}
 	}
 	switch parent.Type() {
 	case "package_declaration", "import_declaration", "method_invocation", "field_access",
