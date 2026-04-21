@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 	"testing"
 )
 
@@ -29,5 +30,32 @@ func TestClientMethodsReturnErrNotConnectedWhenNotReady(t *testing.T) {
 
 	if _, err := client.JvmRunEnvironment(context.Background()); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("JvmRunEnvironment() error = %v, want ErrNotConnected", err)
+	}
+}
+
+func TestTailBufferKeepsRecentOutput(t *testing.T) {
+	var buf tailBuffer
+
+	prefix := strings.Repeat("a", bloopStartupLogLimit/2)
+	middle := strings.Repeat("b", bloopStartupLogLimit/2)
+	suffix := strings.Repeat("c", 32)
+
+	if _, err := buf.Write([]byte(prefix)); err != nil {
+		t.Fatalf("Write(prefix) failed: %v", err)
+	}
+	if _, err := buf.Write([]byte(middle)); err != nil {
+		t.Fatalf("Write(middle) failed: %v", err)
+	}
+	if _, err := buf.Write([]byte(suffix)); err != nil {
+		t.Fatalf("Write(suffix) failed: %v", err)
+	}
+
+	got := buf.String()
+	want := (prefix + middle + suffix)[len(prefix+middle+suffix)-bloopStartupLogLimit:]
+	if len(got) != bloopStartupLogLimit {
+		t.Fatalf("String() length = %d, want %d", len(got), bloopStartupLogLimit)
+	}
+	if got != want {
+		t.Fatalf("String() = %q, want %q", got, want)
 	}
 }

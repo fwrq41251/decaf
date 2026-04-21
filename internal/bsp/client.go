@@ -1,6 +1,7 @@
 package bsp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,14 +37,14 @@ type TaskFinishHandler func(params TaskFinishParams)
 
 // Client manages the connection to a BSP build server (Bloop).
 type Client struct {
-	logger        *log.Logger
-	transport     *jsonrpc.Transport
-	conn          net.Conn // underlying socket connection
-	cmd           *exec.Cmd
-	ready         atomic.Bool
-	nextID        atomic.Int64
-	pending       map[int64]chan *jsonrpc.Response
-	pendingMu     sync.Mutex
+	logger         *log.Logger
+	transport      *jsonrpc.Transport
+	conn           net.Conn // underlying socket connection
+	cmd            *exec.Cmd
+	ready          atomic.Bool
+	nextID         atomic.Int64
+	pending        map[int64]chan *jsonrpc.Response
+	pendingMu      sync.Mutex
 	onDiagnostics  DiagnosticsHandler
 	onLogMessage   LogMessageHandler
 	onTaskStart    TaskStartHandler
@@ -52,10 +54,15 @@ type Client struct {
 	targets        []BuildTarget
 	socketDir      string // temp directory containing the unix socket
 	exitErr        chan error
-	}
+}
 
 var ErrNotConnected = errors.New("bsp client not connected")
 
+const (
+	bloopSocketStartupTimeout = 30 * time.Second
+	bloopSocketPollInterval   = 100 * time.Millisecond
+	bloopStartupLogLimit      = 4096
+)
 
 // NewClient creates a new BSP client.
 func NewClient(logger *log.Logger, onDiagnostics DiagnosticsHandler, onDisconnect func(), onLog LogMessageHandler, onStart TaskStartHandler, onProgress TaskProgressHandler, onFinish TaskFinishHandler) *Client {
@@ -103,12 +110,15 @@ func (c *Client) Start(ctx context.Context, rootURI string) error {
 	}()
 
 	c.logger.Printf("starting bloop bsp using socket: %s", socketPath)
-	
+
 	// Start bloop bsp process.
 	c.cmd = exec.CommandContext(ctx, bloopExe, "bsp", "--protocol", "local", "--socket", socketPath)
 	c.cmd.Dir = sourceRoot
 	c.cmd.Env = os.Environ()
-	
+	var startupOutput tailBuffer
+	c.cmd.Stdout = &startupOutput
+	c.cmd.Stderr = &startupOutput
+
 	if err := c.cmd.Start(); err != nil {
 		return fmt.Errorf("starting bloop process: %w", err)
 	}
@@ -125,21 +135,31 @@ func (c *Client) Start(ctx context.Context, rootURI string) error {
 	start := time.Now()
 	var conn net.Conn
 	var dialErr error
-	for time.Since(start) < 5*time.Second {
+	for time.Since(start) < bloopSocketStartupTimeout {
 		select {
 		case err := <-c.exitErr:
-			return fmt.Errorf("bloop process exited before socket was ready: %w", err)
+			return c.bloopStartupError(
+				fmt.Sprintf("bloop process exited before socket was ready after %s", time.Since(start).Round(time.Millisecond)),
+				socketPath,
+				err,
+				startupOutput.String(),
+			)
 		default:
 		}
 		conn, dialErr = net.Dial("unix", socketPath)
 		if dialErr == nil {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(bloopSocketPollInterval)
 	}
 
 	if dialErr != nil {
-		return fmt.Errorf("failed to connect to bloop socket %s after 5s: %w", socketPath, dialErr)
+		return c.bloopStartupError(
+			fmt.Sprintf("failed to connect to bloop socket %s after %s", socketPath, bloopSocketStartupTimeout),
+			socketPath,
+			dialErr,
+			startupOutput.String(),
+		)
 	}
 
 	c.logger.Println("connected to bloop bsp socket")
@@ -182,6 +202,49 @@ func (c *Client) Start(ctx context.Context, rootURI string) error {
 	c.logger.Printf("found %d build targets", len(c.targets))
 	cleanup = false
 	return nil
+}
+
+func (c *Client) bloopStartupError(prefix, socketPath string, err error, startupOutput string) error {
+	msg := fmt.Sprintf("%s: %v", prefix, err)
+	if info, statErr := os.Stat(socketPath); statErr == nil {
+		msg += fmt.Sprintf(" (socket exists with mode %s)", info.Mode())
+	}
+	if trimmed := strings.TrimSpace(startupOutput); trimmed != "" {
+		msg += fmt.Sprintf(" (bloop output: %s)", trimmed)
+	}
+	return errors.New(msg)
+}
+
+type tailBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if len(p) >= bloopStartupLogLimit {
+		b.buf.Reset()
+		_, _ = b.buf.Write(p[len(p)-bloopStartupLogLimit:])
+		return len(p), nil
+	}
+
+	if b.buf.Len()+len(p) > bloopStartupLogLimit {
+		drop := b.buf.Len() + len(p) - bloopStartupLogLimit
+		remaining := append([]byte(nil), b.buf.Bytes()[drop:]...)
+		b.buf.Reset()
+		_, _ = b.buf.Write(remaining)
+	}
+
+	_, _ = b.buf.Write(p)
+	return len(p), nil
+}
+
+func (b *tailBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func (c *Client) IsReady() bool {
@@ -451,8 +514,6 @@ func (c *Client) readLoop() {
 		}
 	}
 }
-
-
 
 func (c *Client) handleNotification(method string, body []byte) {
 	switch method {
