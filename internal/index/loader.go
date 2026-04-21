@@ -260,8 +260,18 @@ func (idx *Index) loadFromWatcher() error {
 	removed = uniquePaths(removed)
 
 	if len(dirty) == 0 && len(removed) == 0 {
-		idx.logger.Printf("index up-to-date (no watcher events)")
-		return nil
+		idx.mu.RLock()
+		hasFiles := len(idx.modTimes) > 0
+		idx.mu.RUnlock()
+		if hasFiles {
+			idx.logger.Printf("index up-to-date (no watcher events)")
+			return nil
+		}
+		// No watcher events and no files indexed yet — fall back to full scan
+		// to catch files created before the watcher was ready.
+		idx.logger.Printf("no watcher events and empty index, falling back to full scan")
+		scanRoots, watchRoots := idx.discoverScanAndWatchRoots()
+		return idx.loadFull(scanRoots, watchRoots)
 	}
 
 	idx.logger.Printf("watcher index: %d changed, %d removed", len(dirty), len(removed))
