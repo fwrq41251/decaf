@@ -31,6 +31,10 @@ type workspaceService struct {
 	backgroundCtx    context.Context
 	backgroundCancel context.CancelFunc
 	bgWg             sync.WaitGroup
+
+	// srcWatcher watches .java source files for external changes (code agents,
+	// plain editors) that don't send workspace/didChangeWatchedFiles.
+	srcWatcher *sourceWatcher
 }
 
 func newWorkspaceService(h *Handler) *workspaceService {
@@ -180,6 +184,20 @@ func (ws *workspaceService) start(ctx context.Context) {
 		}
 
 		prog.end("ready")
+
+		// Start server-side .java file watcher as a fallback for editors
+		// that don't support workspace/didChangeWatchedFiles.
+		sw, err := newSourceWatcher(h.logger, uri.ToPath(h.rootURI), ws.scheduleCompile, h.clearDiagnostics)
+		if err != nil {
+			h.logger.Printf("failed to start source watcher: %v", err)
+		} else {
+			ws.srcWatcher = sw
+			ws.bgWg.Add(1)
+			go func() {
+				defer ws.bgWg.Done()
+				sw.start(ctx)
+			}()
+		}
 	}()
 }
 
@@ -198,6 +216,9 @@ func (ws *workspaceService) close(ctx context.Context) {
 	ws.debounceMu.Unlock()
 
 	ws.bgWg.Wait()
+	if ws.srcWatcher != nil {
+		ws.srcWatcher.close()
+	}
 	if ws.handler.index() != nil {
 		ws.handler.index().Close()
 	}
@@ -253,12 +274,23 @@ func (ws *workspaceService) runCompileCycle() {
 	}
 
 	ws.debounceMu.Lock()
-	changedURIs := ws.pendingURIs
+	rawURIs := ws.pendingURIs
 	ws.pendingURIs = nil
 	ws.debounceMu.Unlock()
 
-	if len(changedURIs) == 0 {
+	if len(rawURIs) == 0 {
 		return
+	}
+
+	// Deduplicate URIs — the same file may be reported by both the
+	// client (didChangeWatchedFiles) and the server-side source watcher.
+	seen := make(map[string]struct{}, len(rawURIs))
+	changedURIs := make([]string, 0, len(rawURIs))
+	for _, u := range rawURIs {
+		if _, ok := seen[u]; !ok {
+			seen[u] = struct{}{}
+			changedURIs = append(changedURIs, u)
+		}
 	}
 
 	if !h.buildClient().IsReady() {
