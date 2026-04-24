@@ -15,14 +15,14 @@ type bloopConfig struct {
 }
 
 type bloopProject struct {
-	Name       string          `json:"name"`
-	Directory  string          `json:"directory"`
-	Sources    []string        `json:"sources"`
-	Dependencies []string      `json:"dependencies"`
-	Classpath  []string        `json:"classpath"`
-	Out        string          `json:"out"`
-	ClassesDir string          `json:"classesDir"`
-	Java       *bloopJava      `json:"java,omitempty"`
+	Name         string     `json:"name"`
+	Directory    string     `json:"directory"`
+	Sources      []string   `json:"sources"`
+	Dependencies []string   `json:"dependencies"`
+	Classpath    []string   `json:"classpath"`
+	Out          string     `json:"out"`
+	ClassesDir   string     `json:"classesDir"`
+	Java         *bloopJava `json:"java,omitempty"`
 
 	// Preserve all other fields.
 	Extra map[string]json.RawMessage `json:"-"`
@@ -58,6 +58,35 @@ func (s *Setup) injectSemanticDB(jarPath string) error {
 }
 
 const semanticdbPluginPrefix = "-Xplugin:semanticdb"
+
+// RepairBloopJavaHomes rewrites stale platform.config.home values that point to
+// a removed JDK installation so Bloop can start after Homebrew or JDK updates.
+func (s *Setup) RepairBloopJavaHomes(override string) error {
+	bloopFiles, err := s.bloopConfigFiles()
+	if err != nil {
+		return fmt.Errorf("reading .bloop directory: %w", err)
+	}
+	if len(bloopFiles) == 0 {
+		return nil
+	}
+
+	replacementJavaHome := discoverUsableJavaHome(override)
+	repaired := 0
+	for _, configPath := range bloopFiles {
+		changed, err := s.repairJavaHomeInConfig(configPath, replacementJavaHome)
+		if err != nil {
+			s.logger.Printf("warning: failed to repair java home in %s: %v", filepath.Base(configPath), err)
+			continue
+		}
+		if changed {
+			repaired++
+		}
+	}
+	if repaired > 0 {
+		s.logger.Printf("repaired stale java home in %d bloop config(s)", repaired)
+	}
+	return nil
+}
 
 func (s *Setup) injectIntoConfig(configPath, jarPath string) error {
 	data, err := os.ReadFile(configPath)
@@ -179,4 +208,94 @@ func (s *Setup) injectIntoConfig(configPath, jarPath string) error {
 	}
 
 	return os.WriteFile(configPath, output, 0644)
+}
+
+func (s *Setup) repairJavaHomeInConfig(configPath, replacementJavaHome string) (bool, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return false, err
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false, fmt.Errorf("parsing %s: %w", configPath, err)
+	}
+
+	projectRaw, ok := raw["project"]
+	if !ok {
+		return false, nil
+	}
+
+	var project map[string]json.RawMessage
+	if err := json.Unmarshal(projectRaw, &project); err != nil {
+		return false, fmt.Errorf("parsing project in %s: %w", configPath, err)
+	}
+
+	platformRaw, ok := project["platform"]
+	if !ok {
+		return false, nil
+	}
+
+	var platform map[string]json.RawMessage
+	if err := json.Unmarshal(platformRaw, &platform); err != nil {
+		return false, fmt.Errorf("parsing platform in %s: %w", configPath, err)
+	}
+
+	configRaw, ok := platform["config"]
+	if !ok {
+		return false, nil
+	}
+
+	var config map[string]json.RawMessage
+	if err := json.Unmarshal(configRaw, &config); err != nil {
+		return false, fmt.Errorf("parsing platform.config in %s: %w", configPath, err)
+	}
+
+	homeRaw, ok := config["home"]
+	if !ok {
+		return false, nil
+	}
+
+	var configuredJavaHome string
+	if err := json.Unmarshal(homeRaw, &configuredJavaHome); err != nil {
+		return false, fmt.Errorf("parsing platform.config.home in %s: %w", configPath, err)
+	}
+	if configuredJavaHome == "" || isUsableJavaHome(configuredJavaHome) {
+		return false, nil
+	}
+	if replacementJavaHome == "" {
+		s.logger.Printf("stale java home in %s but no usable replacement found: %s", filepath.Base(configPath), configuredJavaHome)
+		return false, nil
+	}
+
+	s.logger.Printf("repairing stale java home in %s: %s -> %s", filepath.Base(configPath), configuredJavaHome, replacementJavaHome)
+	homeJSON, err := json.Marshal(replacementJavaHome)
+	if err != nil {
+		return false, fmt.Errorf("encoding replacement java home for %s: %w", configPath, err)
+	}
+	config["home"] = homeJSON
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return false, fmt.Errorf("encoding platform.config for %s: %w", configPath, err)
+	}
+	platform["config"] = configJSON
+	platformJSON, err := json.Marshal(platform)
+	if err != nil {
+		return false, fmt.Errorf("encoding platform for %s: %w", configPath, err)
+	}
+	project["platform"] = platformJSON
+	projectJSON, err := json.Marshal(project)
+	if err != nil {
+		return false, fmt.Errorf("encoding project for %s: %w", configPath, err)
+	}
+	raw["project"] = projectJSON
+
+	output, err := json.MarshalIndent(raw, "", "    ")
+	if err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(configPath, output, 0644); err != nil {
+		return false, err
+	}
+	return true, nil
 }

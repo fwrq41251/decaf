@@ -19,13 +19,13 @@ func TestInjectSemanticDB(t *testing.T) {
 	config := map[string]any{
 		"version": "1.4.0",
 		"project": map[string]any{
-			"name":       "root",
-			"directory":  tmpDir,
-			"sources":    []string{filepath.Join(tmpDir, "src/main/java")},
+			"name":         "root",
+			"directory":    tmpDir,
+			"sources":      []string{filepath.Join(tmpDir, "src/main/java")},
 			"dependencies": []string{},
-			"classpath":  []string{"/some/lib.jar"},
-			"out":        filepath.Join(tmpDir, ".bloop/root"),
-			"classesDir": filepath.Join(tmpDir, ".bloop/root/classes"),
+			"classpath":    []string{"/some/lib.jar"},
+			"out":          filepath.Join(tmpDir, ".bloop/root"),
+			"classesDir":   filepath.Join(tmpDir, ".bloop/root/classes"),
 			"java": map[string]any{
 				"options": []string{"-source", "11", "-target", "11"},
 			},
@@ -113,13 +113,13 @@ func TestInjectSemanticDB_NoJavaSection(t *testing.T) {
 	config := map[string]any{
 		"version": "1.4.0",
 		"project": map[string]any{
-			"name":       "root",
-			"directory":  tmpDir,
-			"sources":    []string{},
+			"name":         "root",
+			"directory":    tmpDir,
+			"sources":      []string{},
 			"dependencies": []string{},
-			"classpath":  []string{},
-			"out":        filepath.Join(tmpDir, ".bloop/root"),
-			"classesDir": filepath.Join(tmpDir, ".bloop/root/classes"),
+			"classpath":    []string{},
+			"out":          filepath.Join(tmpDir, ".bloop/root"),
+			"classesDir":   filepath.Join(tmpDir, ".bloop/root/classes"),
 		},
 	}
 
@@ -131,5 +131,83 @@ func TestInjectSemanticDB_NoJavaSection(t *testing.T) {
 
 	if err := s.injectSemanticDB("/fake/jar.jar"); err != nil {
 		t.Fatalf("injectSemanticDB failed: %v", err)
+	}
+}
+
+func TestRepairBloopJavaHomesRewritesStaleConfiguredHome(t *testing.T) {
+	tmpDir := t.TempDir()
+	bloopDir := filepath.Join(tmpDir, ".bloop")
+	if err := os.MkdirAll(bloopDir, 0755); err != nil {
+		t.Fatalf("mkdir bloop dir: %v", err)
+	}
+
+	staleJavaHome := filepath.Join(tmpDir, "missing-jdk")
+	replacementJavaHome := filepath.Join(tmpDir, "jdk")
+	if err := os.MkdirAll(filepath.Join(replacementJavaHome, "bin"), 0755); err != nil {
+		t.Fatalf("mkdir replacement java home: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(replacementJavaHome, "bin", "java"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatalf("write replacement java binary: %v", err)
+	}
+
+	config := map[string]any{
+		"version": "1.4.0",
+		"project": map[string]any{
+			"name":         "root",
+			"directory":    tmpDir,
+			"sources":      []string{},
+			"dependencies": []string{},
+			"classpath":    []string{},
+			"out":          filepath.Join(tmpDir, ".bloop/root"),
+			"classesDir":   filepath.Join(tmpDir, ".bloop/root/classes"),
+			"platform": map[string]any{
+				"name": "jvm",
+				"config": map[string]any{
+					"home":    staleJavaHome,
+					"options": []string{},
+				},
+			},
+		},
+	}
+
+	data, _ := json.MarshalIndent(config, "", "    ")
+	configPath := filepath.Join(bloopDir, "root.json")
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	s := NewSetup(logger, tmpDir)
+	if err := s.RepairBloopJavaHomes(replacementJavaHome); err != nil {
+		t.Fatalf("RepairBloopJavaHomes failed: %v", err)
+	}
+
+	modified, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read repaired config: %v", err)
+	}
+
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(modified, &result); err != nil {
+		t.Fatalf("unmarshal repaired config: %v", err)
+	}
+	var project map[string]json.RawMessage
+	if err := json.Unmarshal(result["project"], &project); err != nil {
+		t.Fatalf("unmarshal project: %v", err)
+	}
+	var platform map[string]json.RawMessage
+	if err := json.Unmarshal(project["platform"], &platform); err != nil {
+		t.Fatalf("unmarshal platform: %v", err)
+	}
+	var platformConfig map[string]json.RawMessage
+	if err := json.Unmarshal(platform["config"], &platformConfig); err != nil {
+		t.Fatalf("unmarshal platform config: %v", err)
+	}
+	var configuredHome string
+	if err := json.Unmarshal(platformConfig["home"], &configuredHome); err != nil {
+		t.Fatalf("unmarshal home: %v", err)
+	}
+	if configuredHome != replacementJavaHome {
+		t.Fatalf("platform.config.home = %q, want %q", configuredHome, replacementJavaHome)
 	}
 }

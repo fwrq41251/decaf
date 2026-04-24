@@ -15,6 +15,7 @@ func (s *Setup) mavenBloopInstall(ctx context.Context) error {
 		"-DdownloadSources=true",
 	)
 	cmd.Dir = s.workspaceDir
+	cmd.Env = SanitizeJavaEnv(os.Environ(), "")
 	cmd.Stdout = os.Stderr // show maven output to user
 	cmd.Stderr = os.Stderr
 

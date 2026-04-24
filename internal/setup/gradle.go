@@ -34,6 +34,7 @@ func (s *Setup) gradleBloopInstall(ctx context.Context) error {
 		"--console=plain",
 	)
 	cmd.Dir = s.workspaceDir
+	cmd.Env = SanitizeJavaEnv(os.Environ(), "")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 

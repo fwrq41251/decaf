@@ -92,8 +92,12 @@ func (ws *workspaceService) start(ctx context.Context) {
 			return
 		}
 
+		if err := setupHelper.RepairBloopJavaHomes(""); err != nil {
+			h.logger.Printf("failed to repair bloop java home: %v", err)
+		}
+
 		prog.report("connecting to Bloop…", intPtr(30))
-		if err := h.buildClient().Start(ctx, h.rootURI); err != nil {
+		if err := ws.startBloop(ctx, prog, setupHelper); err != nil {
 			h.showMessage(MessageTypeError, fmt.Sprintf("decaf: failed to start Bloop: %v", err))
 			prog.end("failed to connect")
 			return
@@ -199,6 +203,37 @@ func (ws *workspaceService) start(ctx context.Context) {
 			}()
 		}
 	}()
+}
+
+func (ws *workspaceService) startBloop(ctx context.Context, prog *progress, setupHelper *setup.Setup) error {
+	h := ws.handler
+	if err := h.buildClient().Start(ctx, h.rootURI); err != nil {
+		if ctx.Err() != nil || !shouldRetryBloopStartup(err) {
+			return err
+		}
+
+		h.logger.Printf("bloop startup failed, rerunning setup before retry: %v", err)
+		prog.report("repairing Bloop setup…", intPtr(20))
+		if setupErr := setupHelper.Run(ctx); setupErr != nil {
+			return fmt.Errorf("%v (setup retry failed: %w)", err, setupErr)
+		}
+		if repairErr := setupHelper.RepairBloopJavaHomes(""); repairErr != nil {
+			h.logger.Printf("failed to repair bloop java home after setup retry: %v", repairErr)
+		}
+		prog.report("reconnecting to Bloop…", intPtr(30))
+		if retryErr := h.buildClient().Start(ctx, h.rootURI); retryErr != nil {
+			return fmt.Errorf("%v (retry after setup failed: %w)", err, retryErr)
+		}
+	}
+	return nil
+}
+
+func shouldRetryBloopStartup(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "ProjectReadException") ||
+		strings.Contains(msg, "Failed to load project") ||
+		strings.Contains(msg, "Cannot run program") ||
+		strings.Contains(msg, "No such file or directory")
 }
 
 func (ws *workspaceService) close(ctx context.Context) {

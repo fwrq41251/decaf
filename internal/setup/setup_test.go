@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -68,6 +69,34 @@ func TestShouldRunBloopInstallWhenGradleBuildIsNewerThanBloop(t *testing.T) {
 	}
 	if !got {
 		t.Fatalf("shouldRunBloopInstall = false, want true (reason=%q)", reason)
+	}
+}
+
+func TestSanitizeJavaEnvReplacesStaleJavaHome(t *testing.T) {
+	tmpDir := t.TempDir()
+	replacementJavaHome := filepath.Join(tmpDir, "jdk")
+	if err := os.MkdirAll(filepath.Join(replacementJavaHome, "bin"), 0755); err != nil {
+		t.Fatalf("mkdir replacement java home: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(replacementJavaHome, "bin", "java"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatalf("write java binary: %v", err)
+	}
+
+	env := []string{
+		"PATH=/usr/bin:/bin",
+		"JAVA_HOME=" + filepath.Join(tmpDir, "missing-jdk"),
+		"HOME=/tmp/home",
+	}
+
+	sanitized := SanitizeJavaEnv(env, replacementJavaHome)
+	var javaHome string
+	for _, entry := range sanitized {
+		if strings.HasPrefix(entry, "JAVA_HOME=") {
+			javaHome = strings.TrimPrefix(entry, "JAVA_HOME=")
+		}
+	}
+	if javaHome != replacementJavaHome {
+		t.Fatalf("JAVA_HOME = %q, want %q", javaHome, replacementJavaHome)
 	}
 }
 

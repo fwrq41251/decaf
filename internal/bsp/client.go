@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/fwrq41251/decaf/internal/jsonrpc"
+	"github.com/fwrq41251/decaf/internal/setup"
 	"github.com/fwrq41251/decaf/internal/uri"
 )
 
@@ -114,7 +115,7 @@ func (c *Client) Start(ctx context.Context, rootURI string) error {
 	// Start bloop bsp process.
 	c.cmd = exec.CommandContext(ctx, bloopExe, "bsp", "--protocol", "local", "--socket", socketPath)
 	c.cmd.Dir = sourceRoot
-	c.cmd.Env = os.Environ()
+	c.cmd.Env = setup.SanitizeJavaEnv(os.Environ(), "")
 	var startupOutput tailBuffer
 	c.cmd.Stdout = &startupOutput
 	c.cmd.Stderr = &startupOutput

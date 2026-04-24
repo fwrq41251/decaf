@@ -3,6 +3,7 @@ package lsp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,6 +17,26 @@ import (
 	sdb "github.com/fwrq41251/decaf/internal/semanticdb"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestShouldRetryBloopStartup(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "project read exception", err: errors.New("[E] Caught bloop.data.Project$ProjectReadException: Failed to load project from .bloop/root.json"), want: true},
+		{name: "missing java executable", err: errors.New("java.io.IOException: Cannot run program \"/missing/java\": error=2, No such file or directory"), want: true},
+		{name: "ordinary startup error", err: errors.New("bloop not found in PATH"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldRetryBloopStartup(tt.err); got != tt.want {
+				t.Fatalf("shouldRetryBloopStartup(%q) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
 
 type fakeBuildClient struct {
 	mu sync.Mutex

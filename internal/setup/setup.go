@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 )
 
@@ -189,6 +191,11 @@ func (s *Setup) DiscoverJavaHome(override string) string {
 	if javaHome := os.Getenv("JAVA_HOME"); javaHome != "" {
 		return javaHome
 	}
+	if runtime.GOOS == "darwin" {
+		if javaHome := discoverDarwinJavaHome(); javaHome != "" {
+			return javaHome
+		}
+	}
 	// Try to find java home from path.
 	if path, err := exec.LookPath("java"); err == nil {
 		if realPath, err := filepath.EvalSymlinks(path); err == nil {
@@ -197,6 +204,90 @@ func (s *Setup) DiscoverJavaHome(override string) string {
 		}
 	}
 	return ""
+}
+
+func discoverUsableJavaHome(override string) string {
+	if override != "" && isUsableJavaHome(override) {
+		return override
+	}
+	if javaHome := os.Getenv("JAVA_HOME"); isUsableJavaHome(javaHome) {
+		return javaHome
+	}
+	if runtime.GOOS == "darwin" {
+		if javaHome := discoverDarwinJavaHome(); isUsableJavaHome(javaHome) {
+			return javaHome
+		}
+	}
+	if path, err := exec.LookPath("java"); err == nil {
+		if realPath, err := filepath.EvalSymlinks(path); err == nil {
+			javaHome := filepath.Dir(filepath.Dir(realPath))
+			if isUsableJavaHome(javaHome) {
+				return javaHome
+			}
+		}
+	}
+	return ""
+}
+
+// SanitizeJavaEnv replaces or removes a stale JAVA_HOME so child Java-based
+// tools don't fail before they can inspect project-specific configuration.
+func SanitizeJavaEnv(env []string, override string) []string {
+	javaHome, ok := lookupEnv(env, "JAVA_HOME")
+	if ok && isUsableJavaHome(javaHome) {
+		return env
+	}
+
+	sanitized := removeEnv(env, "JAVA_HOME")
+	if replacement := discoverUsableJavaHome(override); replacement != "" {
+		return append(sanitized, "JAVA_HOME="+replacement)
+	}
+	return sanitized
+}
+
+func lookupEnv(env []string, key string) (string, bool) {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix), true
+		}
+	}
+	return "", false
+}
+
+func removeEnv(env []string, key string) []string {
+	prefix := key + "="
+	filtered := env[:0]
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+func discoverDarwinJavaHome() string {
+	cmd := exec.Command("/usr/libexec/java_home")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func isUsableJavaHome(javaHome string) bool {
+	if javaHome == "" {
+		return false
+	}
+	for _, candidate := range []string{
+		filepath.Join(javaHome, "bin", "java"),
+		filepath.Join(javaHome, "bin", "java.exe"),
+	} {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // DiscoverJDKSource attempts to find the path to the JDK source and extracts it if it is a zip.
