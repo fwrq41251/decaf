@@ -31,12 +31,14 @@ type Dispatcher struct {
 	logger    *log.Logger
 	wg        sync.WaitGroup
 
-	// cancelMu protects inflight and clientPending.
+	// cancelMu protects inflight, clientPending, and closed.
 	cancelMu sync.Mutex
 	// inflight maps numeric request IDs to their cancel functions (server-side).
 	inflight map[int64]context.CancelFunc
 	// clientPending maps raw request IDs to response channels (client-side).
 	clientPending map[string]chan *Response
+	// closed reports whether shutdown has started and new Call invocations should fail fast.
+	closed bool
 	// nextCallID generates unique IDs for outbound requests.
 	nextCallID atomic.Int64
 }
@@ -64,11 +66,18 @@ func (d *Dispatcher) RegisterConcurrent(method string, handler Handler) {
 
 // Run reads messages from the transport in a loop and dispatches them.
 // It blocks until the context is cancelled or an I/O error occurs.
-func (d *Dispatcher) Run(ctx context.Context) error {
+//
+// On exit (for any reason), all in-flight outbound Call() invocations are
+// signalled via a nil response so they can return promptly instead of
+// blocking until their own context is cancelled.
+func (d *Dispatcher) Run(ctx context.Context) (err error) {
+	defer func() {
+		err = d.shutdown(err)
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
-			d.wg.Wait()
 			return ctx.Err()
 		default:
 		}
@@ -77,10 +86,8 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		if err != nil {
 			// If the context was cancelled (e.g., by exit), treat as normal shutdown.
 			if ctx.Err() != nil {
-				d.wg.Wait()
 				return ctx.Err()
 			}
-			d.wg.Wait()
 			return fmt.Errorf("reading message: %w", err)
 		}
 
@@ -146,7 +153,6 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 			// Sequential: lifecycle methods and notifications.
 			result, herr := entry.handler(ctx, req.Params)
 			if errors.Is(herr, ErrExit) {
-				d.wg.Wait()
 				return nil
 			}
 			if req.IsNotification() {
@@ -182,6 +188,10 @@ func (d *Dispatcher) Call(ctx context.Context, method string, params any, result
 
 	ch := make(chan *Response, 1)
 	d.cancelMu.Lock()
+	if d.closed {
+		d.cancelMu.Unlock()
+		return errors.New("jsonrpc dispatcher closed")
+	}
 	d.clientPending[id] = ch
 	d.cancelMu.Unlock()
 
@@ -197,6 +207,10 @@ func (d *Dispatcher) Call(ctx context.Context, method string, params any, result
 
 	select {
 	case resp := <-ch:
+		if resp == nil {
+			// nil sentinel: dispatcher has shut down (see clearClientPending).
+			return errors.New("jsonrpc dispatcher closed")
+		}
 		if resp.Error != nil {
 			return fmt.Errorf("client error %d: %s", resp.Error.Code, resp.Error.Message)
 		}
@@ -206,6 +220,28 @@ func (d *Dispatcher) Call(ctx context.Context, method string, params any, result
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+func (d *Dispatcher) shutdown(err error) error {
+	d.clearClientPending()
+	d.wg.Wait()
+	return err
+}
+
+// clearClientPending wakes up every goroutine blocked in Call by sending a nil
+// response on its channel. It is invoked when Run exits so callers do not
+// block until their own context fires.
+func (d *Dispatcher) clearClientPending() {
+	d.cancelMu.Lock()
+	defer d.cancelMu.Unlock()
+	d.closed = true
+	for id, ch := range d.clientPending {
+		select {
+		case ch <- nil:
+		default:
+		}
+		delete(d.clientPending, id)
 	}
 }
 

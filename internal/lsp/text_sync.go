@@ -21,8 +21,18 @@ func (h *Handler) handleDidChange(_ context.Context, params json.RawMessage) (an
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
 	}
-	h.docs.ApplyChanges(p.TextDocument.URI, p.ContentChanges)
+	res := h.docs.ApplyChanges(p.TextDocument.URI, p.ContentChanges)
 	h.logger.Printf("didChange: %s (version %d, %d changes)", p.TextDocument.URI, p.TextDocument.Version, len(p.ContentChanges))
+	switch {
+	case res.ImplicitOpen && res.DroppedIncremental > 0:
+		h.logger.Printf("WARN didChange before didOpen: %s recovered via full-text replacement; dropped %d leading incremental change(s)",
+			p.TextDocument.URI, res.DroppedIncremental)
+	case res.ImplicitOpen:
+		h.logger.Printf("WARN didChange before didOpen: %s recovered via full-text replacement", p.TextDocument.URI)
+	case res.DroppedIncremental > 0:
+		h.logger.Printf("WARN didChange before didOpen: %s dropped %d incremental change(s); document may be out of sync until next didOpen or full-text didChange",
+			p.TextDocument.URI, res.DroppedIncremental)
+	}
 	return nil, nil
 }
 

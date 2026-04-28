@@ -243,3 +243,71 @@ func TestPositionToOffset(t *testing.T) {
 		}
 	}
 }
+
+func TestDocStore_ApplyChanges_UntrackedDropsIncremental(t *testing.T) {
+	ds := newDocStore()
+
+	r := Range{
+		Start: Position{Line: 0, Character: 0},
+		End:   Position{Line: 0, Character: 0},
+	}
+	res := ds.ApplyChanges("file:///a.java", []TextDocumentContentChangeEvent{
+		{Range: &r, Text: "x"},
+		{Range: &r, Text: "y"},
+	})
+
+	if res.ImplicitOpen {
+		t.Errorf("ImplicitOpen = true, want false")
+	}
+	if res.DroppedIncremental != 2 {
+		t.Errorf("DroppedIncremental = %d, want 2", res.DroppedIncremental)
+	}
+	if _, ok := ds.Get("file:///a.java"); ok {
+		t.Errorf("document should not be tracked after dropping all incremental changes")
+	}
+}
+
+func TestDocStore_ApplyChanges_UntrackedImplicitOpenFromFullText(t *testing.T) {
+	ds := newDocStore()
+
+	r := Range{
+		Start: Position{Line: 0, Character: 5},
+		End:   Position{Line: 0, Character: 5},
+	}
+	res := ds.ApplyChanges("file:///a.java", []TextDocumentContentChangeEvent{
+		{Range: &r, Text: "DROPPED"},          // leading incremental, dropped
+		{Range: nil, Text: "hello world"},      // full-text replacement -> baseline
+		{Range: &r, Text: " beautiful"},        // applied on top of baseline
+	})
+
+	if !res.ImplicitOpen {
+		t.Errorf("ImplicitOpen = false, want true")
+	}
+	if res.DroppedIncremental != 1 {
+		t.Errorf("DroppedIncremental = %d, want 1", res.DroppedIncremental)
+	}
+	got, ok := ds.Get("file:///a.java")
+	if !ok {
+		t.Fatalf("document should be tracked after implicit open")
+	}
+	if got != "hello beautiful world" {
+		t.Errorf("got %q, want %q", got, "hello beautiful world")
+	}
+}
+
+func TestDocStore_ApplyChanges_TrackedReturnsZeroResult(t *testing.T) {
+	ds := newDocStore()
+	ds.Open("file:///a.java", "hello world")
+
+	res := ds.ApplyChanges("file:///a.java", []TextDocumentContentChangeEvent{
+		{Range: nil, Text: "new"},
+	})
+
+	if res.ImplicitOpen || res.DroppedIncremental != 0 {
+		t.Errorf("tracked doc: got %+v, want zero ApplyResult", res)
+	}
+	got, _ := ds.Get("file:///a.java")
+	if got != "new" {
+		t.Errorf("got %q, want %q", got, "new")
+	}
+}

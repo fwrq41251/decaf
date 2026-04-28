@@ -752,15 +752,9 @@ func (idx *Index) compactStorage() {
 
 	for sym, ids := range idx.definitions {
 		idx.definitions[intern(sym)] = remapSymbolSlice(ids)
-		if canon := intern(sym); canon != sym {
-			delete(idx.definitions, sym)
-		}
 	}
 	for uri, ids := range idx.fileSymbols {
 		idx.fileSymbols[intern(uri)] = remapSymbolSlice(ids)
-		if canon := intern(uri); canon != uri {
-			delete(idx.fileSymbols, uri)
-		}
 	}
 	for name, ids := range idx.typeBySimpleName {
 		idx.typeBySimpleName[name] = remapSymbolSlice(ids)
@@ -770,48 +764,30 @@ func (idx *Index) compactStorage() {
 	}
 	for owner, ids := range idx.ownerMembers {
 		idx.ownerMembers[intern(owner)] = remapSymbolSlice(ids)
-		if canon := intern(owner); canon != owner {
-			delete(idx.ownerMembers, owner)
-		}
 	}
 	for sym, ids := range idx.references {
 		idx.references[intern(sym)] = remapOccurrenceSlice(ids)
-		if canon := intern(sym); canon != sym {
-			delete(idx.references, sym)
-		}
 	}
 	for uri, ids := range idx.fileOccurrences {
 		idx.fileOccurrences[intern(uri)] = remapOccurrenceSlice(ids)
-		if canon := intern(uri); canon != uri {
-			delete(idx.fileOccurrences, uri)
-		}
 	}
 	for uri, syms := range idx.uriRefSymbols {
 		for i, sym := range syms {
 			syms[i] = intern(sym)
 		}
 		idx.uriRefSymbols[intern(uri)] = syms
-		if canon := intern(uri); canon != uri {
-			delete(idx.uriRefSymbols, uri)
-		}
 	}
 	for child, parents := range idx.childToParents {
 		for i, parent := range parents {
 			parents[i] = intern(parent)
 		}
 		idx.childToParents[intern(child)] = parents
-		if canon := intern(child); canon != child {
-			delete(idx.childToParents, child)
-		}
 	}
 	for parent, children := range idx.implementors {
 		for i, child := range children {
 			children[i] = intern(child)
 		}
 		idx.implementors[intern(parent)] = children
-		if canon := intern(parent); canon != parent {
-			delete(idx.implementors, parent)
-		}
 	}
 	for path, uris := range idx.sdbToURIs {
 		for i, uri := range uris {

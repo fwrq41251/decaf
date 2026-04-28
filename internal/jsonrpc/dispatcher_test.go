@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -145,5 +146,146 @@ func TestCancelUnknownRequest(t *testing.T) {
 
 	if err := d.Run(context.Background()); err != nil {
 		t.Fatalf("dispatcher error: %v", err)
+	}
+}
+
+func TestClearClientPending_SendsNilSentinel(t *testing.T) {
+	transport := NewTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	d := NewDispatcher(transport, logger)
+
+	ch := make(chan *Response, 1)
+	d.cancelMu.Lock()
+	d.clientPending["test-1"] = ch
+	d.cancelMu.Unlock()
+
+	d.clearClientPending()
+
+	select {
+	case resp := <-ch:
+		if resp != nil {
+			t.Errorf("expected nil sentinel, got %+v", resp)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("channel did not receive nil sentinel")
+	}
+
+	d.cancelMu.Lock()
+	n := len(d.clientPending)
+	d.cancelMu.Unlock()
+	if n != 0 {
+		t.Errorf("clientPending not cleared, has %d entries", n)
+	}
+}
+
+func TestCall_ReturnsErrorOnNilSentinel(t *testing.T) {
+	var output bytes.Buffer
+	transport := NewTransport(&bytes.Buffer{}, &output)
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	d := NewDispatcher(transport, logger)
+
+	callDone := make(chan error, 1)
+	go func() {
+		var result json.RawMessage
+		callDone <- d.Call(context.Background(), "test/method", nil, &result)
+	}()
+
+	// Wait for Call to register itself in clientPending.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		d.cancelMu.Lock()
+		n := len(d.clientPending)
+		d.cancelMu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Call never registered in clientPending")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Simulate dispatcher shutdown.
+	d.clearClientPending()
+
+	select {
+	case err := <-callDone:
+		if err == nil {
+			t.Fatal("Call should have returned an error after nil sentinel")
+		}
+		if !strings.Contains(err.Error(), "dispatcher closed") {
+			t.Errorf("expected 'dispatcher closed' error, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Call did not return after nil sentinel")
+	}
+}
+
+func TestCall_ReturnsErrorWhenDispatcherClosed(t *testing.T) {
+	var output bytes.Buffer
+	transport := NewTransport(&bytes.Buffer{}, &output)
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	d := NewDispatcher(transport, logger)
+
+	d.clearClientPending()
+
+	var result json.RawMessage
+	err := d.Call(context.Background(), "test/method", nil, &result)
+	if err == nil {
+		t.Fatal("Call should fail after dispatcher shutdown starts")
+	}
+	if !strings.Contains(err.Error(), "dispatcher closed") {
+		t.Fatalf("expected dispatcher closed error, got %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("Call should not write after shutdown, wrote %d bytes", output.Len())
+	}
+}
+
+func TestRun_ShutdownUnblocksPendingCallBeforeWaiting(t *testing.T) {
+	var input bytes.Buffer
+	input.WriteString(msg(t, intP(1), "slow/op", nil))
+
+	var output bytes.Buffer
+	logger := log.New(&bytes.Buffer{}, "[test] ", 0)
+	transport := NewTransport(&input, &output)
+	d := NewDispatcher(transport, logger)
+
+	started := make(chan struct{})
+	d.RegisterConcurrent("slow/op", func(_ context.Context, _ json.RawMessage) (any, error) {
+		close(started)
+
+		var result json.RawMessage
+		err := d.Call(context.Background(), "client/op", nil, &result)
+		if err == nil {
+			t.Fatal("Call should be interrupted when dispatcher shuts down")
+		}
+		if !strings.Contains(err.Error(), "dispatcher closed") {
+			t.Fatalf("expected dispatcher closed error, got %v", err)
+		}
+		return "ok", nil
+	})
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- d.Run(context.Background())
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent handler did not start in time")
+	}
+
+	select {
+	case err := <-runDone:
+		if err == nil {
+			t.Fatal("Run should return the transport read error")
+		}
+		if !strings.Contains(err.Error(), "reading message") {
+			t.Fatalf("expected read error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run hung waiting for a handler blocked in Call")
 	}
 }

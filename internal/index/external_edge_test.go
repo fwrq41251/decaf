@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -85,13 +86,15 @@ public class Outer {
 	idx := NewIndex(logger, tmpDir)
 	idx.AddDependencySource(jarPath)
 
-	// Simulate a symbol that uses dots instead of hashes for nesting (happens in some SDB versions/tools)
+	// A symbol that uses dots instead of hashes for nesting (happens in some SDB versions/tools).
+	// resolveExternalSymbol splits on '/', '.', and '#' uniformly and probes from most-specific
+	// to least-specific, so it correctly falls back to com/example/Outer.java for the inner class.
 	sym := "com/example/Outer.Inner#"
 	s := idx.resolveExternalSymbol(sym)
 	if s == nil {
-		// This is expected to fail with current implementation because it looks for com/example/Outer.Inner.java
-		t.Logf("Current implementation failed to resolve symbol with dots as expected: %s", sym)
-	} else {
-		t.Logf("Successfully resolved (surprisingly): %s -> %s", sym, s.URI)
+		t.Fatalf("failed to resolve dot-nested symbol %s", sym)
+	}
+	if !strings.HasSuffix(s.URI, "com/example/Outer.java") {
+		t.Errorf("resolved %s to unexpected URI %s, want suffix com/example/Outer.java", sym, s.URI)
 	}
 }
